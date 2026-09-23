@@ -1,0 +1,17 @@
+{
+  "title": "Basic",
+  "argTypes": {
+    "size": {
+      "control": {
+        "type": "select"
+      },
+      "options": ["default", "sm"],
+      "defaultValue": "default"
+    }
+  },
+  "reactLive": {
+    "Card": "@/components/ui/card",
+    "Heading": "@/components/ui/heading",
+    "Text": "@/components/ui/text"
+  }
+}

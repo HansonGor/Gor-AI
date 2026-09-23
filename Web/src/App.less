@@ -1,0 +1,323 @@
+// 引入全局变量和 mixin
+@import './styles/variables.less';
+@import './styles/mixins.less';
+
+.app-container {
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  background: @color-bg-dark;
+  position: relative;
+  overflow: hidden;
+
+  // 背景装饰
+  &::before {
+    content: '';
+    position: absolute;
+    top: -2rem;
+    left: -2rem;
+    width: 8rem;
+    height: 8rem;
+    background: @color-primary;
+    border-radius: 50%;
+    filter: blur(3rem);
+    opacity: 0.3;
+    z-index: 0;
+    pointer-events: none;
+  }
+
+  &::after {
+    content: '';
+    position: absolute;
+    bottom: -2rem;
+    right: -2rem;
+    width: 8rem;
+    height: 8rem;
+    background: @color-accent;
+    border-radius: 50%;
+    filter: blur(3rem);
+    opacity: 0.25;
+    z-index: 0;
+    pointer-events: none;
+  }
+}
+
+// ========== PC 模式侧边栏（≥1024px） ==========
+.pc-sidebar-wrapper {
+  position: relative;
+  flex-shrink: 0;
+  height: 100%;
+  display: flex;
+  transition: width @transition-normal;
+
+  &.open {
+    width: @sidebar-width;
+  }
+
+  &.collapsed {
+    width: @sidebar-width-collapsed;
+  }
+
+  .sidebar {
+    width: 100%;
+  }
+}
+
+// PC 侧边栏折叠按钮
+.pc-sidebar-toggle {
+  position: absolute;
+  top: 50%;
+  right: -0.3rem;
+  transform: translateY(-50%);
+  width: 0.6rem;
+  height: 0.6rem;
+  background: @gradient-primary;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-radius: @radius-full;
+  color: @color-text-white;
+  font-size: @font-size-caption;
+  cursor: pointer;
+  z-index: @z-index-sidebar;
+  .flex-center();
+  transition: all @transition-normal;
+  box-shadow: @shadow-primary;
+
+  &:hover {
+    transform: translateY(-50%) scale(1.15);
+    box-shadow: @shadow-primary-hover;
+    background: linear-gradient(135deg, @color-primary-light, #8b5cf6);
+  }
+
+  &:active {
+    transform: translateY(-50%) scale(0.95);
+  }
+}
+
+// ========== 移动端悬浮侧边栏（≤1023px） ==========
+.mobile-sidebar-mask {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: @z-index-modal;
+  .animation-fade-in();
+}
+
+.mobile-sidebar-wrapper {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 70%;
+  max-width: 320px;
+  z-index: @z-index-toast;
+  .animation-slide-in-left();
+  box-shadow: 4px 0 20px rgba(0, 0, 0, 0.3);
+
+  .sidebar {
+    width: 100%;
+  }
+}
+
+// 移动端汉堡按钮
+.mobile-menu-btn {
+  width: 0.8rem;
+  height: 0.8rem;
+  .flex-center();
+  background: transparent;
+  border: none;
+  color: @color-text-white;
+  font-size: 0.5rem;
+  cursor: pointer;
+  border-radius: @radius-md;
+  flex-shrink: 0;
+
+  &:hover {
+    background: @color-bg-hover-dark;
+  }
+
+  &:active {
+    background: rgba(255, 255, 255, 0.15);
+  }
+}
+
+// 主题切换按钮
+.theme-toggle-btn {
+  width: 0.8rem;
+  height: 0.8rem;
+  .flex-center();
+  background: transparent;
+  border: none;
+  font-size: 0.45rem;
+  cursor: pointer;
+  border-radius: @radius-full;
+  flex-shrink: 0;
+  transition: all @transition-normal;
+
+  &:hover {
+    background: @color-bg-hover-dark;
+    transform: scale(1.1);
+  }
+
+  &:active {
+    transform: scale(0.95);
+  }
+}
+
+// ========== 右侧主内容区 ==========
+.app-main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  position: relative;
+  z-index: @z-index-base;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: @spacing-lg;
+  padding: @spacing-xl @spacing-2xl;
+  .glass-effect(@color-bg-header-dark);
+  border-bottom: 1px solid @color-border-dark;
+  position: relative;
+  z-index: @z-index-header;
+  box-shadow: @shadow-header;
+  flex-shrink: 0;
+
+  .header-logo {
+    font-size: 0.9rem;
+    width: 1.1rem;
+    height: 1.1rem;
+    .flex-center();
+    background: @gradient-accent;
+    border-radius: @radius-xl;
+    flex-shrink: 0;
+  }
+
+  .header-info {
+    flex: 1;
+    min-width: 0;
+
+    .header-title {
+      font-size: @font-size-title;
+      font-weight: @font-weight-semibold;
+      color: @color-text-white;
+      margin: 0;
+      line-height: @line-height-title;
+      .text-ellipsis();
+    }
+
+    .header-subtitle {
+      font-size: @font-size-caption;
+      color: @color-text-tertiary-dark;
+      line-height: @line-height-caption;
+      .text-ellipsis();
+    }
+  }
+}
+
+.app-main {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  z-index: @z-index-base;
+  min-height: 0;
+}
+
+// 加载状态
+.app-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: @spacing-lg;
+  color: @color-text-tertiary-dark;
+  font-size: @font-size-caption;
+}
+
+.loading-spinner {
+  width: 0.6rem;
+  height: 0.6rem;
+  border: 0.04rem solid rgba(102, 126, 234, 0.2);
+  border-top-color: @color-primary;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+// ========== 移动端样式优化（≤1023px） ==========
+.mobile-mode {
+  .app-header {
+    padding: @spacing-sm @spacing-md;
+    gap: @spacing-md;
+
+    .header-logo {
+      font-size: 0.6rem;
+      width: 0.8rem;
+      height: 0.8rem;
+      border-radius: @radius-lg;
+    }
+
+    .header-title {
+      font-size: @font-size-title;
+    }
+
+    .header-subtitle {
+      font-size: @font-size-caption;
+    }
+  }
+}
+
+// ========== 白天模式（theme-light） ==========
+.theme-light {
+  background: @color-bg-light;
+
+  &::before {
+    background: #a5b4fc;
+    opacity: 0.2;
+  }
+
+  &::after {
+    background: #93c5fd;
+    opacity: 0.15;
+  }
+
+  // 头部
+  .app-header {
+    background: @color-bg-header-light;
+    border-bottom: 1px solid @color-border-light;
+    box-shadow: 0 1px 8px rgba(0, 0, 0, 0.06);
+
+    .header-title {
+      color: #1a1a1a;
+    }
+
+    .header-subtitle {
+      color: @color-text-tertiary-light;
+    }
+  }
+
+  // 主题切换按钮 hover
+  .theme-toggle-btn:hover {
+    background: @color-bg-hover-light;
+  }
+
+  // 移动端汉堡按钮
+  .mobile-menu-btn {
+    color: #1a1a1a;
+
+    &:hover {
+      background: @color-bg-hover-light;
+    }
+  }
+
+  // 加载状态
+  .app-loading {
+    color: @color-text-tertiary-light;
+  }
+}

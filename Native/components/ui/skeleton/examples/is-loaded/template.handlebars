@@ -1,0 +1,30 @@
+function Example() {
+  return (
+    <Box className="w-[290px] p-4 rounded-sm  gap-3">
+        <Skeleton variant="rounded" className="h-44 w-64 rounded-sm" isLoaded={ {{isLoaded}} }>
+          <Image
+          className="h-44 w-64 rounded-sm"
+          source=\\{{
+            uri: 'https://images.unsplash.com/photo-1715006020121-dd50879f9821?q=80&w=2787&auto=format&fit=crop&ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D',
+          }}
+           />
+        </Skeleton>
+        <VStack space="sm">
+          <Text className="text-muted-foreground text-sm">May 15, 2023</Text>
+          <Text className="text-foreground font-bold">
+          The Power of Positive Thinking
+          </Text>
+          <Text className="text-muted-foreground text-sm">
+          Discover how the power of positive thinking can transform your life,
+          boost your confidence, and help you overcome challenges.
+          </Text>
+        </VStack>
+        <HStack space="sm" className="items-center">
+        <Avatar size="xs" className="bg-primary">
+          <AvatarFallbackText className="text-primary-foreground">John Smith</AvatarFallbackText>
+        </Avatar>
+        <Text className="text-sm font-bold">John Smith</Text>
+      </HStack>
+      </Box>
+  );
+}

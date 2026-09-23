@@ -1,0 +1,27 @@
+{
+  "title": "Basic",
+  "argTypes": {
+    "isDisabled": {
+      "control": {
+        "type": "boolean"
+      },
+      "defaultValue": false
+    },
+    "isInvalid": {
+      "control": {
+        "type": "boolean"
+      },
+      "defaultValue": false
+    },
+    "isReadOnly": {
+      "control": {
+        "type": "boolean"
+      },
+      "defaultValue": false
+    }
+  },
+  "reactLive": {
+    "Input": "@/components/ui/input",
+    "InputField": "@/components/ui/input"
+  }
+}

@@ -1,0 +1,31 @@
+// 消息列表 — Tailwind 布局
+import { useRef, useEffect, useCallback } from 'react';
+import MessageBubble from './MessageBubble';
+import type { MessageListProps } from '../../types';
+
+export default function MessageList({ messages, onPreviewFile, onPreviewProject }: MessageListProps) {
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  // 只滚动消息容器，不影响页面整体布局
+  const scrollToBottom = useCallback(() => {
+    const container = listRef.current?.parentElement;
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }, []);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, scrollToBottom]);
+
+  return (
+    <div
+      ref={listRef}
+      className="message-list mx-auto flex w-full max-w-[1080px] flex-col gap-[0.24rem] px-[0.06rem] pb-[0.3rem] pt-[0.1rem] lg:gap-4 lg:px-0 lg:pb-6"
+    >
+      {messages.map((msg) => (
+        <MessageBubble key={msg.id} message={msg} onPreviewFile={onPreviewFile} onPreviewProject={onPreviewProject} />
+      ))}
+    </div>
+  );
+}

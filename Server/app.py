@@ -1,0 +1,69 @@
+"""
+FastAPI 应用实例
+职责：创建 FastAPI 应用，注册中间件和路由
+"""
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from config import config
+from db.supabase_chat import init_db
+from routes.chat import router as chat_router
+from routes.chat_routes import router as chat_session_router
+from routes.download import router as download_router
+from routes.video import router as video_router
+from routes.weather import router as weather_router
+from routes.music import router as music_router
+from routes.judge import router as judge_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期：启动时初始化数据库"""
+    print("\n🚀 通用聊天 Agent 服务启动中...")
+    print(f"   模型: {config.Ark.MODEL_ID}")
+    print(f"   工具: get_weather, web_search, create_word, create_excel, create_ppt, create_pdf, generate_xiaoyunque_video, vector_search")
+
+    # 初始化数据库
+    try:
+        await init_db()
+        print("   数据库: 初始化完成")
+    except Exception as e:
+        print(f"   数据库: 初始化失败 - {e}")
+
+    yield
+
+    print("\n👋 服务已关闭")
+
+
+app = FastAPI(
+    title="通用聊天 Agent API",
+    description="基于 LangChain + FastAPI 的 AI 聊天 Agent 服务",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# CORS 中间件
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[config.Server.CLIENT_ORIGIN, "*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 健康检查
+@app.get("/api/health")
+async def health_check():
+    from datetime import datetime
+    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+
+
+# 路由注册
+app.include_router(chat_router, prefix="/api")              # POST /api/chat (SSE流式聊天)
+app.include_router(download_router, prefix="/api")          # GET /api/download/:filename
+app.include_router(video_router, prefix="/api/video")       # GET /api/video/tasks, /task/:id, /proxy
+app.include_router(chat_session_router, prefix="/api/chat") # 会话管理: /session/create, /sessions 等
+app.include_router(weather_router, prefix="/api")            # GET /api/weather?lat=xx&lng=xx
+app.include_router(music_router, prefix="/api")              # GET /api/music/random
+app.include_router(judge_router, prefix="/api")              # POST /api/judge/execute

@@ -1,0 +1,149 @@
+/**
+ * 首页样式（Shadcn-UI + Tailwind 版本）
+ * iOS 深色毛玻璃风格（参考原图精确参数）
+ */
+
+.home-page {
+  position: relative;
+  min-height: 100vh;
+  /* 深蓝黑背景，与全局 body 背景一致（#0f0f19），避免头部与内容区色差 */
+  background-color: #0f0f19;
+  color: #fff;
+  /* 用 clip 替代 hidden，避免影响子元素的 position: sticky */
+  overflow-x: clip;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 确保页面可滚动，底部留出导航栏空间 */
+.home-page main {
+  padding-bottom: 2rem;
+}
+
+/* ========== 顶部固定头部（sticky，滚动时保持在顶部） ========== */
+.home-header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  /* 与页面背景一致的不透明深蓝黑，滚动内容被完全遮挡且无色差 */
+  background-color: #0f0f19;
+}
+
+/* ========== 深色毛玻璃卡片（参考原图） ========== */
+.glass-card {
+  position: relative;
+  /* 低半透明白色背景，深色玻璃感 */
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.12) 0%,
+    rgba(255, 255, 255, 0.06) 40%,
+    rgba(255, 255, 255, 0.03) 100%
+  );
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  /* 轻微高光边框 */
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  /* 外阴影 + 轻微顶部内高光 + 底部内阴影 */
+  box-shadow:
+    0 8px 28px rgba(0, 0, 0, 0.35),
+    0 2px 6px rgba(0, 0, 0, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+}
+
+/* 卡片顶部轻微高光层 */
+.glass-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 50%;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.08) 0%,
+    rgba(255, 255, 255, 0.02) 50%,
+    transparent 100%
+  );
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* 卡片左上角轻微光泽点 */
+.glass-card::after {
+  content: '';
+  position: absolute;
+  top: -20%;
+  left: -10%;
+  width: 55%;
+  height: 45%;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(255, 255, 255, 0.1) 0%,
+    transparent 70%
+  );
+  pointer-events: none;
+  border-radius: 50%;
+}
+
+/* ========== 玻璃胶囊（天气/通知按钮） ========== */
+.glass-pill {
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.05) 100%
+  );
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    0 4px 14px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+/* ========== 玻璃图标圆圈 ========== */
+.glass-icon-circle {
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.14) 0%,
+    rgba(255, 255, 255, 0.06) 100%
+  );
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+/* ========== 底部玻璃导航栏 ========== */
+.glass-nav {
+  background: linear-gradient(
+    180deg,
+    rgba(45, 45, 52, 0.75) 0%,
+    rgba(20, 20, 26, 0.85) 100%
+  );
+  backdrop-filter: blur(24px) saturate(1.5);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 -4px 24px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* 闪烁动画 */
+.sparkle {
+  display: inline-block;
+  animation: sparkle-pulse 2s ease-in-out infinite;
+}
+
+@keyframes sparkle-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.15);
+  }
+}

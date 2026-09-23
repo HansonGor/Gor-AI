@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>数据表格演示</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+      background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+      min-height: 100vh;
+      padding: 40px 20px;
+      color: #e8eef2;
+    }
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+      background: rgba(255, 255, 255, 0.06);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 16px;
+      padding: 30px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+    }
+    h1 {
+      text-align: center;
+      font-size: 26px;
+      margin-bottom: 6px;
+      letter-spacing: 1px;
+    }
+    .subtitle {
+      text-align: center;
+      color: #9fb3c8;
+      font-size: 14px;
+      margin-bottom: 24px;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 20px;
+      align-items: center;
+    }
+    .toolbar input[type="text"] {
+      flex: 1;
+      min-width: 220px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+      font-size: 14px;
+      outline: none;
+      transition: border-color .3s;
+    }
+    .toolbar input[type="text"]:focus {
+      border-color: #4fc3f7;
+    }
+    .toolbar input::placeholder { color: #8aa0b5; }
+    .btn {
+      padding: 10px 18px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+      background: linear-gradient(135deg, #4fc3f7, #2196f3);
+      color: #fff;
+      transition: transform .2s, box-shadow .2s;
+    }
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(79, 195, 247, 0.4);
+    }
+    .btn.secondary {
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    .btn.secondary:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+    .table-wrap {
+      overflow-x: auto;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 640px;
+      font-size: 14px;
+    }
+    thead th {
+      background: rgba(33, 150, 243, 0.25);
+      padding: 12px 16px;
+      text-align: left;
+      font-weight: 600;
+      color: #e3f2fd;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+      transition: background .3s;
+    }
+    thead th:hover { background: rgba(33, 150, 243, 0.4); }
+    thead th .arrow { font-size: 11px; margin-left: 4px; opacity: 0.7; }
+    tbody tr {
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      transition: background .2s;
+    }
+    tbody tr:hover { background: rgba(255, 255, 255, 0.08); }
+    tbody td {
+      padding: 11px 16px;
+      color: #dbe4ea;
+    }
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .badge.green  { background: rgba(76, 175, 80, 0.2); color: #81c784; }
+    .badge.orange { background: rgba(255, 152, 0, 0.2); color: #ffb74d; }
+    .badge.red    { background: rgba(244, 67, 54, 0.2); color: #e57373; }
+    .badge.blue   { background: rgba(33, 150, 243, 0.2); color: #64b5f6; }
+    .status-info {
+      margin-top: 16px;
+      font-size: 13px;
+      color: #9fb3c8;
+      text-align: center;
+    }
+    .empty-row td {
+      text-align: center;
+      padding: 30px;
+      color: #8aa0b5;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📊 员工信息数据表</h1>
+    <p class="subtitle">支持搜索筛选 · 点击表头排序 · 响应式布局</p>
+
+    <div class="toolbar">
+      <input type="text" id="searchInput" placeholder="🔍 搜索姓名 / 部门 / 城市…">
+      <button class="btn secondary" onclick="resetTable()">重置</button>
+    </div>
+
+    <div class="table-wrap">
+      <table id="dataTable">
+        <thead>
+          <tr>
+            <th onclick="sortTable(0)">姓名 <span class="arrow">⇅</span></th>
+            <th onclick="sortTable(1)">部门 <span class="arrow">⇅</span></th>
+            <th onclick="sortTable(2)">职位 <span class="arrow">⇅</span></th>
+            <th onclick="sortTable(3)">城市 <span class="arrow">⇅</span></th>
+            <th onclick="sortTable(4)">薪资(元) <span class="arrow">⇅</span></th>
+            <th>状态</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody"></tbody>
+      </table>
+    </div>
+    <div class="status-info" id="statusInfo"></div>
+  </div>
+
+  <script>
+    // 原始数据
+    const rawData = [
+      { name: '张三', dept: '研发部',   role: '前端工程师', city: '北京', salary: 22000, status: '在职',   statusClass: 'green' },
+      { name: '李四', dept: '研发部',   role: '后端工程师', city: '上海', salary: 24000, status: '在职',   statusClass: 'green' },
+      { name: '王五', dept: '产品部',   role: '产品经理',   city: '深圳', salary: 28000, status: '在职',   statusClass: 'green' },
+      { name: '赵六', dept: '设计部',   role: 'UI设计师',   city: '杭州', salary: 18000, status: '在职',   statusClass: 'green' },
+      { name: '孙七', dept: '测试部',   role: '测试工程师', city: '广州', salary: 16000, status: '试用期', statusClass: 'orange' },
+      { name: '周八', dept: '市场部',   role: '市场专员',   city: '北京', salary: 14000, status: '在职',   statusClass: 'green' },
+      { name: '吴九', dept: '研发部',   role: '架构师',     city: '上海', salary: 38000, status: '在职',   statusClass: 'green' },
+      { name: '郑十', dept: '财务部',   role: '会计',       city: '深圳', salary: 13000, status: '已离职', statusClass: 'red' },
+      { name: '陈十一', dept: '运营部', role: '运营专员',   city: '成都', salary: 12000, status: '在职',   statusClass: 'green' },
+      { name: '林十二', dept: '研发部', role: '算法工程师', city: '北京', salary: 32000, status: '试用期', statusClass: 'orange' }
+    ];
+
+    let currentData = [...rawData];
+    let sortIndex = -1;   // 当前排序列
+    let sortAsc = true;   // 是否升序
+
+    // 渲染表格
+    function renderTable() {
+      const tbody = document.getElementById('tableBody');
+      const statusInfo = document.getElementById('statusInfo');
+      tbody.innerHTML = '';
+
+      if (currentData.length === 0) {
+        tbody.innerHTML = '<tr class="empty-row"><td colspan="6">未找到匹配的数据 😅</td></tr>';
+        statusInfo.textContent = '共 0 条记录';
+        return;
+      }
+
+      currentData.forEach(item => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${item.name}</td>
+          <td>${item.dept}</td>
+          <td>${item.role}</td>
+          <td>${item.city}</td>
+          <td>¥${item.salary.toLocaleString()}</td>
+          <td><span class="badge ${item.statusClass}">${item.status}</span></td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      statusInfo.textContent = `共 ${currentData.length} 条记录`;
+    }
+
+    // 搜索筛选
+    function handleSearch() {
+      const keyword = document.getElementById('searchInput').value.trim().toLowerCase();
+      if (!keyword) {
+        currentData = [...rawData];
+      } else {
+        currentData = rawData.filter(item =>
+          item.name.toLowerCase().includes(keyword) ||
+          item.dept.toLowerCase().includes(keyword) ||
+          item.role.toLowerCase().includes(keyword) ||
+          item.city.toLowerCase().includes(keyword)
+        );
+      }
+      if (sortIndex !== -1) doSort(sortIndex, sortAsc);
+      renderTable();
+    }
+
+    // 排序
+    function sortTable(colIndex) {
+      if (sortIndex === colIndex) {
+        sortAsc = !sortAsc; // 再次点击切换升降序
+      } else {
+        sortIndex = colIndex;
+        sortAsc = true;
+      }
+      doSort(sortIndex, sortAsc);
+      renderTable();
+    }
+
+    function doSort(index, asc) {
+      const keys = ['name', 'dept', 'role', 'city', 'salary'];
+      currentData.sort((a, b) => {
+        let va = a[keys[index]];
+        let vb = b[keys[index]];
+        if (index === 4) { // 薪资按数字比较
+          return asc ? va - vb : vb - va;
+        }
+        return asc ? String(va).localeCompare(String(vb), 'zh') : String(vb).localeCompare(String(va), 'zh');
+      });
+    }
+
+    // 重置
+    function resetTable() {
+      document.getElementById('searchInput').value = '';
+      currentData = [...rawData];
+      sortIndex = -1;
+      sortAsc = true;
+      renderTable();
+    }
+
+    // 事件绑定
+    document.getElementById('searchInput').addEventListener('input', handleSearch);
+
+    // 初始渲染
+    renderTable();
+  </script>
+</body>
+</html>

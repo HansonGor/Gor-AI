@@ -1,0 +1,46 @@
+# ===== Node / Web =====
+node_modules/
+dist/
+.vite/
+*.log
+npm-debug.log*
+
+# ===== Python / Server =====
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ===== Expo / Native =====
+.expo/
+android/
+ios/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# ===== 运行时产物 =====
+.runlogs/
+Server/generated/
+Server/.server.log
+_server.log
+
+# ===== 系统 / IDE =====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# ===== 临时文件 =====
+*.tmp
+*.bak
+find-unused.js

@@ -1,0 +1,102 @@
+.weather-page {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0.6rem;
+}
+
+.weather-header {
+  display: flex;
+  align-items: center;
+  gap: 0.24rem;
+  padding: calc(0.3rem + env(safe-area-inset-top)) 0.4rem 0.3rem;
+}
+
+.weather-back {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.8rem;
+  height: 0.8rem;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.2s;
+  &:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
+}
+
+.weather-title {
+  margin: 0;
+  font-size: 0.36rem;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1.2;
+}
+
+.weather-sub {
+  margin: 0.06rem 0 0;
+  font-size: 0.22rem;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.weather-main {
+  flex: 1;
+  padding: 0 0.4rem;
+}
+
+.weather-now {
+  padding: 0.36rem;
+  border-radius: 0.4rem;
+}
+
+.weather-table-card {
+  margin-top: 0.32rem;
+  padding: 0.36rem;
+  border-radius: 0.4rem;
+}
+
+.weather-section-title {
+  margin: 0 0 0.24rem;
+  font-size: 0.3rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+.weather-table {
+  width: 100%;
+  min-width: 6.4rem;
+  border-collapse: collapse;
+  font-size: 0.26rem;
+  color: rgba(255, 255, 255, 0.85);
+
+  th,
+  td {
+    padding: 0.2rem 0.14rem;
+    text-align: left;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    white-space: nowrap;
+  }
+
+  thead th {
+    font-size: 0.24rem;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.45);
+  }
+
+  tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  tbody tr:hover td {
+    background: rgba(255, 255, 255, 0.04);
+  }
+}
+
+.weather-note {
+  margin: 0.24rem 0 0;
+  font-size: 0.22rem;
+  color: rgba(255, 255, 255, 0.35);
+}

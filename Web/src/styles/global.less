@@ -1,0 +1,88 @@
+// ============================================
+// 全局样式入口
+// 引入变量和 mixin，定义全局通用样式
+// ============================================
+
+@import './variables.less';
+@import './mixins.less';
+
+// ========== 全局重置 ==========
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  background: @color-bg-dark;
+  color: @color-text-primary-dark;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+button {
+  font-family: inherit;
+}
+
+::selection {
+  background: rgba(102, 126, 234, 0.4);
+  color: #fff;
+}
+
+// ========== 全局动画关键帧 ==========
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideInLeft {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-0.15rem); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+// ========== 工具类 ==========
+.text-ellipsis {
+  .text-ellipsis();
+}
+
+.flex-center {
+  .flex-center();
+}
+
+.flex-between {
+  .flex-between();
+}

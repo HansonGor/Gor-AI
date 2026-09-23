@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>数组去重演示</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+      min-height: 100vh;
+      padding: 40px 20px;
+      color: #e0f2fe;
+    }
+    .container { max-width: 860px; margin: 0 auto; }
+    h1 {
+      text-align: center;
+      font-size: 28px;
+      margin-bottom: 8px;
+      background: linear-gradient(90deg, #60a5fa, #34d399);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .subtitle {
+      text-align: center;
+      color: #94a3b8;
+      margin-bottom: 30px;
+      font-size: 14px;
+    }
+    .input-area {
+      background: rgba(255,255,255,0.06);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 24px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    }
+    .input-area label {
+      display: block;
+      margin-bottom: 10px;
+      font-size: 15px;
+      color: #bae6fd;
+    }
+    .input-row { display: flex; gap: 12px; flex-wrap: wrap; }
+    input[type="text"] {
+      flex: 1;
+      min-width: 260px;
+      padding: 12px 16px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.2);
+      background: rgba(0,0,0,0.3);
+      color: #f1f5f9;
+      font-size: 15px;
+      outline: none;
+      transition: border-color 0.3s;
+    }
+    input[type="text"]:focus { border-color: #60a5fa; }
+    button {
+      padding: 12px 28px;
+      border: none;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #3b82f6, #06b6d4);
+      color: #fff;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 20px rgba(59,130,246,0.4);
+    }
+    .method-card {
+      background: rgba(255,255,255,0.06);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 14px;
+      padding: 20px 22px;
+      margin-bottom: 16px;
+      transition: border-color 0.3s;
+    }
+    .method-card:hover { border-color: rgba(96,165,250,0.5); }
+    .method-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: #fbbf24;
+      margin-bottom: 4px;
+    }
+    .method-desc {
+      font-size: 13px;
+      color: #94a3b8;
+      margin-bottom: 12px;
+    }
+    .code-block {
+      background: rgba(0,0,0,0.4);
+      border-radius: 8px;
+      padding: 12px 14px;
+      font-family: "Consolas", "Courier New", monospace;
+      font-size: 13px;
+      color: #7dd3fc;
+      overflow-x: auto;
+      margin-bottom: 12px;
+      white-space: pre;
+      line-height: 1.6;
+    }
+    .result-box {
+      background: rgba(52,211,153,0.12);
+      border: 1px solid rgba(52,211,153,0.3);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 14px;
+      color: #a7f3d0;
+      word-break: break-all;
+    }
+    .result-box .label { color: #6ee7b7; font-weight: 600; }
+    .footer {
+      text-align: center;
+      color: #64748b;
+      font-size: 12px;
+      margin-top: 30px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🧮 数组去重 Demo</h1>
+    <p class="subtitle">输入一个数组，实时预览 4 种去重方法的结果</p>
+
+    <div class="input-area">
+      <label>✏️ 请输入数组（用英文逗号分隔）：</label>
+      <div class="input-row">
+        <input type="text" id="arrInput" value="1,2,2,3,4,4,5,5,5,6" placeholder="例如：1,2,2,3,4,4,5">
+        <button onclick="runDedup()">🚀 开始去重</button>
+      </div>
+    </div>
+
+    <div id="results"></div>
+
+    <p class="footer">JS 数组去重 · Set / filter / reduce / 对象键值 四种实现</p>
+  </div>
+
+  <script>
+    const METHODS = [
+      {
+        name: "方法一：Set 展开（最推荐）",
+        desc: "利用 Set 天然去重的特性，一行搞定，性能最好",
+        code: "[...new Set(arr)]",
+        fn: (arr) => [...new Set(arr)]
+      },
+      {
+        name: "方法二：filter + indexOf",
+        desc: "只保留第一次出现的位置等于当前索引的元素",
+        code: "arr.filter((item, i) => arr.indexOf(item) === i)",
+        fn: (arr) => arr.filter((item, i) => arr.indexOf(item) === i)
+      },
+      {
+        name: "方法三：reduce 累加",
+        desc: "遍历时用 includes 判断是否已存在，不存在才 push",
+        code: "arr.reduce((acc, item) => { if (!acc.includes(item)) acc.push(item); return acc; }, [])",
+        fn: (arr) => arr.reduce((acc, item) => {
+          if (!acc.includes(item)) acc.push(item);
+          return acc;
+        }, [])
+      },
+      {
+        name: "方法四：对象键值法",
+        desc: "用对象记录已出现过的值，兼容最老的运行环境",
+        code: "const obj = {}; arr.filter(item => obj[item] ? false : (obj[item] = true))",
+        fn: (arr) => {
+          const obj = {};
+          return arr.filter(item => obj[item] ? false : (obj[item] = true));
+        }
+      }
+    ];
+
+    function runDedup() {
+      const raw = document.getElementById("arrInput").value.trim();
+      const nums = raw ? raw.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean) : [];
+      const arr = nums.map(n => isNaN(Number(n)) ? n : Number(n));
+
+      const container = document.getElementById("results");
+      container.innerHTML = "";
+
+      // 原始数组卡片
+      container.innerHTML += `
+        <div class="method-card" style="border-color:rgba(251,191,36,0.4)">
+          <div class="method-title">📥 原始数组</div>
+          <div class="result-box">
+            <span class="label">长度 ${arr.length}：</span>[${arr.join(", ")}]
+          </div>
+        </div>
+      `;
+
+      METHODS.forEach(m => {
+        const result = m.fn(arr);
+        container.innerHTML += `
+          <div class="method-card">
+            <div class="method-title">${m.name}</div>
+            <div class="method-desc">${m.desc}</div>
+            <div class="code-block">${escapeHtml(m.code)}</div>
+            <div class="result-box">
+              <span class="label">长度 ${result.length}：</span>[${result.join(", ")}]
+            </div>
+          </div>
+        `;
+      });
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    // 页面加载后自动执行一次
+    runDedup();
+  </script>
+</body>
+</html>

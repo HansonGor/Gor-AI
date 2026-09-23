@@ -1,0 +1,31 @@
+{
+  "title": "Basic",
+  "argTypes": {
+    "variant": {
+      "control": {
+        "type": "select"
+      },
+      "options": [
+        "default",
+        "destructive",
+        "outline",
+        "secondary",
+        "ghost",
+        "link"
+      ],
+      "defaultValue": "default"
+    },
+
+    "size": {
+      "control": {
+        "type": "select"
+      },
+      "options": ["default", "sm", "lg"],
+      "defaultValue": "default"
+    }
+  },
+  "reactLive": {
+    "Button": "@/components/ui/button",
+    "ButtonText": "@/components/ui/button"
+  }
+}

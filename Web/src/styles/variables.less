@@ -1,0 +1,151 @@
+// ============================================
+// 全局样式变量定义
+// 设计稿基准：375px，1rem = 37.5px
+// PC端和移动端统一使用 rem 单位
+// ============================================
+
+// ========== 字体大小变量（rem） ==========
+// 大标题：20px，弹窗标题、页面主标题
+@font-size-large-title: 0.533rem;
+// 标题：18px，模块标题、卡片头部
+@font-size-title: 0.48rem;
+// 正文大：16px，列表主要内容、表单label
+@font-size-body-large: 0.427rem;
+// 正文常规：14px，业务正文、详情（默认最常用）
+@font-size-body: 0.373rem;
+// 辅助文字：12px，备注、时间、次要说明
+@font-size-caption: 0.32rem;
+// 注释小字：10px，协议免责，尽量少用
+@font-size-small: 0.267rem;
+
+// 按钮文字：14px
+@font-size-button: 0.373rem;
+// 输入框文字：14px
+@font-size-input: 0.373rem;
+// 表格内容：14px（PC规范），移动端用12px
+@font-size-table: 0.32rem;
+// 代码块：12px（最小底线）
+@font-size-code: 0.32rem;
+
+// ========== 行高变量 ==========
+// 大标题行高
+@line-height-large-title: 1.2;
+// 标题行高
+@line-height-title: 1.3;
+// 正文行高
+@line-height-body: 1.5;
+// 辅助文字行高
+@line-height-caption: 1.4;
+
+// ========== 字重变量 ==========
+@font-weight-regular: 400;
+@font-weight-medium: 500;
+@font-weight-semibold: 600;
+@font-weight-bold: 700;
+
+// ========== 颜色变量 - 暗黑模式 ==========
+// 背景色
+@color-bg-dark: #0f0f19;
+@color-bg-card-dark: rgba(255, 255, 255, 0.06);
+@color-bg-sidebar-dark: rgba(20, 20, 30, 0.95);
+@color-bg-header-dark: rgba(15, 15, 25, 0.9);
+@color-bg-input-dark: rgba(255, 255, 255, 0.05);
+@color-bg-hover-dark: rgba(255, 255, 255, 0.08);
+
+// 文字色
+@color-text-primary-dark: #e4e4e7;
+@color-text-secondary-dark: #a1a1aa;
+@color-text-tertiary-dark: #71717a;
+@color-text-quaternary-dark: #52525b;
+@color-text-white: #ffffff;
+
+// 主题色
+@color-primary: #667eea;
+@color-primary-light: #7c8ff0;
+@color-primary-dark: #5a67d8;
+@color-secondary: #764ba2;
+@color-accent: #4facfe;
+@color-accent-light: #00f2fe;
+
+// 渐变色
+@gradient-primary: linear-gradient(135deg, #667eea, #764ba2);
+@gradient-accent: linear-gradient(135deg, #4facfe, #00f2fe);
+
+// 边框色
+@color-border-dark: rgba(255, 255, 255, 0.08);
+@color-border-light-dark: rgba(255, 255, 255, 0.06);
+
+// 功能色
+@color-success: #10b981;
+@color-warning: #f59e0b;
+@color-danger: #ef4444;
+@color-info: #3b82f6;
+
+// ========== 颜色变量 - 白天模式 ==========
+@color-bg-light: #f5f5f7;
+@color-bg-card-light: #ffffff;
+@color-bg-sidebar-light: rgba(255, 255, 255, 0.98);
+@color-bg-header-light: rgba(255, 255, 255, 0.95);
+@color-bg-input-light: #f3f4f6;
+@color-bg-hover-light: rgba(0, 0, 0, 0.04);
+
+@color-text-primary-light: #1f2937;
+@color-text-secondary-light: #4b5563;
+@color-text-tertiary-light: #6b7280;
+@color-text-quaternary-light: #9ca3af;
+
+@color-border-light: rgba(0, 0, 0, 0.08);
+@color-border-light-light: rgba(0, 0, 0, 0.06);
+
+// ========== 间距变量（rem） ==========
+@spacing-xs: 0.1rem;
+@spacing-sm: 0.15rem;
+@spacing-md: 0.2rem;
+@spacing-lg: 0.3rem;
+@spacing-xl: 0.4rem;
+@spacing-2xl: 0.5rem;
+@spacing-3xl: 0.8rem;
+
+// ========== 圆角变量（rem） ==========
+@radius-sm: 0.08rem;
+@radius-md: 0.12rem;
+@radius-lg: 0.15rem;
+@radius-xl: 0.2rem;
+@radius-2xl: 0.25rem;
+@radius-3xl: 0.3rem;
+@radius-full: 50%;
+
+// ========== 阴影变量 ==========
+@shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+@shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+@shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
+@shadow-primary: 0 2px 8px rgba(102, 126, 234, 0.35);
+@shadow-primary-hover: 0 4px 12px rgba(102, 126, 234, 0.5);
+@shadow-header: 0 1px 8px rgba(0, 0, 0, 0.25);
+
+// ========== 断点变量（px） ==========
+@breakpoint-pc: 1024px;
+@breakpoint-tablet: 768px;
+@breakpoint-mobile: 375px;
+
+// ========== 过渡动画变量 ==========
+@transition-fast: 0.15s ease;
+@transition-normal: 0.2s ease;
+@transition-slow: 0.3s ease;
+
+// ========== Z-index 层级变量 ==========
+@z-index-base: 1;
+@z-index-header: 10;
+@z-index-sidebar: 20;
+@z-index-modal: 100;
+@z-index-toast: 200;
+@z-index-tooltip: 300;
+
+// ========== 侧边栏宽度变量（rem） ==========
+@sidebar-width: 5rem;
+@sidebar-width-collapsed: 1.2rem;
+
+// ========== 消息气泡变量 ==========
+@bubble-max-width: 75%;
+@bubble-padding-y: 0.22rem;
+@bubble-padding-x: 0.3rem;

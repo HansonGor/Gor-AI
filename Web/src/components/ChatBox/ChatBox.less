@@ -1,0 +1,717 @@
+// 聊天框样式：布局已迁移 Tailwind + shadcn，这里只保留内容渲染层与白天模式覆盖
+@import '../../styles/variables.less';
+@import '../../styles/mixins.less';
+
+// ========== 消息容器（滚动行为） ==========
+.messages-container {
+  -webkit-overflow-scrolling: touch;
+  .scrollbar-thin();
+  background:
+    radial-gradient(circle at 50% -20%, rgba(124, 139, 240, 0.1), transparent 38%),
+    #0f0f19;
+}
+
+// 让长内容拥有稳定的阅读宽度，同时把输入区锁在同一条视觉轨道内。
+.input-dock {
+  position: relative;
+  z-index: 2;
+  padding: 0 0.24rem;
+  background: linear-gradient(to top, #0f0f19 72%, rgba(15, 15, 25, 0.88));
+
+  .input-area {
+    width: 100%;
+    max-width: 860px;
+    margin: 0 auto;
+  }
+}
+
+@media (min-width: 1024px) {
+  .input-dock {
+    padding: 0 32px 14px;
+  }
+}
+
+// ========== 欢迎页基础排版 ==========
+.welcome-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  padding: @spacing-3xl @spacing-2xl;
+  text-align: center;
+
+  .welcome-title {
+    font-size: @font-size-large-title;
+    font-weight: @font-weight-semibold;
+    color: @color-text-white;
+    margin: 0.24rem 0 @spacing-md 0;
+    line-height: @line-height-title;
+  }
+
+  .welcome-desc {
+    font-size: @font-size-body-large;
+    color: @color-text-tertiary-dark;
+    margin: 0 0 0.6rem 0;
+    line-height: @line-height-body;
+  }
+}
+
+// 消息行入场动画（布局在 Tailwind）
+.message-row {
+  .animation-fade-in-up();
+}
+
+.row-assistant .message-bubble {
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.12);
+}
+
+.project-changes {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 12px;
+}
+
+.project-changes-title {
+  margin-bottom: 8px;
+  color: #a5b4fc;
+  font-weight: 600;
+}
+.preview-project-open {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border: 1px solid rgba(143, 131, 255, 0.45);
+  border-radius: 7px;
+  background: rgba(124, 104, 238, 0.14);
+  color: #c9c1ff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.project-change {
+  margin-top: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  overflow: hidden;
+
+  summary {
+    padding: 7px 10px;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+  }
+
+  pre {
+    max-height: 320px;
+    overflow: auto;
+    padding: 10px;
+    background: rgba(0, 0, 0, 0.25);
+    color: #cbd5e1;
+    font: 12px/1.5 Consolas, monospace;
+    white-space: pre;
+  }
+}
+
+// ========== 欢迎页 AI 图标（Sparkles） ==========
+// 暗色主题：浅紫；白色主题：深紫（见 .theme-light 覆盖）
+.welcome-sparkles {
+  color: #a78bfa;
+}
+
+// ========== 工具调用状态 ==========
+.tool-status {
+  display: flex;
+  align-items: center;
+  gap: @spacing-sm;
+  color: @color-accent;
+  font-size: @font-size-caption;
+
+  span {
+    line-height: 1;
+  }
+}
+
+.cursor-blink {
+  display: inline-block;
+  animation: blink 1s step-end infinite;
+  color: @color-accent;
+  font-size: 0.3rem;
+  margin-left: 0.05rem;
+}
+
+// ========== 待发送图片预览 ==========
+.image-preview-item {
+  position: relative;
+  width: 1.2rem;
+  height: 1.2rem;
+  border-radius: @radius-lg;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+}
+
+.image-remove-btn {
+  position: absolute;
+  top: 0.05rem;
+  right: 0.05rem;
+  width: 0.35rem;
+  height: 0.35rem;
+  border-radius: @radius-full;
+  border: none;
+  background: rgba(0, 0, 0, 0.6);
+  color: @color-text-white;
+  font-size: 0.25rem;
+  line-height: 1;
+  cursor: pointer;
+  .flex-center();
+
+  &:hover {
+    background: rgba(220, 38, 38, 0.8);
+  }
+}
+
+// ========== 消息中的图片 ==========
+.message-images {
+  display: flex;
+  flex-direction: column;
+  gap: @spacing-md;
+  margin-bottom: @spacing-md;
+}
+
+.message-image {
+  max-width: 100%;
+  max-height: 4rem;
+  border-radius: @radius-lg;
+  object-fit: contain;
+  display: block;
+}
+
+// ========== 文件下载卡片 ==========
+.file-download-card {
+  display: flex;
+  align-items: center;
+  gap: @spacing-md;
+  margin-top: @spacing-sm;
+  padding: @spacing-md @spacing-md;
+  background: rgba(102, 126, 234, 0.12);
+  border: 1px solid rgba(102, 126, 234, 0.3);
+  border-radius: @radius-lg;
+  text-decoration: none;
+  transition: all @transition-normal;
+
+  &:hover {
+    background: rgba(102, 126, 234, 0.2);
+    border-color: rgba(102, 126, 234, 0.5);
+  }
+
+  .file-icon {
+    font-size: 0.5rem;
+    flex-shrink: 0;
+  }
+
+  .file-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.05rem;
+    min-width: 0;
+  }
+
+  .file-name {
+    font-size: 0.3rem;
+    color: @color-text-primary-dark;
+    font-weight: @font-weight-medium;
+    .text-ellipsis();
+  }
+
+  .file-action {
+    font-size: @font-size-caption;
+    color: @color-primary;
+  }
+}
+
+// ========== 视频播放器 ==========
+.video-player-container {
+  margin-top: @spacing-sm;
+  display: flex;
+  flex-direction: column;
+  gap: @spacing-xs;
+
+  .video-player {
+    width: 100%;
+    max-width: 6rem;
+    border-radius: @radius-lg;
+    background: #000;
+    display: block;
+  }
+
+  .video-download-link {
+    font-size: @font-size-caption;
+    color: @color-accent;
+    text-decoration: none;
+    align-self: flex-start;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+}
+
+// ========== Markdown 渲染样式 ==========
+.markdown-body {
+  font-size: 14px;
+  line-height: 1.55;
+  color: @color-text-primary-dark;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  white-space: normal;
+
+  :first-child {
+    margin-top: 0;
+  }
+
+  :last-child {
+    margin-bottom: 0;
+  }
+
+  p {
+    margin: 0 0 8px;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    margin: 16px 0 8px;
+    font-weight: @font-weight-semibold;
+    line-height: @line-height-title;
+    color: @color-text-white;
+  }
+
+  h1 { font-size: 20px; }
+  h2 { font-size: 18px; }
+  h3 { font-size: 16px; }
+  h4, h5, h6 { font-size: 14px; }
+
+  // 列表
+  ul, ol {
+    margin: 6px 0 10px;
+    padding-left: 22px;
+
+    li {
+      margin: 3px 0;
+    }
+
+    li p {
+      margin: 0;
+    }
+  }
+
+  ul {
+    list-style: disc;
+  }
+
+  ol {
+    list-style: decimal;
+  }
+
+  // 引用块
+  blockquote {
+    margin: @spacing-sm 0;
+    padding: 0.1rem 0.25rem;
+    border-left: 3px solid @color-primary;
+    background: rgba(102, 126, 234, 0.08);
+    color: @color-text-secondary-dark;
+    border-radius: 0 @radius-md @radius-md 0;
+
+    p {
+      margin: 0.08rem 0;
+    }
+  }
+
+  // 行内代码
+  code {
+    padding: 0.04rem 0.1rem;
+    border: 1px solid rgba(167, 139, 250, 0.18);
+    background: rgba(124, 104, 238, 0.12);
+    border-radius: @radius-sm;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.3rem;
+    color: #c4b5fd;
+  }
+
+  // 代码块
+  pre {
+    margin: @spacing-sm 0;
+    padding: 0.3rem 0.34rem;
+    background:
+      radial-gradient(circle at 100% 0, rgba(151, 134, 242, 0.18), transparent 36%),
+      linear-gradient(145deg, #252839 0%, #2b2942 58%, #28263c 100%);
+    border-radius: 0.16rem;
+    overflow-x: auto;
+    border: 1px solid rgba(167, 139, 250, 0.18);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.05),
+      0 8px 22px rgba(4, 4, 14, 0.16);
+    scrollbar-color: rgba(167, 139, 250, 0.42) transparent;
+    scrollbar-width: thin;
+
+    code {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: #e7e5f4;
+      font-size: @font-size-code;
+      line-height: 1.65;
+      text-shadow: 0 1px rgba(0, 0, 0, 0.22);
+    }
+  }
+
+  // 表格
+  table {
+    width: 100%;
+    margin: @spacing-sm 0;
+    border-collapse: collapse;
+    font-size: @font-size-table;
+    display: block;
+    overflow-x: auto;
+
+    th, td {
+      padding: 0.12rem 0.18rem;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    th {
+      background: rgba(102, 126, 234, 0.2);
+      color: @color-text-white;
+      font-weight: @font-weight-semibold;
+    }
+
+    tr:nth-child(even) {
+      background: rgba(255, 255, 255, 0.03);
+    }
+  }
+
+  // 链接
+  a {
+    color: @color-accent;
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+
+  // 分隔线
+  hr {
+    margin: 0.25rem 0;
+    border: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.15);
+  }
+
+  // 图片
+  img {
+    max-width: 100%;
+    border-radius: @radius-md;
+    display: block;
+    margin: @spacing-sm 0;
+  }
+
+  // 加粗
+  strong {
+    color: @color-text-white;
+    font-weight: @font-weight-semibold;
+  }
+
+  // 删除线
+  del {
+    color: @color-text-tertiary-dark;
+  }
+}
+
+// ========== Token 用量统计 ==========
+.token-usage {
+  display: flex;
+  align-items: center;
+  gap: @spacing-xs;
+  margin-top: @spacing-sm;
+  padding-top: 0.12rem;
+  border-top: 1px solid @color-border-dark;
+  font-size: @font-size-caption;
+  color: @color-text-tertiary-dark;
+  line-height: @line-height-caption;
+
+  .token-icon {
+    flex-shrink: 0;
+    font-size: @font-size-caption;
+  }
+
+  .token-text {
+    word-break: break-all;
+  }
+}
+
+// ========== 上下文剩余监控 ==========
+.context-remain {
+  display: flex;
+  align-items: center;
+  gap: @spacing-xs;
+  margin-top: 0.08rem;
+  font-size: @font-size-caption;
+  color: @color-text-tertiary-dark;
+  line-height: @line-height-caption;
+
+  &.warning {
+    color: @color-warning;
+  }
+
+  .context-icon {
+    flex-shrink: 0;
+    font-size: @font-size-caption;
+  }
+
+  .context-text {
+    word-break: break-all;
+  }
+}
+
+// ========== 模型额度信息 ==========
+.model-quota-info {
+  display: flex;
+  align-items: center;
+  gap: @spacing-xs;
+  margin-top: 0.08rem;
+  font-size: @font-size-caption;
+  color: @color-text-tertiary-dark;
+  line-height: @line-height-caption;
+
+  &.warning {
+    color: #f87171;
+  }
+
+  .quota-icon {
+    flex-shrink: 0;
+    font-size: @font-size-caption;
+  }
+
+  .quota-text {
+    word-break: break-all;
+  }
+}
+
+// ========== 白天模式聊天界面 ==========
+.theme-light {
+  .project-changes-title { color: #4f46e5; }
+  .project-change { border-color: rgba(0, 0, 0, 0.12); }
+  .project-change pre { background: #f3f4f6; color: #334155; }
+  .messages-container {
+    background:
+      radial-gradient(circle at 50% -20%, rgba(99, 102, 241, 0.09), transparent 42%),
+      @color-bg-light;
+  }
+
+  .input-dock {
+    background: linear-gradient(to top, @color-bg-light 72%, rgba(245, 245, 247, 0.88));
+  }
+
+  // 消息容器滚动条
+  .messages-container::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.1);
+  }
+
+  // 欢迎页
+  .welcome-screen {
+    .welcome-title {
+      color: #1a1a1a;
+    }
+
+    .welcome-desc {
+      color: @color-text-tertiary-light;
+    }
+
+    // 推荐问题卡片：白色主题下用浅灰底 + 浅边框，与黑色主题的卡片质感一致
+    .quick-prompts-card {
+      background: rgba(0, 0, 0, 0.04);
+      border-color: rgba(0, 0, 0, 0.1);
+      box-shadow: 0 0.06rem 0.3rem rgba(0, 0, 0, 0.04);
+    }
+
+    // 推荐问题按钮：白色主题下文字用深色，保证可读
+    button {
+      color: #4b5563;
+
+      &:hover {
+        color: #1f2937;
+        background: rgba(0, 0, 0, 0.05);
+      }
+    }
+  }
+
+  // 上传按钮：贴近白色主题（深色图标）
+  .upload-btn {
+    color: rgba(0, 0, 0, 0.55);
+
+    &:hover {
+      background: rgba(0, 0, 0, 0.06);
+      color: #1a1a1a;
+    }
+  }
+
+  // AI 图标：白色主题用深紫
+  .welcome-sparkles {
+    color: #6d28d9;
+  }
+
+  // 发送按钮：底色接近白色背景，图标深紫
+  .send-btn:not(.send-btn-stop) {
+    background: #ffffff;
+    border-color: rgba(0, 0, 0, 0.12);
+    box-shadow: 0 0.06rem 0.2rem rgba(0, 0, 0, 0.08);
+
+    &:hover {
+      background: #f5f3ff;
+      border-color: rgba(109, 40, 217, 0.3);
+    }
+
+    svg {
+      color: #6d28d9;
+    }
+  }
+
+  // AI 消息气泡
+  .bubble-assistant {
+    background: @color-bg-card-light;
+    border: 1px solid @color-border-light;
+    color: @color-text-primary-light;
+    box-shadow: 0 12px 28px rgba(17, 24, 39, 0.06);
+  }
+
+  // Markdown 渲染
+  .markdown-body {
+    color: @color-text-primary-light;
+
+    h1, h2, h3, h4, h5, h6 {
+      color: #111827;
+    }
+
+    blockquote {
+      border-left-color: @color-primary;
+      background: rgba(102, 126, 234, 0.05);
+      color: @color-text-secondary-light;
+    }
+
+    code {
+      border-color: rgba(109, 86, 220, 0.14);
+      background: rgba(109, 86, 220, 0.08);
+      color: #6d4ed3;
+    }
+
+    pre {
+      background:
+        radial-gradient(circle at 100% 0, rgba(139, 124, 246, 0.13), transparent 38%),
+        linear-gradient(145deg, #f8f7fc 0%, #f1eff9 58%, #f5f3fb 100%);
+      border-color: rgba(112, 89, 225, 0.18);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.8),
+        0 8px 22px rgba(74, 62, 125, 0.08);
+
+      code {
+        border: 0;
+        background: transparent;
+        color: #353147;
+        text-shadow: none;
+      }
+    }
+
+    table {
+      th {
+        background: rgba(102, 126, 234, 0.1);
+        color: #1a1a1a;
+      }
+
+      tr:nth-child(even) {
+        background: rgba(0, 0, 0, 0.02);
+      }
+    }
+
+    a {
+      color: @color-primary;
+    }
+
+    hr {
+      border-color: rgba(0, 0, 0, 0.1);
+    }
+
+    strong {
+      color: #111827;
+    }
+
+    del {
+      color: @color-text-quaternary-light;
+    }
+  }
+
+  // 输入区域
+  .input-area {
+    border-top: none;
+
+    .input-wrapper {
+      background: @color-bg-input-light;
+      border: 1px solid @color-border-light;
+      box-shadow: 0 10px 28px rgba(17, 24, 39, 0.08);
+
+      &:focus-within {
+        border-color: @color-primary;
+        background: #fff;
+      }
+    }
+
+    .chat-input {
+      color: @color-text-primary-light;
+
+      &::placeholder {
+        color: @color-text-quaternary-light;
+      }
+    }
+  }
+
+  // 发送按钮
+  .send-btn {
+    &:disabled {
+      background: #d1d5db;
+    }
+  }
+
+  // 工具状态
+  .tool-status {
+    color: @color-text-tertiary-light;
+    background: rgba(102, 126, 234, 0.08);
+  }
+
+  // token 用量
+  .token-usage {
+    color: @color-text-tertiary-light;
+    border-top-color: rgba(0, 0, 0, 0.06);
+  }
+
+  // 上下文剩余
+  .context-remain {
+    color: @color-text-tertiary-light;
+
+    &.warning {
+      color: #d97706;
+    }
+  }
+
+  // 模型额度
+  .model-quota-info {
+    color: @color-text-tertiary-light;
+
+    &.warning {
+      color: #dc2626;
+    }
+  }
+}

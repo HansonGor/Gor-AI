@@ -1,0 +1,18 @@
+{
+  "title": "Basic",
+  "argTypes": {
+    "variant": {
+      "control": {
+        "type": "select"
+      },
+      "options": ["default", "secondary", "destructive", "outline"],
+      "defaultValue": "default"
+    }
+  },
+  "reactLive": {
+    "Badge": "@/components/ui/badge",
+    "BadgeText": "@/components/ui/badge",
+    "BadgeIcon": "@/components/ui/badge",
+    "GlobeIcon": "@/components/ui/icon"
+  }
+}

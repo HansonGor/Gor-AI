@@ -1,0 +1,83 @@
+// 侧边栏样式：布局已迁移 Tailwind，这里只保留白天模式覆盖
+@import '../../styles/variables.less';
+@import '../../styles/mixins.less';
+
+// 美化滚动条
+.sidebar {
+  .sidebar-sessions {
+    &::-webkit-scrollbar {
+      width: 4px;
+    }
+    &::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    &::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 2px;
+    }
+    &::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+  }
+}
+
+.theme-light .sidebar {
+  background: @color-bg-sidebar-light;
+  border-right: 1px solid @color-border-light;
+
+  .sidebar-header {
+    border-bottom: 1px solid @color-border-light;
+  }
+
+  .sidebar-sessions {
+    &::-webkit-scrollbar-thumb {
+      background: rgba(0, 0, 0, 0.1);
+      &:hover {
+        background: rgba(0, 0, 0, 0.2);
+      }
+    }
+    scrollbar-color: rgba(0, 0, 0, 0.1) transparent;
+  }
+
+  .empty-sessions {
+    color: @color-text-quaternary-light;
+  }
+
+  .session-item {
+    &:hover {
+      background: @color-bg-hover-light;
+    }
+
+    &.active {
+      background: rgba(102, 126, 234, 0.1);
+
+      .session-title {
+        color: #1a1a1a;
+      }
+    }
+  }
+
+  .session-title {
+    color: @color-text-secondary-light;
+  }
+
+  .session-time,
+  .session-count {
+    color: @color-text-quaternary-light;
+  }
+
+  .session-count {
+    background: @color-bg-hover-light;
+  }
+
+  .session-delete-btn {
+    color: @color-text-quaternary-light;
+
+    &:hover {
+      background: rgba(220, 38, 38, 0.1);
+      color: @color-danger;
+    }
+  }
+}

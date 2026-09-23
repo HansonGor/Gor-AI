@@ -1,0 +1,174 @@
+// ============================================
+// 全局样式 Mixin 定义
+// ============================================
+
+// ========== 文本省略 ==========
+// 单行省略
+.text-ellipsis() {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+// 多行省略（默认2行）
+.text-ellipsis-multi(@lines: 2) {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: @lines;
+  overflow: hidden;
+}
+
+// ========== Flex 布局 ==========
+.flex-center() {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.flex-between() {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.flex-column() {
+  display: flex;
+  flex-direction: column;
+}
+
+.flex-column-center() {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+// ========== 按钮通用样式 ==========
+.btn-reset() {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 0;
+}
+
+.btn-hover-scale(@scale: 1.05) {
+  transition: transform 0.2s ease;
+  &:hover {
+    transform: scale(@scale);
+  }
+  &:active {
+    transform: scale(0.95);
+  }
+}
+
+// ========== 卡片通用样式 ==========
+.card-base() {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.2rem;
+}
+
+// ========== 渐变按钮 ==========
+.btn-gradient(@gradient: linear-gradient(135deg, #667eea, #764ba2)) {
+  background: @gradient;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &:hover {
+    opacity: 0.9;
+    transform: translateY(-1px);
+  }
+
+  &:active {
+    transform: translateY(0);
+  }
+}
+
+// ========== 圆形渐变图标按钮 ==========
+.btn-circle-gradient(@size: 0.75rem, @gradient: linear-gradient(135deg, #667eea, #764ba2)) {
+  width: @size;
+  height: @size;
+  border: none;
+  background: @gradient;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #fff;
+  transition: all 0.25s ease;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.35);
+
+  &:hover {
+    transform: scale(1.1);
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.5);
+  }
+
+  &:active {
+    transform: scale(0.95);
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    transform: none;
+  }
+}
+
+// ========== 滚动条样式 ==========
+.scrollbar-thin(@color: rgba(255, 255, 255, 0.1)) {
+  &::-webkit-scrollbar {
+    width: 0.1rem;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: @color;
+    border-radius: 0.05rem;
+  }
+}
+
+// ========== 毛玻璃效果 ==========
+.glass-effect(@bg: rgba(15, 15, 25, 0.9)) {
+  background: @bg;
+  backdrop-filter: blur(0.6rem);
+  -webkit-backdrop-filter: blur(0.6rem);
+}
+
+// ========== 动画 ==========
+.animation-fade-in(@duration: 0.3s) {
+  animation: fadeIn @duration ease-out;
+}
+
+.animation-fade-in-up(@duration: 0.3s) {
+  animation: fadeInUp @duration ease-out;
+}
+
+.animation-slide-in-left(@duration: 0.25s) {
+  animation: slideInLeft @duration ease;
+}
+
+.animation-float(@duration: 3s) {
+  animation: float @duration ease-in-out infinite;
+}
+
+// ========== 响应式断点 ==========
+.respond-pc(@rules) {
+  @media (min-width: 1024px) {
+    @rules();
+  }
+}
+
+.respond-mobile(@rules) {
+  @media (max-width: 1023px) {
+    @rules();
+  }
+}
+
+.respond-tablet(@rules) {
+  @media (min-width: 768px) and (max-width: 1023px) {
+    @rules();
+  }
+}
