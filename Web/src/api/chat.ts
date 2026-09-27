@@ -13,6 +13,7 @@ interface SendChatMessageParams {
   analysisContext?: string;
   analysisContextMode?: 'summary' | 'reference';
   previewProject?: PreviewProject;
+  assistantMessageId?: string;
 }
 
 interface SendChatMessageCallbacks {
@@ -157,6 +158,7 @@ export async function sendChatMessage(
   let analysisContext: string | undefined;
   let analysisContextMode: 'summary' | 'reference' | undefined;
   let previewProject: PreviewProject | undefined;
+  let assistantMessageId: string | undefined;
   if (Array.isArray(params)) {
     messages = params;
   } else {
@@ -167,6 +169,7 @@ export async function sendChatMessage(
     analysisContext = params.analysisContext;
     analysisContextMode = params.analysisContextMode;
     previewProject = params.previewProject;
+    assistantMessageId = params.assistantMessageId;
   }
 
   try {
@@ -176,7 +179,7 @@ export async function sendChatMessage(
         'Content-Type': 'application/json',
         Accept: 'text/event-stream',
       },
-      body: JSON.stringify({ sessionId, message, messages, attachments, analysisContext, analysisContextMode, previewProject }),
+      body: JSON.stringify({ sessionId, message, messages, attachments, analysisContext, analysisContextMode, previewProject, assistantMessageId }),
       signal,
     });
 
@@ -204,6 +207,18 @@ export async function sendChatMessage(
             fileType: event.fileType || '',
             displayName: event.displayName || '',
             downloadUrl: event.downloadUrl || '',
+            artifactId: event.artifactId,
+            projectId: event.projectId,
+            snapshotId: event.snapshotId,
+            extension: event.extension,
+            mimeType: event.mimeType,
+            previewRenderer: event.previewRenderer,
+            editableSource: event.editableSource,
+            presentationSchema: event.presentationSchema,
+            presentationBackgrounds: event.presentationBackgrounds,
+            sourceFiles: event.sourceFiles,
+            storyOutline: event.storyOutline,
+            visualQA: event.visualQA,
           });
           break;
         case 'project_file_changed':

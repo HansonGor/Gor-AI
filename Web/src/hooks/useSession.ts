@@ -13,6 +13,7 @@ import { CHAT_CONFIG } from '../config';
 import { isToday } from '../utils/date';
 import type { Session, ChatMessage } from '../types';
 import { createMessagePreviewSnapshot } from '../preview/core/projectSnapshot';
+import { restorePresentationSnapshot } from '../preview/core/presentationSnapshot';
 
 const { DEFAULT_USER_ID } = CHAT_CONFIG;
 
@@ -68,6 +69,8 @@ export function useSession() {
             const snapshot = m.preview_snapshot || m.previewSnapshot;
             if (!snapshot || typeof snapshot !== 'object' || !snapshot.files || typeof snapshot.files !== 'object') return undefined;
             const messageId = String(m.id || '');
+            const presentationSnapshot = restorePresentationSnapshot(snapshot, messageId);
+            if (presentationSnapshot) return presentationSnapshot;
             const changes = (m.preview_changes || m.previewChanges || []) as Array<{ path?: string }>;
             return createMessagePreviewSnapshot({
               id: String(snapshot.id || messageId),

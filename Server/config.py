@@ -88,6 +88,10 @@ class Config:
         # Web 服务 Key（用于后端调用逆地理编码、天气等 REST 接口）
         WEB_SERVICE_KEY = os.getenv("AMAP_WEB_SERVICE_KEY", "")
 
+    class Pexels:
+        """Pexels photo search used for optional presentation imagery."""
+        API_KEY = os.getenv("PEXELS_API_KEY", "")
+
     # ================================================================
     # ================================================================
     # Jamendo 音乐 API 配置（随机流行歌曲播放）

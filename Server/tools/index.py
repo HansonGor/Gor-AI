@@ -12,6 +12,7 @@ from tools.web_search import (
     search_github_code,
 )
 from tools.document import create_word, create_excel, create_ppt, create_pdf
+from tools.presentation import create_presentation
 from tools.video import generate_xiaoyunque_video
 from tools.vector_search import vector_search
 from tools.code_execution import execute_python
@@ -29,6 +30,7 @@ TOOLS = [
     create_word,
     create_excel,
     create_ppt,
+    create_presentation,
     create_pdf,
     generate_xiaoyunque_video,
     vector_search,

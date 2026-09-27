@@ -90,13 +90,15 @@ async def download_file(filename: str, inline: bool = False):
         ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         ".pdf": "application/pdf",
         ".html": "text/html; charset=utf-8",
+        ".jpg": "image/jpeg",
+        ".png": "image/png",
     }
 
     ext = filepath.suffix.lower()
     media_type = content_type_map.get(ext, "application/octet-stream")
 
     # html 场景文件内联渲染（浏览器直接打开预览 3D），其余文件触发下载
-    show_inline = ext == ".html" or (ext == ".pdf" and inline)
+    show_inline = ext == ".html" or (ext in {".pdf", ".jpg", ".png"} and inline)
 
     return FileResponse(
         filepath,

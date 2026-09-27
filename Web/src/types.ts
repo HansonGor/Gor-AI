@@ -33,16 +33,56 @@ export interface PreviewProjectSnapshot {
   messageId: string;
   id: string;
   name: string;
-  template: 'react' | 'html';
+  template: 'react' | 'html' | 'presentation';
   /** Final preview artifact format (e.g. .html for React, .glb for a SceneSpec). */
   outputExtension: string;
   files: Record<string, string>;
+  artifactId?: string;
+  projectId?: string;
+  snapshotId?: string;
+  presentationSchema?: PresentationSchema;
+  presentationBackgrounds?: Record<string, PresentationBackground>;
+  finalArtifact?: GeneratedFile;
+  storyOutline?: string[];
+  visualQA?: { passed?: boolean; issues?: Array<{ severity: string; message: string }>; attempts?: number; maxAttempts?: number };
+}
+
+export interface PresentationSchema {
+  version: '1.0';
+  title: string;
+  description?: string;
+  audience?: string;
+  purpose?: string;
+  theme: 'modern-light' | 'modern-dark' | 'business' | 'minimal' | 'technology';
+  aspectRatio: '16:9' | '4:3';
+  slides: Array<Record<string, any> & { id: string; type: string; title?: string; subtitle?: string; supportingPoints?: string[] }>;
+}
+
+export interface PresentationBackground {
+  url: string;
+  photographer: string;
+  photographerUrl: string;
+  photoUrl: string;
 }
 
 export interface GeneratedFile {
   fileType: string;
   displayName: string;
   downloadUrl: string;
+  artifactId?: string;
+  projectId?: string;
+  snapshotId?: string;
+  messageId?: string;
+  sessionId?: string;
+  extension?: string;
+  mimeType?: string;
+  previewRenderer?: 'presentation' | string;
+  editableSource?: boolean;
+  presentationSchema?: PresentationSchema;
+  presentationBackgrounds?: Record<string, PresentationBackground>;
+  sourceFiles?: Record<string, string>;
+  storyOutline?: string[];
+  visualQA?: PreviewProjectSnapshot['visualQA'];
 }
 
 export interface UploadedAttachment {

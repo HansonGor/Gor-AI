@@ -196,6 +196,13 @@ async def init_db():
         await conn.execute("""
             ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS preview_snapshot JSONB;
         """)
+        await conn.execute("""
+            ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS client_message_id TEXT;
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS chat_messages_session_client_id_idx
+            ON chat_messages (session_id, client_message_id) WHERE client_message_id IS NOT NULL;
+        """)
         print("[Database] 数据库表初始化完成")
 
 
@@ -400,7 +407,7 @@ async def load_messages(session_id: str) -> list:
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT id, session_id, role, content, images, attachments, preview_changes, preview_snapshot, created_at,
+            """SELECT id, client_message_id, session_id, role, content, images, attachments, preview_changes, preview_snapshot, created_at,
                       prompt_tokens, completion_tokens, total_tokens
                FROM chat_messages WHERE session_id = $1 ORDER BY created_at ASC""",
             session_id,
@@ -409,6 +416,7 @@ async def load_messages(session_id: str) -> list:
         return [
             {
                 **dict(row),
+                "id": row.get("client_message_id") or str(row["id"]),
                 "images": json.loads(row["images"]) if row.get("images") else None,
                 "attachments": (
                     json.loads(row["attachments"])
@@ -439,6 +447,7 @@ async def save_message(
     attachments: Optional[list] = None,
     preview_changes: Optional[list] = None,
     preview_snapshot: Optional[dict] = None,
+    message_id: Optional[str] = None,
 ) -> None:
     """
     保存单条消息，同时刷新会话的 updated_at 时间
@@ -459,8 +468,13 @@ async def save_message(
         if token_usage:
             # AI 回复：记录 Token 消耗
             await conn.execute(
-                """INSERT INTO chat_messages (session_id, role, content, images, attachments, preview_changes, preview_snapshot, prompt_tokens, completion_tokens, total_tokens)
-                   VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10)""",
+                """INSERT INTO chat_messages (session_id, role, content, images, attachments, preview_changes, preview_snapshot, prompt_tokens, completion_tokens, total_tokens, client_message_id)
+                   VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11)
+                   ON CONFLICT (session_id, client_message_id) WHERE client_message_id IS NOT NULL
+                   DO UPDATE SET content = EXCLUDED.content, images = EXCLUDED.images, attachments = EXCLUDED.attachments,
+                     preview_changes = EXCLUDED.preview_changes, preview_snapshot = EXCLUDED.preview_snapshot,
+                     prompt_tokens = EXCLUDED.prompt_tokens, completion_tokens = EXCLUDED.completion_tokens,
+                     total_tokens = EXCLUDED.total_tokens""",
                 session_id, role, content,
                 json.dumps(images) if images else None,
                 json.dumps(attachments, ensure_ascii=False) if attachments else None,
@@ -469,16 +483,22 @@ async def save_message(
                 token_usage.get("prompt_tokens", 0),
                 token_usage.get("completion_tokens", 0),
                 token_usage.get("total_tokens", 0),
+                message_id,
             )
         else:
             # 用户消息或不带 Token 数据：仅插入基本字段
             await conn.execute(
-                "INSERT INTO chat_messages (session_id, role, content, images, attachments, preview_changes, preview_snapshot) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)",
+                """INSERT INTO chat_messages (session_id, role, content, images, attachments, preview_changes, preview_snapshot, client_message_id)
+                   VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8)
+                   ON CONFLICT (session_id, client_message_id) WHERE client_message_id IS NOT NULL
+                   DO UPDATE SET content = EXCLUDED.content, images = EXCLUDED.images, attachments = EXCLUDED.attachments,
+                     preview_changes = EXCLUDED.preview_changes, preview_snapshot = EXCLUDED.preview_snapshot""",
                 session_id, role, content,
                 json.dumps(images) if images else None,
                 json.dumps(attachments, ensure_ascii=False) if attachments else None,
                 json.dumps(preview_changes, ensure_ascii=False) if preview_changes else None,
                 json.dumps(preview_snapshot, ensure_ascii=False) if preview_snapshot else None,
+                message_id,
             )
         # 更新会话的最后活动时间
         await conn.execute(

@@ -33,6 +33,7 @@ import { fileExtension, generatedFileExtension, haveSamePreviewArtifactFiles, pr
 import { createPreviewArchive, previewArchiveName } from '../../preview/core/exportProject';
 import { saveBlob, saveUrl } from '../../preview/core/saveFile';
 import ImportedDistPreview from '../preview/ImportedDistPreview';
+import PresentationPreview from '../preview/PresentationPreview';
 import type { ImportedDistArchive } from '../../preview/core/importArchive';
 
 export type PreviewWorkerMode = 'preview' | 'code';
@@ -176,22 +177,26 @@ export default function PreviewWorker({
       })()
     : null;
   const canShowCode = target === 'generated'
-    ? selectedGeneratedSourcePath !== null
+    ? selectedGeneratedFile?.previewRenderer === 'presentation' || selectedGeneratedSourcePath !== null
     : target === 'project' && hasProjectSource
       ? true
-      : target === 'project-snapshot' && Boolean(activeProjectSnapshot && Object.keys(activeProjectSnapshot.files).length > 0);
+      : target === 'project-snapshot' && Boolean(activeProjectSnapshot && (activeProjectSnapshot.template === 'presentation' || Object.keys(activeProjectSnapshot.files).length > 0));
   const snapshotIsScene = Boolean(activeProjectSnapshot && isSceneRendererProject(activeProjectSnapshot.files));
   const currentProjectIsScene = isSceneProject;
   const downloadLabel = target === 'generated' && selectedGeneratedFile
     ? mode === 'preview' ? `下载 ${selectedGeneratedFile.displayName}` : `下载 ${projectFileName} 源码（ZIP）`
     : showImportedDist
       ? `下载 ${importedDist.name}.zip`
-      : target === 'project-snapshot' && activeProjectSnapshot
+    : target === 'generated' && mode === 'code' && selectedGeneratedFile?.previewRenderer === 'presentation'
+      ? `下载 ${selectedGeneratedFile.displayName} 源码（JSON）`
+    : target === 'project-snapshot' && activeProjectSnapshot
         ? mode === 'code'
           ? `下载 ${activeProjectSnapshot.name} 源码（ZIP）`
           : snapshotIsScene
             ? `下载 ${activeProjectSnapshot.name}.glb`
-            : `下载 ${activeProjectSnapshot.name} 预览项目（ZIP）`
+            : activeProjectSnapshot.template === 'presentation'
+              ? `下载 ${activeProjectSnapshot.name}.pptx`
+              : `下载 ${activeProjectSnapshot.name} 预览项目（ZIP）`
         : mode === 'code'
           ? `下载 ${projectFileName} 源码（ZIP）`
           : currentProjectIsScene
@@ -210,6 +215,11 @@ export default function PreviewWorker({
         });
       } else if (target === 'project-snapshot' && activeProjectSnapshot) {
         if (mode === 'code') {
+          if (activeProjectSnapshot.template === 'presentation') {
+            const json = activeProjectSnapshot.files['/presentation.json'] ?? JSON.stringify(activeProjectSnapshot.presentationSchema, null, 2);
+            await saveBlob({ suggestedName: `${activeProjectSnapshot.name}.json`, blob: new Blob([json], { type: 'application/json;charset=utf-8' }) });
+            return;
+          }
           const bytes = createPreviewArchive(activeProjectSnapshot.files);
           await saveBlob({
             suggestedName: previewArchiveName(activeProjectSnapshot.name),
@@ -220,12 +230,19 @@ export default function PreviewWorker({
           const blob = await exportSceneGlb(scene);
           const safeName = scene.name.replace(/[\\/:*?"<>|]/g, '-').slice(0, 80) || '3D Model';
           await saveBlob({ suggestedName: `${safeName}.glb`, blob });
+        } else if (activeProjectSnapshot.template === 'presentation' && activeProjectSnapshot.finalArtifact) {
+          await saveUrl(activeProjectSnapshot.finalArtifact.downloadUrl, activeProjectSnapshot.finalArtifact.displayName);
         } else {
           const downloadDist = downloadDistRef.current;
           if (!downloadDist) throw new Error('Preview Runtime 尚未准备好，请稍后重试。');
           await downloadDist(toSnapshotArtifactName(activeProjectSnapshot));
         }
       } else if (target === 'generated' && mode === 'code') {
+        if (selectedGeneratedFile?.previewRenderer === 'presentation') {
+          const source = selectedGeneratedFile.sourceFiles?.['/presentation.json'] ?? JSON.stringify(selectedGeneratedFile.presentationSchema, null, 2);
+          await saveBlob({ suggestedName: `${selectedGeneratedFile.displayName.replace(/\.pptx$/i, '')}.json`, blob: new Blob([source], { type: 'application/json;charset=utf-8' }) });
+          return;
+        }
         const bytes = createPreviewArchive(project.files);
         await saveBlob({
           suggestedName: previewArchiveName(projectFileName),
@@ -396,11 +413,11 @@ export default function PreviewWorker({
             onClick={downloadPreview}
             disabled={target === 'uploaded-missing' || (
               target === 'generated'
-                ? !selectedGeneratedFile || (mode === 'code' && Object.keys(project.files).length === 0)
+                ? !selectedGeneratedFile || (mode === 'code' && selectedGeneratedFile.previewRenderer !== 'presentation' && Object.keys(project.files).length === 0)
                 : target === 'uploaded-dist'
                   ? !importedDist
                   : target === 'project-snapshot'
-                    ? !activeProjectSnapshot || Object.keys(activeProjectSnapshot.files).length === 0
+                    ? !activeProjectSnapshot || (Object.keys(activeProjectSnapshot.files).length === 0 && !activeProjectSnapshot.finalArtifact)
                     : Object.keys(project.files).length === 0
             )}
             aria-label={downloadLabel}
@@ -485,7 +502,7 @@ export default function PreviewWorker({
                         onClick={() => onSelectProjectSnapshot(snapshot)}
                         title={previewArtifactTooltip(artifactName, null)}
                       >
-                        {snapshot.template === 'react' ? <FileCode2 aria-hidden="true" /> : <Box aria-hidden="true" />}
+                        {snapshot.template === 'react' ? <FileCode2 aria-hidden="true" /> : snapshot.template === 'presentation' ? <Presentation aria-hidden="true" /> : <Box aria-hidden="true" />}
                         <span className="preview-worker-file-name">{artifactName}</span>
                       </Button>
                     );})}
@@ -528,7 +545,9 @@ export default function PreviewWorker({
             </div>
           ) : target === 'project-snapshot' && activeProjectSnapshot ? (
             <div className="preview-worker-project">
-              <PreviewProject
+              {activeProjectSnapshot.template === 'presentation' && activeProjectSnapshot.presentationSchema
+                ? <PresentationPreview schema={activeProjectSnapshot.presentationSchema} backgrounds={activeProjectSnapshot.presentationBackgrounds} />
+                : <PreviewProject
                 key={`snapshot:${activeProjectSnapshot.messageId}`}
                 view="preview"
                 projectSnapshot={activeProjectSnapshot}
@@ -537,7 +556,7 @@ export default function PreviewWorker({
                 onDownloadDistReady={registerDistDownload}
                 onSaveSceneGlb={onSaveSceneGlb}
                 canSaveSceneGlb={!isChatLoading}
-              />
+              />}
             </div>
           ) : showGenerated && selectedGeneratedFile ? (
             <div className={`preview-worker-content ${selectedGeneratedFile.fileType === '3d' ? 'is-3d-model' : ''}`}>
@@ -554,7 +573,9 @@ export default function PreviewWorker({
                   </button>
                 </div>
               )}
-              <FilePreview file={selectedGeneratedFile} />
+              {selectedGeneratedFile.previewRenderer === 'presentation' && selectedGeneratedFile.presentationSchema
+                ? <PresentationPreview schema={selectedGeneratedFile.presentationSchema} backgrounds={selectedGeneratedFile.presentationBackgrounds} />
+                : <FilePreview file={selectedGeneratedFile} />}
             </div>
           ) : showImportedDist && importedDist ? (
             <ImportedDistPreview archive={importedDist} />
@@ -571,7 +592,11 @@ export default function PreviewWorker({
           )}
         </div>
       )}
-      {mode === 'code' && canShowCode && <PreviewProject key={target === 'project-snapshot' ? `snapshot-code:${activeProjectSnapshot?.messageId}` : 'shared-project-code'} view="code" projectSnapshot={target === 'project-snapshot' ? activeProjectSnapshot ?? undefined : undefined} initialSelectedFilePath={target === 'project-snapshot' ? activeProjectSourcePath : undefined} runtimeActionsHost={runtimeActionsHost} onSaveSceneGlb={onSaveSceneGlb} canSaveSceneGlb={!isChatLoading} />}
+      {mode === 'code' && canShowCode && target === 'project-snapshot' && activeProjectSnapshot?.template === 'presentation' ? (
+        <div className="presentation-source"><div className="presentation-source-title">/presentation.json</div><pre>{activeProjectSnapshot.files['/presentation.json'] ?? JSON.stringify(activeProjectSnapshot.presentationSchema, null, 2)}</pre></div>
+      ) : mode === 'code' && canShowCode && target === 'generated' && selectedGeneratedFile?.previewRenderer === 'presentation' ? (
+        <div className="presentation-source"><div className="presentation-source-title">/presentation.json</div><pre>{selectedGeneratedFile.sourceFiles?.['/presentation.json'] ?? JSON.stringify(selectedGeneratedFile.presentationSchema, null, 2)}</pre></div>
+      ) : mode === 'code' && canShowCode && <PreviewProject key={target === 'project-snapshot' ? `snapshot-code:${activeProjectSnapshot?.messageId}` : 'shared-project-code'} view="code" projectSnapshot={target === 'project-snapshot' ? activeProjectSnapshot ?? undefined : undefined} initialSelectedFilePath={target === 'project-snapshot' ? activeProjectSourcePath : undefined} runtimeActionsHost={runtimeActionsHost} onSaveSceneGlb={onSaveSceneGlb} canSaveSceneGlb={!isChatLoading} />}
       {showGenerated && selectedGeneratedFile?.fileType === '3d' && (
         <div className="preview-worker-build-runtime" aria-hidden="true">
           <PreviewProject

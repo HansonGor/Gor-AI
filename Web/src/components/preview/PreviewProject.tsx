@@ -57,7 +57,7 @@ export default function PreviewProject({
       project: {
         id: projectSnapshot.id,
         name: projectSnapshot.name,
-        template: projectSnapshot.template,
+        template: projectSnapshot.template === 'html' ? 'html' : 'react',
         files,
       },
       selectedFilePath,
@@ -67,7 +67,7 @@ export default function PreviewProject({
   const project = isIsolated ? isolatedState?.project ?? {
     id: projectSnapshot.id,
     name: projectSnapshot.name,
-    template: projectSnapshot.template,
+    template: projectSnapshot.template === 'html' ? 'html' : 'react',
     files: projectSnapshot.files,
   } : globalStore.project;
   const selectedFilePath = isIsolated

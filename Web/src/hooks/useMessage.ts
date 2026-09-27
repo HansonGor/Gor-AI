@@ -16,8 +16,15 @@ import type {
 } from '../types';
 import { usePreviewProjectStore } from '../stores/previewProjectStore.ts';
 import { createMessagePreviewSnapshot } from '../preview/core/projectSnapshot.ts';
+import { createPresentationSnapshot } from '../preview/core/presentationSnapshot.ts';
 
 const { QUOTA_WARNING_THRESHOLD } = MODEL_CONFIG;
+
+function newMessageId(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 interface PendingImage {
   file: File;
@@ -160,7 +167,7 @@ export function useMessage(sessionId: string | null) {
       }
 
       const userMsg: ChatMessage = {
-        id: Date.now().toString(),
+        id: newMessageId(),
         role: 'user',
         content: visibleContent || '（图片）',
         analysisContext,
@@ -168,7 +175,7 @@ export function useMessage(sessionId: string | null) {
         images: hasImages ? images : undefined,
       };
       const assistantMsg: ChatMessage & { isStreaming?: boolean; toolStatus?: string } = {
-        id: (Date.now() + 1).toString(),
+        id: newMessageId(),
         role: 'assistant',
         content: '',
         isStreaming: true,
@@ -203,6 +210,7 @@ export function useMessage(sessionId: string | null) {
             analysisContext: requestAnalysisContext,
             analysisContextMode,
             previewProject: structuredClone(usePreviewProjectStore.getState().project),
+            assistantMessageId: assistantMsg.id,
           },
           {
             onToken: (tokenContent: string) => {
@@ -242,14 +250,19 @@ export function useMessage(sessionId: string | null) {
               }));
             },
             onFileReady: (fileInfo: GeneratedFile) => {
-              updateLastAssistant((last) => ({
-                ...last,
-                file: fileInfo,
-                files: [
-                  ...(last.files ?? []).filter((item) => item.downloadUrl !== fileInfo.downloadUrl),
-                  fileInfo,
-                ],
-              }));
+              updateLastAssistant((last) => {
+                const messageFile = { ...fileInfo, messageId: last.id, sessionId };
+                const presentationSnapshot = createPresentationSnapshot(fileInfo, last.id, sessionId);
+                return {
+                  ...last,
+                  file: messageFile,
+                  files: [
+                    ...(last.files ?? []).filter((item) => item.artifactId !== fileInfo.artifactId && item.downloadUrl !== fileInfo.downloadUrl),
+                    messageFile,
+                  ],
+                  ...(presentationSnapshot ? { previewSnapshot: presentationSnapshot } : {}),
+                };
+              });
             },
             onProjectFileChanged: (change: ProjectChange) => {
               setProjectChanges((previous) => [

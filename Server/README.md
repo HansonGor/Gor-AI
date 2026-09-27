@@ -84,6 +84,9 @@ ARK_VISION_MODEL_ID=ep-20260829115423-lphgj
 # Tavily 搜索
 TAVILY_API_KEY=your-tavily-api-key
 
+# 可选：尽量为 PPT 每一页搜索并嵌入与内容相关的实景背景图
+PEXELS_API_KEY=your-pexels-api-key
+
 # 小云雀视频生成
 XIAOYUNQUE_AK=your-xiaoyunque-ak
 XIAOYUNQUE_SK=your-xiaoyunque-sk
@@ -108,6 +111,8 @@ python main.py
 ```
 
 服务将在 `http://localhost:3001` 启动。
+
+设计型 PPT 会尽量为每页从 Pexels 获取与内容相关的背景照片，并在幻灯片中署名链接摄影师、照片页和 Pexels。若未配置 `PEXELS_API_KEY`、图片服务不可用或某页没有匹配照片，对应页面使用主题默认背景，PPT 仍会生成。照片会按比例裁切铺满页面，并叠加主题色遮罩来保证文字可读；模型应为每页提供具体、与页面主题匹配的英文 `imageQuery`。
 
 ### 4. 健康检查
 

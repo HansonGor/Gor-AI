@@ -10,6 +10,7 @@ import { createMessagePreviewSnapshot } from '../src/preview/core/projectSnapsho
 import { fileExtension, generatedFileExtension, haveSamePreviewArtifactFiles, isSamePreviewArtifact, previewArtifactName, previewArtifactTooltip, previewSnapshotExtension } from '../src/preview/core/artifactFormat.ts';
 import { hasCurrentProjectSource, hasPreviewFiles } from '../src/preview/core/previewFilePresence.ts';
 import { getSnapshotBackedHtmlArtifactUrls } from '../src/preview/core/snapshotArtifactDedup.ts';
+import { canonicalizePresentationFiles, createPresentationSnapshot, isPresentationSnapshotFile, restorePresentationSnapshot } from '../src/preview/core/presentationSnapshot.ts';
 import { createUploadSummaryRequest } from '../src/utils/uploadSummary.ts';
 import { createSceneProjectFiles, exportSceneGlb, isSceneRendererProject, validateSceneSpec } from '../src/modeling/sceneSpec.ts';
 
@@ -31,6 +32,29 @@ test('preview download ZIP preserves virtual paths and Unicode source content', 
   for (const [path, content] of Object.entries(files)) assert.equal(strFromU8(extracted[path.slice(1)]), content);
   assert.equal(previewArchiveName('待办清单.html'), '待办清单-source.zip');
   assert.throws(() => createPreviewArchive({ '../../escape.txt': 'unsafe' }));
+});
+
+test('presentation artifacts restore per-message schema snapshots and deduplicate the file-tree entry', () => {
+  const file = {
+    fileType: 'ppt', displayName: '季度复盘.pptx', downloadUrl: '/api/download/artifact.pptx',
+    artifactId: 'artifact-1', projectId: 'project-1', snapshotId: 'snapshot-1', previewRenderer: 'presentation',
+    presentationSchema: { version: '1.0', title: '季度复盘', theme: 'modern-dark', aspectRatio: '16:9', slides: [{ id: 'cover', type: 'cover', title: '季度复盘' }] },
+    sourceFiles: { '/presentation.json': '{"title":"季度复盘"}' },
+  } as const;
+  const snapshot = createPresentationSnapshot(file, 'message-1', 'session-1');
+  assert.equal(snapshot?.messageId, 'message-1');
+  assert.equal(snapshot?.finalArtifact?.downloadUrl, file.downloadUrl);
+  assert.equal(isPresentationSnapshotFile(file, snapshot ? [snapshot] : []), true);
+  const restored = restorePresentationSnapshot(JSON.parse(JSON.stringify(snapshot)), 'message-fallback');
+  assert.equal(restored?.messageId, 'message-1');
+  assert.equal(restored?.artifactId, 'artifact-1');
+  assert.equal(restored?.files['/presentation.json'], file.sourceFiles['/presentation.json']);
+  assert.equal(isPresentationSnapshotFile({ ...file, artifactId: 'other' }, snapshot ? [snapshot] : []), false);
+  assert.deepEqual(canonicalizePresentationFiles([
+    file,
+    { ...file, artifactId: 'artifact-2', downloadUrl: '/api/download/artifact-2.pptx' },
+    { ...file, artifactId: 'artifact-3', downloadUrl: '/api/download/artifact-3.pptx' },
+  ], restored), [file]);
 });
 
 test('upload summaries analyze bounded readable content without exposing source in the chat bubble', () => {

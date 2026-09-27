@@ -68,18 +68,20 @@ export default function MessageBubble({
   const sceneArtifact = generatedFiles.find((file) => file.fileType === '3d');
   const previewableGeneratedFiles = generatedFiles.filter((file) => file.fileType !== '3d' || Boolean(message.previewSnapshot));
   const hasProjectOutput = (message.previewChanges?.length ?? 0) > 0;
-  const hasRestorableProjectOutput = hasProjectOutput && Boolean(message.previewSnapshot);
+  const isPresentationSnapshot = message.previewSnapshot?.template === 'presentation';
+  const hasRestorableProjectOutput = Boolean(message.previewSnapshot && (hasProjectOutput || isPresentationSnapshot));
   const projectArtifactSummary = hasRestorableProjectOutput && message.previewSnapshot
     ? {
         name: previewArtifactName(message.previewSnapshot, previewSnapshotExtension(message.previewSnapshot)),
         title: previewArtifactName(message.previewSnapshot, previewSnapshotExtension(message.previewSnapshot))
           .replace(/\.[^.]+$/, ''),
         extension: previewSnapshotExtension(message.previewSnapshot),
-        kind: previewSnapshotExtension(message.previewSnapshot) === '.glb' ? '3D 模型' : '网页项目',
+        kind: previewSnapshotExtension(message.previewSnapshot) === '.glb' ? '3D 模型' : isPresentationSnapshot ? '演示文稿' : '网页项目',
       }
     : null;
   const changedSourcePaths = message.previewChanges?.map((change) => change.path) ?? [];
   const preferredSourcePath =
+    (isPresentationSnapshot && message.previewSnapshot?.files['/presentation.json'] ? '/presentation.json' : undefined) ??
     changedSourcePaths.find((path) => /\/src\/App\.[jt]sx?$/i.test(path)) ??
     changedSourcePaths.find((path) => /\.[jt]sx?$/i.test(path)) ??
     changedSourcePaths[0];
@@ -209,7 +211,7 @@ export default function MessageBubble({
                 >
                   <Eye aria-hidden="true" />
                   <span className="project-action-copy">
-                    <span className="project-action-title">{sceneArtifact ? '预览模型' : '预览项目'}</span>
+                    <span className="project-action-title">{sceneArtifact ? '预览模型' : isPresentationSnapshot ? '预览演示文稿' : '预览项目'}</span>
                     <span className="project-action-description">在预览窗口中查看效果</span>
                   </span>
                 </Button>
@@ -224,7 +226,7 @@ export default function MessageBubble({
                 >
                   <Code2 aria-hidden="true" />
                   <span className="project-action-copy">
-                    <span className="project-action-title">{sceneArtifact ? '查看场景源码' : '查看项目源码'}</span>
+                    <span className="project-action-title">{sceneArtifact ? '查看场景源码' : isPresentationSnapshot ? '查看演示文稿源码' : '查看项目源码'}</span>
                     <span className="project-action-description">打开本条消息对应的源码</span>
                   </span>
                 </Button>

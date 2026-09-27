@@ -92,6 +92,13 @@ async def run_agent(
                 messages.append(HumanMessage(content=m["content"]))
 
     iterations = MAX_ITERATIONS
+    # One assistant turn represents one user generation request. Models may
+    # issue create_presentation more than once across tool rounds (or in one
+    # parallel tool-call batch); retain the first successful artifact and
+    # suppress later calls so a single request cannot populate the Worker with
+    # several near-identical decks. A later user turn can still create a new
+    # version with its own IDs.
+    presentation_artifact_result: Optional[Dict[str, Any]] = None
 
     while iterations > 0:
         iterations -= 1
@@ -148,6 +155,7 @@ async def run_agent(
         for tc in tool_calls:
             tool_name = tc.get("name", "")
             tool_args = tc.get("args", {}) or {}
+            duplicate_presentation_call = tool_name == "create_presentation" and presentation_artifact_result is not None
             visible_args = {"path": tool_args.get("path", "")} if tool_name in {"edit_project_file", "create_project_file", "write_preview_file"} else tool_args
             print(f"[Agent] 调用工具: {tool_name}", json.dumps(visible_args, ensure_ascii=False))
             send_event({
@@ -161,7 +169,22 @@ async def run_agent(
 
             result = None
             try:
-                result = await execute_tool(tool_name, tool_args, signal, preview_workspace, allow_workspace_edit)
+                if duplicate_presentation_call:
+                    result = json.dumps({
+                        "success": True,
+                        "duplicateSuppressed": True,
+                        "displayName": presentation_artifact_result.get("displayName", ""),
+                        "summary": "本轮演示文稿已生成；重复的生成调用已合并到同一产物。",
+                    }, ensure_ascii=False)
+                else:
+                    result = await execute_tool(tool_name, tool_args, signal, preview_workspace, allow_workspace_edit)
+                    if tool_name == "create_presentation":
+                        try:
+                            parsed_result = json.loads(str(result))
+                            if parsed_result.get("success") and parsed_result.get("downloadUrl"):
+                                presentation_artifact_result = parsed_result
+                        except (json.JSONDecodeError, TypeError):
+                            pass
             finally:
                 tool_heartbeat.cancel()
                 try:
@@ -170,7 +193,17 @@ async def run_agent(
                     pass
 
             print(f"[Agent] 工具 {tool_name} 结果长度: {len(str(result))}")
-            send_event({"type": "tool_end", "name": tool_name, "result": str(result)})
+            tool_end_result = str(result)
+            if tool_name == "create_presentation":
+                try:
+                    presentation_result = json.loads(tool_end_result)
+                    if presentation_result.get("duplicateSuppressed"):
+                        tool_end_result = f"本轮已生成 {presentation_result.get('displayName', '演示文稿')}；重复调用已合并，没有创建第二份。"
+                    elif presentation_result.get("success"):
+                        tool_end_result = f"演示文稿已生成：{presentation_result.get('displayName', '')}"
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+            send_event({"type": "tool_end", "name": tool_name, "result": tool_end_result})
 
             # 检测文档生成工具返回的下载链接，发送 file_ready 事件
             # 检测视频生成工具返回的视频URL，发送 video_ready 事件
@@ -178,13 +211,25 @@ async def run_agent(
             try:
                 parsed = json.loads(str(result))
                 if parsed.get("success") and parsed.get("downloadUrl"):
-                    send_event({
+                    file_event = {
                         "type": "file_ready",
                         "fileType": parsed.get("fileType"),
                         "displayName": parsed.get("displayName"),
                         "downloadUrl": parsed.get("downloadUrl"),
-                    })
+                    }
+                    for key in ("artifactId", "projectId", "snapshotId", "extension", "mimeType", "previewRenderer", "editableSource", "presentationSchema", "presentationBackgrounds", "sourceFiles", "storyOutline", "visualQA"):
+                        if parsed.get(key) is not None:
+                            file_event[key] = parsed[key]
+                    send_event(file_event)
                     print(f"[Agent] 文件已生成: {parsed.get('displayName')}")
+                    if parsed.get("previewRenderer") == "presentation":
+                        tool_result_for_context = json.dumps({
+                            "success": True,
+                            "summary": f"已创建演示文稿 {parsed.get('displayName')}，共 {len(parsed.get('presentationSchema', {}).get('slides', []))} 页。",
+                            "artifactId": parsed.get("artifactId"),
+                            "snapshotId": parsed.get("snapshotId"),
+                            "visualQA": parsed.get("visualQA", {}),
+                        }, ensure_ascii=False)
                 if parsed.get("success") and parsed.get("videoUrl"):
                     send_event({
                         "type": "video_ready",

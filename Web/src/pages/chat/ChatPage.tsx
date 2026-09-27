@@ -39,6 +39,7 @@ import { getSessionPreview, getSessionPreviewArtifact, saveSessionPreview, saveS
 import { getSessionPreviewProject, saveSessionPreviewProject } from '../../api/previewProject';
 import { hasCurrentProjectSource, hasPreviewFiles } from '../../preview/core/previewFilePresence';
 import { getSnapshotBackedHtmlArtifactUrls } from '../../preview/core/snapshotArtifactDedup';
+import { canonicalizePresentationFiles, isPresentationSnapshotFile } from '../../preview/core/presentationSnapshot';
 import { deletePendingSessionAttachment, saveGeneratedGlb, uploadSessionAttachment } from '../../api/chat';
 import { createTemplateFiles } from '../../preview/templates';
 import { useFeedback } from '../../components/ui/feedback';
@@ -134,7 +135,7 @@ export default function ChatPage() {
     const unique = new Map<string, GeneratedFile>();
     messages.forEach((message) => {
       const files = message.files?.length ? message.files : message.file ? [message.file] : [];
-      files.forEach((file) => unique.set(file.downloadUrl, file));
+      canonicalizePresentationFiles(files, message.previewSnapshot).forEach((file) => unique.set(file.downloadUrl, file));
     });
     projectChanges.forEach((change) => {
       if (!/\.html?$/i.test(change.path)) return;
@@ -196,9 +197,10 @@ export default function ChatPage() {
   const visibleGeneratedFiles = useMemo(
     () => generatedFiles.filter((file) =>
       !hiddenArtifactKeys.includes(`generated:${file.downloadUrl}`)
-      && !snapshotBackedHtmlArtifactUrls.has(file.downloadUrl),
+      && !snapshotBackedHtmlArtifactUrls.has(file.downloadUrl)
+      && !isPresentationSnapshotFile(file, projectSnapshots),
     ),
-    [generatedFiles, hiddenArtifactKeys, snapshotBackedHtmlArtifactUrls],
+    [generatedFiles, hiddenArtifactKeys, snapshotBackedHtmlArtifactUrls, projectSnapshots],
   );
   const handleDeletePreviewArtifact = useCallback((keys: string[]) => {
     if (!sessionId) return;
@@ -558,6 +560,18 @@ export default function ChatPage() {
       setPreviewWorkerOpen(true);
     }
   }, [previewRevision]);
+
+  useEffect(() => {
+    if (!isLoading) return;
+    const latest = messages[messages.length - 1];
+    if (latest?.role !== 'assistant' || latest.previewSnapshot?.template !== 'presentation') return;
+    setActiveProjectSnapshotMessageId(latest.previewSnapshot.messageId);
+    setActiveProjectSourcePath(undefined);
+    setPreviewWorkerMode('preview');
+    setPreviewWorkerTarget('project-snapshot');
+    setPreviewOpen(false);
+    setPreviewWorkerOpen(true);
+  }, [messages, isLoading]);
 
   useEffect(() => {
     if (projectRevision > 0) {

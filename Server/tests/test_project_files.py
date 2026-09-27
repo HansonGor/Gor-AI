@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock
 from urllib.request import urlopen
 
 from langchain_core.messages import AIMessage
@@ -57,6 +58,53 @@ class ProjectFileToolsTest(unittest.TestCase):
 
 
 class AgentChangeEventTest(unittest.IsolatedAsyncioTestCase):
+    async def test_duplicate_presentation_calls_create_only_one_artifact_per_turn(self):
+        previous_model = agent_module.model_with_tools
+        previous_execute_tool = agent_module.execute_tool
+        previous_delay = agent_module.TYPING_DELAY_MS
+        artifact = {
+            "success": True,
+            "fileType": "ppt",
+            "displayName": "广州攻略.pptx",
+            "downloadUrl": "/api/download/artifact.pptx",
+            "artifactId": "artifact-1",
+            "previewRenderer": "presentation",
+            "presentationSchema": {"slides": [{"id": "cover"}]},
+        }
+
+        class FakeModel:
+            calls = 0
+
+            async def ainvoke(self, _messages, config=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return AIMessage(content="", tool_calls=[
+                        {"name": "create_presentation", "args": {"presentation": {}}, "id": "ppt-1"},
+                        {"name": "create_presentation", "args": {"presentation": {}}, "id": "ppt-2"},
+                    ])
+                if self.calls == 2:
+                    return AIMessage(content="", tool_calls=[
+                        {"name": "create_presentation", "args": {"presentation": {}}, "id": "ppt-3"},
+                    ])
+                return AIMessage(content="演示文稿已完成。")
+
+        execute = AsyncMock(return_value=json.dumps(artifact, ensure_ascii=False))
+        agent_module.model_with_tools = FakeModel()
+        agent_module.execute_tool = execute
+        agent_module.TYPING_DELAY_MS = 0
+        events = []
+        try:
+            await agent_module.run_agent([{"role": "user", "content": "生成广州旅游攻略 PPT"}], events.append)
+            self.assertEqual(execute.await_count, 1)
+            file_events = [event for event in events if event.get("type") == "file_ready"]
+            self.assertEqual(len(file_events), 1)
+            self.assertEqual(file_events[0]["artifactId"], "artifact-1")
+            self.assertEqual(sum("重复调用已合并" in event.get("result", "") for event in events if event.get("type") == "tool_end"), 2)
+        finally:
+            agent_module.model_with_tools = previous_model
+            agent_module.execute_tool = previous_execute_tool
+            agent_module.TYPING_DELAY_MS = previous_delay
+
     async def test_chat_tool_change_emits_diff_event(self):
         with tempfile.TemporaryDirectory() as directory:
             previous_root = project_files.ROOT
