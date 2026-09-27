@@ -33,11 +33,22 @@ class Config:
         VISION_MODEL_ID = os.getenv("ARK_VISION_MODEL_ID", "doubao-seed-2.0-1ite")
 
     # ================================================================
-    # Tavily 搜索 API 配置
+    # 多搜索引擎 API 配置
     # ================================================================
-    class Tavily:
-        """Tavily 搜索引擎 API 的配置（用于联网搜索能力）。"""
-        API_KEY = os.getenv("TAVILY_API_KEY", "")
+    class Search:
+        """多搜索引擎 API 的配置（用于联网搜索能力，缺哪个 key 哪个源就自动跳过）。"""
+        # 豆包搜索（火山引擎 feedcoopapi，国内中文首选）
+        DOUBAO_SEARCH_API_KEY = os.getenv("DOUBAO_SEARCH_API_KEY", "")
+        # Tavily（通用网页搜索，已有）
+        TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+        # Serper（Google 搜索代理，适合海外/中英文混合）
+        SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
+        # Brave Search（独立索引，无广告）
+        BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
+        # Exa（语义向量搜索，深度技术调研）
+        EXA_API_KEY = os.getenv("EXA_API_KEY", "")
+        # GitHub Token（用于 GitHub 代码搜索，需要 public_repo 权限）
+        GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 
     # ================================================================
     # 小云雀视频生成 API 配置
@@ -104,6 +115,12 @@ class Config:
     class ProjectWorkspace:
         """The Web source workspace exposed to the AI file tools."""
         ROOT = os.getenv("PROJECT_WORKSPACE_ROOT", str(Path(__file__).resolve().parent.parent / "Web"))
+
+    class Storage:
+        """Durable server-side storage for user uploads and generated files."""
+        ROOT = os.getenv("GOR_STORAGE_DIR", str(Path(__file__).resolve().parent / "storage"))
+        UPLOADS = os.path.join(ROOT, "uploads")
+        GENERATED = os.path.join(ROOT, "generated")
 
     # ================================================================
     # Agent 运行参数配置

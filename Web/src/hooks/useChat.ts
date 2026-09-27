@@ -4,8 +4,11 @@ import { useCallback, useEffect } from 'react';
 import { useFeedback } from '../components/ui/feedback';
 import { useSession } from './useSession';
 import { useMessage } from './useMessage';
+import { uploadSessionAttachment } from '../api/chat';
 import { compressImages } from '../utils/image';
 import { usePreviewProjectStore } from '../stores/previewProjectStore.ts';
+import { deleteSessionPreview } from '../utils/sessionPreviewStorage.ts';
+import type { UploadedAttachment } from '../types';
 
 export function useChat() {
   const { notify } = useFeedback();
@@ -26,6 +29,7 @@ export function useChat() {
     input,
     setInput,
     pendingImages,
+    pendingUploadAttachments,
     isLoading,
     contextRemain,
     modelQuotaInfo,
@@ -34,6 +38,10 @@ export function useChat() {
     previewRevision,
     fileInputRef,
     handleSend: handleSendBase,
+    queueUploadSummary: queueUploadSummaryBase,
+    clearPendingUploadSummary,
+    addGeneratedFileToLatestAssistant,
+    hasPendingUploadSummary,
     handleStop,
     handleImageSelect: handleImageSelectBase,
     removePendingImage,
@@ -87,6 +95,9 @@ export function useChat() {
   const deleteSessionById = useCallback(
     async (sid: string) => {
       const newSid = await deleteSessionByIdBase(sid);
+      if (newSid) {
+        void deleteSessionPreview(sid).catch((error) => console.warn('[Preview] 清理已删除会话缓存失败:', error));
+      }
       if (newSid && newSid !== sessionId) {
         usePreviewProjectStore.getState().createProject('react');
         setMessagesList([]);
@@ -123,6 +134,34 @@ export function useChat() {
     [handleImageSelectBase, notify],
   );
 
+  const queueUploadSummary = useCallback((
+    prompt: string,
+    images?: string[],
+    displayText?: string,
+    analysisContext?: string,
+    attachments?: UploadedAttachment[],
+  ) => {
+    queueUploadSummaryBase(prompt, images, displayText, analysisContext, attachments);
+  }, [queueUploadSummaryBase]);
+
+  const handleSummarizeImages = useCallback(async (files: File[]) => {
+    if (!sessionId) throw new Error('会话尚未准备好，请稍后重试。');
+    const compressed = await compressImages(files);
+    if (compressed.length === 0) throw new Error('没有可供概述的图片。');
+    const displayText = '';
+    const prompt = '请根据上传的图片，用中文简洁概述画面主要内容，最多 2 句话。不要输出代码、路径或文件清单；无法确定时请说明。';
+    const storedAttachments = await Promise.all(compressed.map(({ file, name }) =>
+      uploadSessionAttachment(sessionId, file, name, 'file'),
+    ));
+    queueUploadSummary(
+      prompt,
+      compressed.map((image) => image.base64),
+      displayText,
+      prompt,
+      storedAttachments,
+    );
+  }, [queueUploadSummary, sessionId]);
+
   /**
    * 发送消息（包装 base 方法，添加 Toast 错误提示）
    */
@@ -156,6 +195,7 @@ export function useChat() {
     input,
     setInput,
     pendingImages,
+    pendingUploadAttachments,
     isLoading,
     contextRemain,
     modelQuotaInfo,
@@ -171,6 +211,11 @@ export function useChat() {
     fetchSessions,
     // 消息方法
     handleSend,
+    queueUploadSummary,
+    clearPendingUploadSummary,
+    addGeneratedFileToLatestAssistant,
+    hasPendingUploadSummary,
+    handleSummarizeImages,
     handleStop,
     handleImageSelect,
     removePendingImage,

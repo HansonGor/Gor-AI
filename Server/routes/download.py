@@ -10,11 +10,14 @@ from fastapi.responses import FileResponse
 from docx import Document
 from openpyxl import load_workbook
 from pptx import Presentation
+from storage import GENERATED_ROOT, ensure_storage_dirs
 
 router = APIRouter()
 
 # 生成文件存储目录
-GENERATED_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "generated")
+ensure_storage_dirs()
+GENERATED_DIR = str(GENERATED_ROOT)
+LEGACY_GENERATED_DIR = Path(__file__).resolve().parent.parent / "generated"
 PREVIEWABLE_OFFICE_EXTENSIONS = {".docx", ".xlsx", ".pptx"}
 MAX_PREVIEW_FILE_SIZE = 20 * 1024 * 1024
 
@@ -24,13 +27,14 @@ def _safe_generated_file(filename: str) -> Path:
     if not filename or filename != os.path.basename(filename) or any(part in filename for part in ("..", "/", "\\")):
         raise HTTPException(status_code=400, detail="非法文件名")
 
-    generated_root = Path(GENERATED_DIR).resolve()
-    filepath = (generated_root / filename).resolve()
-    if filepath.parent != generated_root or filepath.is_symlink():
-        raise HTTPException(status_code=400, detail="非法文件路径")
-    if not filepath.is_file():
-        raise HTTPException(status_code=404, detail="文件不存在")
-    return filepath
+    roots = [Path(GENERATED_DIR).resolve(), LEGACY_GENERATED_DIR.resolve()]
+    for generated_root in roots:
+        filepath = (generated_root / filename).resolve()
+        if filepath.parent != generated_root or filepath.is_symlink():
+            continue
+        if filepath.is_file():
+            return filepath
+    raise HTTPException(status_code=404, detail="文件不存在")
 
 
 def _word_preview(filepath: Path) -> dict:

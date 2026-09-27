@@ -1,4 +1,5 @@
 import type { RefObject } from 'react';
+import { createPortal } from 'react-dom';
 import type { PreviewRuntimeState } from '../../preview/runtime/usePreviewRuntime.ts';
 import type { PreviewBuildState } from '../../preview/runtime/usePreviewCompiler.ts';
 import { Button } from '../ui/button';
@@ -8,62 +9,36 @@ interface PreviewRuntimePanelProps {
   state: PreviewRuntimeState;
   buildState: PreviewBuildState;
   onBuildAndRun: () => void;
-  onReset: () => void;
-  onRestartWorker: () => void;
+  isSavingGlb?: boolean;
   buildDisabled: boolean;
+  actionsHost?: HTMLElement | null;
 }
-
-const STATUS_LABELS: Record<PreviewRuntimeState['status'], string> = {
-  idle: 'Idle',
-  initializing: 'Initializing',
-  ready: 'Ready',
-  running: 'Running',
-  success: 'Success',
-  error: 'Runtime Error',
-};
 
 export default function PreviewRuntimePanel({
   iframeRef,
   state,
   buildState,
   onBuildAndRun,
-  onReset,
-  onRestartWorker,
+  isSavingGlb = false,
   buildDisabled,
+  actionsHost,
 }: PreviewRuntimePanelProps) {
+  const toolbarActions = (
+    <div className="preview-runtime-summary preview-runtime-toolbar">
+      <span
+        className={`preview-build-status ${buildState.status}`}
+        title={`Build: ${buildState.status === 'error' ? 'Build Error' : buildState.status}`}
+      >
+        Build: {buildState.status === 'error' ? 'Error' : buildState.status}
+      </span>
+      <Button type="button" variant="outline" size="sm" onClick={onBuildAndRun} disabled={buildDisabled || isSavingGlb} title={isSavingGlb ? '正在生成并保存 GLB…' : '构建并运行当前项目'}>
+        {isSavingGlb ? '正在生成 GLB…' : 'Build & Run'}
+      </Button>
+    </div>
+  );
   return (
     <section className="preview-runtime-panel" aria-label="Sandbox Runtime">
-      <div className="preview-runtime-summary">
-        <span className={`preview-build-status ${buildState.status}`}>
-          Build: {buildState.status === 'error' ? 'Build Error' : buildState.status}
-        </span>
-        <span className={`preview-runtime-status ${state.status}`}>
-          Runtime: {STATUS_LABELS[state.status]}
-        </span>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={onBuildAndRun}
-          disabled={buildDisabled}
-        >
-          Build &amp; Run
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={onReset}
-          disabled={state.status === 'idle'}
-        >
-          Reset Runtime
-        </Button>
-        {buildState.workerError && (
-          <Button type="button" variant="destructive" size="sm" onClick={onRestartWorker}>
-            Restart Worker
-          </Button>
-        )}
-      </div>
+      {actionsHost ? createPortal(toolbarActions, actionsHost) : toolbarActions}
       {(buildState.workerError || buildState.diagnostics.length > 0) && (
         <div className="preview-runtime-build-error" role="alert">
           {buildState.workerError && <strong>{buildState.workerError}</strong>}

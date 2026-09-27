@@ -3,7 +3,7 @@ import { useRef, useEffect, useCallback } from 'react';
 import MessageBubble from './MessageBubble';
 import type { MessageListProps } from '../../types';
 
-export default function MessageList({ messages, onPreviewFile, onPreviewProject }: MessageListProps) {
+export default function MessageList({ messages, onPreviewFile, onPreviewProject, onPreviewAttachment }: MessageListProps) {
   const listRef = useRef<HTMLDivElement | null>(null);
 
   // 只滚动消息容器，不影响页面整体布局
@@ -23,8 +23,17 @@ export default function MessageList({ messages, onPreviewFile, onPreviewProject 
       ref={listRef}
       className="message-list mx-auto flex w-full max-w-[1080px] flex-col gap-[0.24rem] px-[0.06rem] pb-[0.3rem] pt-[0.1rem] lg:gap-4 lg:px-0 lg:pb-6"
     >
-      {messages.map((msg) => (
-        <MessageBubble key={msg.id} message={msg} onPreviewFile={onPreviewFile} onPreviewProject={onPreviewProject} />
+      {messages.map((msg, index) => (
+        <MessageBubble
+          key={msg.id}
+          message={msg}
+          uploadedAttachments={msg.role === 'assistant' && messages[index - 1]?.role === 'user'
+            ? messages[index - 1].attachments
+            : undefined}
+          onPreviewFile={onPreviewFile}
+          onPreviewProject={onPreviewProject}
+          onPreviewAttachment={onPreviewAttachment}
+        />
       ))}
     </div>
   );

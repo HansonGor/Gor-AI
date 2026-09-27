@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 
 from langchain_core.tools import tool
+from tools.scene_spec import apply_scene_command
 
 
 MAX_FILES = 40
@@ -125,7 +126,7 @@ def write_preview_file(path: str, content: str) -> str:
 
 
 PREVIEW_TOOLS = [list_preview_files, read_preview_file, write_preview_file]
-PREVIEW_TOOL_NAMES = {item.name for item in PREVIEW_TOOLS}
+PREVIEW_TOOL_NAMES = {item.name for item in PREVIEW_TOOLS} | {"set_3d_scene"}
 
 
 def execute_preview_tool(workspace: PreviewProjectWorkspace | None, name: str, args: dict) -> str:
@@ -137,4 +138,24 @@ def execute_preview_tool(workspace: PreviewProjectWorkspace | None, name: str, a
         return workspace.read_file(args.get("path", ""))
     if name == "write_preview_file":
         return workspace.write_file(args.get("path", ""), args.get("content", ""))
+    if name == "set_3d_scene":
+        try:
+            current = None
+            serialized = workspace.files.get("/src/scene.json")
+            if serialized:
+                try:
+                    current = json.loads(serialized)
+                except json.JSONDecodeError:
+                    raise ValueError("当前 /src/scene.json 无法解析；请重新创建场景。")
+            scene = apply_scene_command(current, args)
+            result = workspace.write_file(
+                "/src/scene.json",
+                json.dumps(scene, ensure_ascii=False, separators=(",", ":")),
+            )
+            parsed = json.loads(result)
+            if parsed.get("success"):
+                return json.dumps({"success": True, "sceneSpec": scene}, ensure_ascii=False)
+            return result
+        except (ValueError, TypeError) as exc:
+            return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
     return '{"success":false,"error":"未知 Preview Project 工具。"}'

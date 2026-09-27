@@ -29,16 +29,38 @@ export interface PreviewFileChange extends ProjectChange {
   projectId: string;
 }
 
+export interface PreviewProjectSnapshot {
+  messageId: string;
+  id: string;
+  name: string;
+  template: 'react' | 'html';
+  /** Final preview artifact format (e.g. .html for React, .glb for a SceneSpec). */
+  outputExtension: string;
+  files: Record<string, string>;
+}
+
 export interface GeneratedFile {
   fileType: string;
   displayName: string;
   downloadUrl: string;
 }
 
+export interface UploadedAttachment {
+  name: string;
+  kind?: 'file' | 'folder' | 'archive';
+  storageId?: string;
+  previewStorageId?: string;
+  downloadUrl?: string;
+  size?: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  /** Request-only text context used for upload analysis; never rendered or persisted. */
+  analysisContext?: string;
+  attachments?: UploadedAttachment[];
   created_at?: string;
   images?: string[];
   isStreaming?: boolean;
@@ -51,6 +73,10 @@ export interface ChatMessage {
   videoUrl?: string;
   projectChanges?: ProjectChange[];
   previewChanges?: PreviewFileChange[];
+  /** Turn-specific Virtual FS snapshot, persisted with the assistant message to prevent source mixing. */
+  previewSnapshot?: PreviewProjectSnapshot;
+  /** True when the list is reconstructed from the persisted project snapshot (legacy messages). */
+  previewChangesRestored?: boolean;
 }
 
 export interface SSEEvent {
@@ -64,6 +90,7 @@ export interface SidebarProps {
   onSelectSession: (id: string) => void;
   onCreateSession: () => void;
   onDeleteSession: (id: string) => void;
+  theme?: ThemeType;
   isCollapsed?: boolean;
 }
 
@@ -72,13 +99,22 @@ export interface ChatBoxProps {
   input: string;
   setInput: (value: string) => void;
   pendingImages: Array<{ name: string; base64: string }>;
+  pendingUploadAttachments?: UploadedAttachment[];
   isLoading: boolean;
   handleSend: (text?: string) => void;
   handleStop: () => void;
   handleImageSelect: (files: FileList | File[]) => void;
   removePendingImage: (index: number) => void;
   onPreviewFile?: (file: GeneratedFile) => void;
-  onPreviewProject?: () => void;
+  onPreviewProject?: (file?: GeneratedFile, intent?: 'preview' | 'source', sourcePath?: string, snapshot?: PreviewProjectSnapshot) => void;
+  onPreviewAttachment?: (attachment: UploadedAttachment) => void;
+  onArchiveSelect?: (file: File, signal?: AbortSignal) => Promise<void>;
+  onFolderSelect?: (files: FileList | File[], signal?: AbortSignal) => Promise<void>;
+  onUploadImages?: (files: File[]) => Promise<void>;
+  importedUploadName?: string | null;
+  hasPendingUploadSummary?: boolean;
+  onRemoveImportedUpload?: () => void;
+  onClearPendingUpload?: () => void;
 }
 
 export interface InputAreaProps {
@@ -86,12 +122,20 @@ export interface InputAreaProps {
   setInput: (value: string) => void;
   isLoading: boolean;
   pendingImages: Array<{ name: string; base64: string }>;
+  pendingUploadAttachments?: UploadedAttachment[];
   onSend: (text?: string) => void;
   onStop: () => void;
   onImageSelect: (files: FileList | File[]) => void;
   onRemoveImage: (index: number) => void;
+  onArchiveSelect?: (file: File, signal?: AbortSignal) => Promise<void>;
+  onFolderSelect?: (files: FileList | File[], signal?: AbortSignal) => Promise<void>;
+  onUploadImages?: (files: File[]) => Promise<void>;
+  importedUploadName?: string | null;
+  hasPendingUploadSummary?: boolean;
+  onRemoveImportedUpload?: () => void;
+  onClearPendingUpload?: () => void;
 }
 
-export interface MessageListProps { messages: ChatMessage[]; onPreviewFile?: (file: GeneratedFile) => void; onPreviewProject?: () => void; }
-export interface MessageBubbleProps { message: ChatMessage; onPreviewFile?: (file: GeneratedFile) => void; onPreviewProject?: () => void; }
+export interface MessageListProps { messages: ChatMessage[]; onPreviewFile?: (file: GeneratedFile) => void; onPreviewProject?: (file?: GeneratedFile, intent?: 'preview' | 'source', sourcePath?: string, snapshot?: PreviewProjectSnapshot) => void; onPreviewAttachment?: (attachment: UploadedAttachment) => void; }
+export interface MessageBubbleProps { message: ChatMessage; uploadedAttachments?: UploadedAttachment[]; onPreviewFile?: (file: GeneratedFile) => void; onPreviewProject?: (file?: GeneratedFile, intent?: 'preview' | 'source', sourcePath?: string, snapshot?: PreviewProjectSnapshot) => void; onPreviewAttachment?: (attachment: UploadedAttachment) => void; }
 export interface WelcomeScreenProps { onPromptClick: (text: string) => void }

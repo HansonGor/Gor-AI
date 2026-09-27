@@ -30,6 +30,7 @@ ios/
 # ===== 运行时产物 =====
 .runlogs/
 Server/generated/
+Server/storage/
 Server/.server.log
 _server.log
 

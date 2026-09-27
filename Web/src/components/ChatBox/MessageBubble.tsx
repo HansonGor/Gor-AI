@@ -1,16 +1,20 @@
 ﻿// 单条消息气泡
 import {
   Box,
+  Code2,
+  Eye,
   FileSpreadsheet,
   FileText,
   Globe2,
   LoaderCircle,
   Paperclip,
   Presentation,
+  Folder,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { MODEL_CONFIG } from '../../config';
+import { previewArtifactName, previewSnapshotExtension } from '../../preview/core/artifactFormat';
 import { extractVideoUrl, removeVideoUrl, buildProxyVideoUrl } from '../../utils/video';
 import type { MessageBubbleProps } from '../../types';
 import { Button } from '../ui/button';
@@ -43,8 +47,10 @@ function formatMessageTime(message: { created_at?: string; id: string }): string
 
 export default function MessageBubble({
   message,
+  uploadedAttachments: replyAttachments = [],
   onPreviewFile,
   onPreviewProject,
+  onPreviewAttachment,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const images = message.images ?? [];
@@ -59,6 +65,29 @@ export default function MessageBubble({
       : message.content;
   const proxyVideoUrl = buildProxyVideoUrl(finalVideoUrl);
   const generatedFiles = message.files?.length ? message.files : message.file ? [message.file] : [];
+  const sceneArtifact = generatedFiles.find((file) => file.fileType === '3d');
+  const previewableGeneratedFiles = generatedFiles.filter((file) => file.fileType !== '3d' || Boolean(message.previewSnapshot));
+  const hasProjectOutput = (message.previewChanges?.length ?? 0) > 0;
+  const hasRestorableProjectOutput = hasProjectOutput && Boolean(message.previewSnapshot);
+  const projectArtifactSummary = hasRestorableProjectOutput && message.previewSnapshot
+    ? {
+        name: previewArtifactName(message.previewSnapshot, previewSnapshotExtension(message.previewSnapshot)),
+        title: previewArtifactName(message.previewSnapshot, previewSnapshotExtension(message.previewSnapshot))
+          .replace(/\.[^.]+$/, ''),
+        extension: previewSnapshotExtension(message.previewSnapshot),
+        kind: previewSnapshotExtension(message.previewSnapshot) === '.glb' ? '3D 模型' : '网页项目',
+      }
+    : null;
+  const changedSourcePaths = message.previewChanges?.map((change) => change.path) ?? [];
+  const preferredSourcePath =
+    changedSourcePaths.find((path) => /\/src\/App\.[jt]sx?$/i.test(path)) ??
+    changedSourcePaths.find((path) => /\.[jt]sx?$/i.test(path)) ??
+    changedSourcePaths[0];
+  const uploadedAttachments = isUser ? message.attachments ?? [] : [];
+  const attachmentOnlyLabel = uploadedAttachments.length
+    ? `已发送：${uploadedAttachments.map((attachment) => attachment.name).join('、')}`
+    : '';
+  const visibleUserContent = message.content === attachmentOnlyLabel ? '' : displayContent;
 
   return (
     <div
@@ -79,17 +108,38 @@ export default function MessageBubble({
           </div>
         )}
 
-        {displayContent &&
-          displayContent !== '（图片）' &&
+        {uploadedAttachments.length > 0 && (
+          <div className="uploaded-attachments" aria-label="随消息发送的文件">
+            {uploadedAttachments.map((attachment, index) => {
+              const AttachmentIcon = attachment.kind === 'folder' ? Folder : Paperclip;
+              return (
+                <a
+                  className="uploaded-attachment-chip"
+                  key={`${attachment.storageId ?? attachment.name}-${index}`}
+                  title={attachment.name}
+                  href={attachment.downloadUrl}
+                  download={attachment.downloadUrl && attachment.kind !== 'folder' ? attachment.name : undefined}
+                  onClick={(event) => { if (!attachment.downloadUrl) event.preventDefault(); }}
+                >
+                  <AttachmentIcon aria-hidden="true" />
+                  <span>{attachment.name}</span>
+                </a>
+              );
+            })}
+          </div>
+        )}
+
+        {(isUser ? visibleUserContent : displayContent) &&
+          (isUser ? visibleUserContent : displayContent) !== '（图片）' &&
           (isUser ? (
-            <span className="message-content whitespace-pre-wrap">{displayContent}</span>
+            <span className="message-content whitespace-pre-wrap">{visibleUserContent}</span>
           ) : (
             <div className="message-content markdown-body">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayContent}</ReactMarkdown>
             </div>
           ))}
 
-        {!isUser && message.projectChanges && message.projectChanges.length > 0 && (
+        {!isUser && !message.isStreaming && message.projectChanges && message.projectChanges.length > 0 && (
           <div className="project-changes" aria-label="本次代码修改">
             <div className="project-changes-title">
               已修改 {message.projectChanges.length} 个文件
@@ -103,26 +153,114 @@ export default function MessageBubble({
           </div>
         )}
 
-        {!isUser && message.previewChanges && message.previewChanges.length > 0 && (
+        {!isUser && !message.isStreaming && message.previewChanges && message.previewChanges.length > 0 && (
           <div className="project-changes" aria-label="虚拟项目文件">
             <div className="project-changes-title">
-              已生成 {message.previewChanges.length} 个虚拟文件（未修改本地源码）
+              {message.previewChangesRestored
+                ? `已恢复项目文件 ${message.previewChanges.length} 个`
+                : `已生成 ${message.previewChanges.length} 个虚拟文件（未修改本地源码）`}
             </div>
             {message.previewChanges.map((change) => (
               <details key={change.path} className="project-change">
-                <summary>{change.path} · 查看 diff</summary>
-                <pre>{change.diff}</pre>
+                <summary>{message.previewChangesRestored ? change.path : `${change.path} · 查看 diff`}</summary>
+                {change.diff && <pre>{change.diff}</pre>}
               </details>
             ))}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="preview-project-open"
-              onClick={onPreviewProject}
+          </div>
+        )}
+
+        {!isUser && !message.isStreaming && (
+          hasRestorableProjectOutput || previewableGeneratedFiles.length > 0
+        ) && (
+          <>
+            {projectArtifactSummary && (
+              <div
+                className="message-project-preview-summary"
+                aria-label={`本次预览：${projectArtifactSummary.title}，${projectArtifactSummary.kind}`}
+              >
+                <span className="message-project-preview-icon">
+                  {projectArtifactSummary.kind === '3D 模型'
+                    ? <Box aria-hidden="true" />
+                    : <Globe2 aria-hidden="true" />}
+                </span>
+                <span className="message-project-preview-copy">
+                  <span className="message-project-preview-label">本次项目预览</span>
+                  <strong className="message-project-preview-name" title={projectArtifactSummary.name}>
+                    {projectArtifactSummary.title}
+                  </strong>
+                </span>
+                <span className="message-project-preview-kind">
+                  {projectArtifactSummary.kind}
+                  <small>{projectArtifactSummary.extension.replace('.', '').toUpperCase()}</small>
+                </span>
+              </div>
+            )}
+            <div
+              className={`message-artifact-actions ${hasRestorableProjectOutput ? 'message-project-actions' : ''}`}
+              aria-label="预览和生成的产物"
             >
-              在 Preview Worker 中预览
-            </Button>
+              {hasRestorableProjectOutput && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="preview-project-open project-action-card"
+                  onClick={() => onPreviewProject?.(sceneArtifact, 'preview', undefined, message.previewSnapshot)}
+                >
+                  <Eye aria-hidden="true" />
+                  <span className="project-action-copy">
+                    <span className="project-action-title">{sceneArtifact ? '预览模型' : '预览项目'}</span>
+                    <span className="project-action-description">在预览窗口中查看效果</span>
+                  </span>
+                </Button>
+              )}
+              {hasRestorableProjectOutput && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="preview-project-open project-action-card"
+                  onClick={() => onPreviewProject?.(sceneArtifact, 'source', preferredSourcePath, message.previewSnapshot)}
+                >
+                  <Code2 aria-hidden="true" />
+                  <span className="project-action-copy">
+                    <span className="project-action-title">{sceneArtifact ? '查看场景源码' : '查看项目源码'}</span>
+                    <span className="project-action-description">打开本条消息对应的源码</span>
+                  </span>
+                </Button>
+              )}
+              {!hasRestorableProjectOutput && previewableGeneratedFiles.map((file) => (
+                <Button
+                  key={file.downloadUrl}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="preview-project-open"
+                  onClick={() => onPreviewFile?.(file)}
+                  title={file.displayName}
+                >
+                  <GeneratedFileIcon type={file.fileType} />
+                  预览 {file.displayName}
+                </Button>
+              ))}
+            </div>
+          </>
+        )}
+
+        {!isUser && !message.isStreaming && replyAttachments.length > 0 && onPreviewAttachment && (
+          <div className="uploaded-preview-actions" aria-label="上传附件预览">
+            {replyAttachments.map((attachment, index) => (
+              <Button
+                key={`${attachment.kind ?? 'file'}:${attachment.name}:${index}`}
+                type="button"
+                variant="outline"
+                size="sm"
+                className="preview-project-open"
+                onClick={() => onPreviewAttachment(attachment)}
+              >
+                在 Preview Worker 中预览{replyAttachments.length > 1 ? ` ${attachment.name}` : ''}
+              </Button>
+            ))}
           </div>
         )}
 
@@ -148,27 +286,6 @@ export default function MessageBubble({
             </span>
           </div>
         )}
-
-        {generatedFiles.map((file) => (
-          <a
-            key={file.downloadUrl}
-            className="file-download-card"
-            href={file.downloadUrl}
-            onClick={(event) => {
-              if (!onPreviewFile) return;
-              event.preventDefault();
-              onPreviewFile(file);
-            }}
-          >
-            <span className="file-icon">
-              <GeneratedFileIcon type={file.fileType} />
-            </span>
-            <span className="file-info">
-              <span className="file-name">{file.displayName}</span>
-              <span className="file-action">在 Preview Worker 中打开</span>
-            </span>
-          </a>
-        ))}
 
         {proxyVideoUrl && (
           <div className="video-player-container">

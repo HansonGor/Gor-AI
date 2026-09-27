@@ -2,7 +2,8 @@ import { useSyncExternalStore } from 'react';
 import { createTemplateFiles } from '../preview/templates/index.ts';
 import { deleteFile, listFiles, readFile, writeFile } from '../preview/core/virtualFs.ts';
 import { normalizePreviewPath } from '../preview/core/pathUtils.ts';
-import type { PreviewProject, PreviewTemplate } from '../preview/core/types.ts';
+import type { PreviewFiles, PreviewProject, PreviewTemplate } from '../preview/core/types.ts';
+import { createSceneProjectFiles, validateSceneSpec } from '../modeling/sceneSpec.ts';
 
 const DEFAULT_TEMPLATE: PreviewTemplate = 'react';
 
@@ -25,8 +26,10 @@ export interface PreviewProjectStoreState {
   writeFile: (path: string, content: string) => void;
   deleteFile: (path: string) => void;
   resetProject: () => void;
+  importProject: (template: PreviewTemplate, files: PreviewFiles, name?: string, projectId?: string) => void;
   getFilePaths: () => string[];
   applyAiFileChange: (change: { projectId: string; path: string; content: string }) => boolean;
+  applyAiSceneSpec: (change: { projectId: string; content: string }) => boolean;
   requestBuildAndRun: () => void;
 }
 
@@ -73,6 +76,27 @@ const actions: Omit<PreviewProjectStoreState, 'project' | 'selectedFilePath' | '
     const files = createTemplateFiles(state.project.template);
     updateProject({ ...state.project, files }, listFiles(files)[0] ?? null);
   },
+  importProject(template, files, name, projectId) {
+    const normalizedFiles: PreviewFiles = Object.create(null);
+    for (const [path, content] of Object.entries(files)) {
+      const normalizedPath = normalizePreviewPath(path);
+      if (normalizedPath !== path || typeof content !== 'string') throw new Error(`无效的源码文件：${path}`);
+      normalizedFiles[path] = content;
+    }
+    if (!normalizedFiles['/index.html']) throw new Error('源码 ZIP 缺少 /index.html。');
+    if (Object.keys(normalizedFiles).length > 100) throw new Error('源码 ZIP 文件过多。');
+    const totalBytes = Object.values(normalizedFiles).reduce((total, content) => total + new TextEncoder().encode(content).byteLength, 0);
+    if (totalBytes > 5_000_000) throw new Error('源码 ZIP 超过 5 MB。');
+    const project: PreviewProject = {
+      id: projectId?.trim() || `preview-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: name?.trim().slice(0, 80) || (template === 'react' ? 'Imported React Project' : 'Imported HTML Project'),
+      template,
+      files: normalizedFiles,
+    };
+    updateProject(project, normalizedFiles['/src/scene.json'] !== undefined
+      ? '/src/scene.json'
+      : listFiles(normalizedFiles)[0] ?? null);
+  },
   getFilePaths() {
     return listFiles(state.project.files);
   },
@@ -86,6 +110,19 @@ const actions: Omit<PreviewProjectStoreState, 'project' | 'selectedFilePath' | '
     if (Object.values(files).reduce((total, value) => total + new TextEncoder().encode(value).length, 0) > 500_000) return false;
     updateProject({ ...state.project, files }, path);
     return true;
+  },
+  applyAiSceneSpec(change) {
+    if (change.projectId !== state.project.id || typeof change.content !== 'string' || new TextEncoder().encode(change.content).byteLength > 100_000) return false;
+    try {
+      const scene = validateSceneSpec(JSON.parse(change.content));
+      const files = { ...state.project.files, ...createSceneProjectFiles(scene) };
+      if (Object.keys(files).length > 40 || Object.values(files).some((content) => new TextEncoder().encode(content).byteLength > 100_000)) return false;
+      if (Object.values(files).reduce((total, content) => total + new TextEncoder().encode(content).byteLength, 0) > 500_000) return false;
+      updateProject({ ...state.project, name: scene.name, files }, '/src/scene.json');
+      return true;
+    } catch {
+      return false;
+    }
   },
   requestBuildAndRun() {
     state = { ...state, buildRunRevision: state.buildRunRevision + 1 };

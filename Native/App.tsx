@@ -28,7 +28,7 @@ function MainScreen() {
   // Web 端用 localhost，真机用电脑局域网 IP（真机 localhost 指向手机自身）
   const viteUrl = Platform.OS === 'web'
     ? 'http://localhost:5173/'
-    : 'http://192.168.1.3:5173/';
+    : 'http://192.168.1.4:5173/';
 
   /**
    * 处理 Web 端发来的消息

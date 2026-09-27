@@ -8,9 +8,11 @@ import {
   getSessions,
   deleteSession as deleteSessionApi,
 } from '../api/chat';
+import { getSessionPreviewProject } from '../api/previewProject';
 import { CHAT_CONFIG } from '../config';
 import { isToday } from '../utils/date';
 import type { Session, ChatMessage } from '../types';
+import { createMessagePreviewSnapshot } from '../preview/core/projectSnapshot';
 
 const { DEFAULT_USER_ID } = CHAT_CONFIG;
 
@@ -48,15 +50,32 @@ export function useSession() {
    */
   const loadHistory = useCallback(async (sid: string): Promise<ChatMessage[]> => {
     try {
-      const history = await getSessionMessages(sid);
+      const [history, previewSnapshot] = await Promise.all([
+        getSessionMessages(sid),
+        getSessionPreviewProject(sid).catch(() => null),
+      ]);
       if (history && history.length > 0) {
-        return history.map((m) => ({
+        const restored: ChatMessage[] = history.map((m) => ({
           id: m.id || Date.now().toString(),
           role: m.role,
           content: m.content,
           images: m.images || undefined,
-          files: m.attachments || undefined,
-          file: m.attachments?.[m.attachments.length - 1] || undefined,
+          attachments: m.role === 'user' ? m.attachments || undefined : undefined,
+          files: m.role === 'assistant' ? m.attachments || undefined : undefined,
+          file: m.role === 'assistant' ? m.attachments?.[m.attachments.length - 1] || undefined : undefined,
+          previewChanges: m.preview_changes || m.previewChanges || undefined,
+          previewSnapshot: (() => {
+            const snapshot = m.preview_snapshot || m.previewSnapshot;
+            if (!snapshot || typeof snapshot !== 'object' || !snapshot.files || typeof snapshot.files !== 'object') return undefined;
+            const messageId = String(m.id || '');
+            const changes = (m.preview_changes || m.previewChanges || []) as Array<{ path?: string }>;
+            return createMessagePreviewSnapshot({
+              id: String(snapshot.id || messageId),
+              name: String(snapshot.name || 'Preview Project'),
+              template: snapshot.template === 'html' ? 'html' : 'react',
+              files: snapshot.files as Record<string, string>,
+            }, messageId, changes.flatMap((change) => typeof change.path === 'string' ? [change.path] : []));
+          })(),
           isStreaming: false,
           tokenUsage:
             m.prompt_tokens || m.completion_tokens || m.total_tokens
@@ -67,6 +86,27 @@ export function useSession() {
                 }
               : undefined,
         }));
+        // Older assistant turns predate preview-change persistence. When the session has
+        // a saved generated project, reconstruct its file list on the latest assistant turn.
+        if (previewSnapshot?.origin === 'generated') {
+          const latestAssistant = [...restored].reverse().find((message) => message.role === 'assistant');
+          if (latestAssistant && !latestAssistant.previewSnapshot) {
+            latestAssistant.previewSnapshot = createMessagePreviewSnapshot(
+              previewSnapshot.project,
+              latestAssistant.id,
+              Object.keys(previewSnapshot.project.files),
+            );
+          }
+          if (latestAssistant && !latestAssistant.previewChanges?.length) {
+            latestAssistant.previewChanges = Object.keys(previewSnapshot.project.files).map((path) => ({
+              projectId: previewSnapshot.project.id,
+              path,
+              diff: '',
+            }));
+            latestAssistant.previewChangesRestored = true;
+          }
+        }
+        return restored;
       }
       return [];
     } catch (err) {

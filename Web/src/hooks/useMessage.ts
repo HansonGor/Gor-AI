@@ -12,8 +12,10 @@ import type {
   ProjectChange,
   PreviewFileChange,
   GeneratedFile,
+  UploadedAttachment,
 } from '../types';
 import { usePreviewProjectStore } from '../stores/previewProjectStore.ts';
+import { createMessagePreviewSnapshot } from '../preview/core/projectSnapshot.ts';
 
 const { QUOTA_WARNING_THRESHOLD } = MODEL_CONFIG;
 
@@ -46,11 +48,21 @@ export function useMessage(sessionId: string | null) {
   const [projectChanges, setProjectChanges] = useState<ProjectChange[]>([]);
   const [projectRevision, setProjectRevision] = useState(0);
   const [previewRevision, setPreviewRevision] = useState(0);
+  const [pendingUploadSummary, setPendingUploadSummary] = useState<{
+    prompt: string;
+    images?: string[];
+    displayText?: string;
+    analysisContext?: string;
+    attachments?: UploadedAttachment[];
+  } | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-
   const { startVideoPolling, stopVideoPolling } = useVideoPolling();
+
+  useEffect(() => {
+    setPendingUploadSummary(null);
+  }, [sessionId]);
 
   /**
    * 更新最后一条 assistant 消息
@@ -105,6 +117,8 @@ export function useMessage(sessionId: string | null) {
   const setMessagesList = useCallback((msgList: ChatMessage[]) => {
     setMessages(msgList);
     setProjectChanges([]);
+    setProjectRevision(0);
+    setPreviewRevision(0);
   }, []);
 
   /**
@@ -119,9 +133,24 @@ export function useMessage(sessionId: string | null) {
    * 发送消息
    */
   const handleSend = useCallback(
-    async (presetText?: string) => {
-      const content = (presetText ?? input).trim();
-      const hasImages = pendingImages.length > 0;
+    async (
+      presetText?: string,
+      imageOverrides?: string[],
+      displayText?: string,
+      analysisContext?: string,
+    ) => {
+      const typedContent = (presetText ?? input).trim();
+      const uploadSummary = pendingUploadSummary;
+      const content = typedContent || (uploadSummary ? uploadSummary.prompt : '');
+      const attachments = uploadSummary?.attachments ?? pendingImages.map((image) => ({ name: image.name, kind: 'file' as const }));
+      const attachmentLabel = attachments.map((attachment) => attachment.name).filter(Boolean).join('、');
+      const visibleContent = (displayText ?? (typedContent || (attachmentLabel ? `已发送：${attachmentLabel}` : uploadSummary?.displayText || content))).trim();
+      const images = imageOverrides ?? uploadSummary?.images ?? pendingImages.map((image) => image.base64);
+      const requestAnalysisContext = analysisContext ?? uploadSummary?.analysisContext;
+      const analysisContextMode = uploadSummary || pendingImages.length > 0
+        ? (typedContent ? 'reference' : 'summary')
+        : undefined;
+      const hasImages = images.length > 0;
 
       if ((!content && !hasImages) || isLoading) return;
 
@@ -133,8 +162,10 @@ export function useMessage(sessionId: string | null) {
       const userMsg: ChatMessage = {
         id: Date.now().toString(),
         role: 'user',
-        content: content || '（图片）',
-        images: hasImages ? pendingImages.map((img) => img.base64) : undefined,
+        content: visibleContent || '（图片）',
+        analysisContext,
+        attachments: attachments.length ? attachments : undefined,
+        images: hasImages ? images : undefined,
       };
       const assistantMsg: ChatMessage & { isStreaming?: boolean; toolStatus?: string } = {
         id: (Date.now() + 1).toString(),
@@ -146,7 +177,8 @@ export function useMessage(sessionId: string | null) {
 
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
       setInput('');
-      setPendingImages([]);
+      if (uploadSummary) setPendingUploadSummary(null);
+      if (!imageOverrides) setPendingImages([]);
       setIsLoading(true);
 
       // 构建历史消息（包含图片）——使用 messagesRef 避免依赖 messages
@@ -154,6 +186,7 @@ export function useMessage(sessionId: string | null) {
         role: m.role,
         content: m.content,
         images: m.images,
+        attachments: m.attachments,
       }));
 
       const controller = new AbortController();
@@ -164,8 +197,11 @@ export function useMessage(sessionId: string | null) {
         await sendChatMessage(
           {
             sessionId,
-            message: content,
+            message: visibleContent || '（图片）',
             messages: history,
+            attachments,
+            analysisContext: requestAnalysisContext,
+            analysisContextMode,
             previewProject: structuredClone(usePreviewProjectStore.getState().project),
           },
           {
@@ -227,16 +263,30 @@ export function useMessage(sessionId: string | null) {
               }));
             },
             onPreviewFileChanged: (change: PreviewFileChange & { content: string }) => {
-              if (!usePreviewProjectStore.getState().applyAiFileChange(change)) return;
+              const store = usePreviewProjectStore.getState();
+              const isSceneSpec = change.path === '/src/scene.json';
+              const applied = isSceneSpec
+                ? store.applyAiSceneSpec(change)
+                : store.applyAiFileChange(change);
+              if (!applied) return;
               previewFilesChanged = true;
               setPreviewRevision((revision) => revision + 1);
-              updateLastAssistant((last) => ({
-                ...last,
-                previewChanges: [
+              const updatedProject = usePreviewProjectStore.getState().project;
+              updateLastAssistant((last) => {
+                const previewChanges = [
                   ...(last.previewChanges ?? []).filter((item) => item.path !== change.path),
                   { projectId: change.projectId, path: change.path, diff: change.diff },
-                ],
-              }));
+                ];
+                return {
+                  ...last,
+                  previewChanges,
+                  previewSnapshot: createMessagePreviewSnapshot(
+                    updatedProject,
+                    last.id,
+                    previewChanges.map((item) => item.path),
+                  ),
+                };
+              });
             },
             onVideoReady: (videoInfo: any) => {
               updateLastAssistant((last) => ({
@@ -321,13 +371,51 @@ export function useMessage(sessionId: string | null) {
       input,
       isLoading,
       pendingImages,
-      sessionId,
+      pendingUploadSummary,
+          sessionId,
       updateLastAssistant,
       startVideoPolling,
       stopVideoPolling,
       alert,
     ],
   );
+
+  const queueUploadSummary = useCallback((
+    prompt: string,
+    images?: string[],
+    displayText?: string,
+    analysisContext?: string,
+    attachments?: UploadedAttachment[],
+  ) => {
+    setPendingUploadSummary((previous) => {
+      if (!previous) return { prompt, images, displayText, analysisContext, attachments };
+      const mergedAttachments = [...(previous.attachments ?? [])];
+      for (const attachment of attachments ?? []) {
+        if (!mergedAttachments.some((item) => item.name === attachment.name && item.kind === attachment.kind)) {
+          mergedAttachments.push(attachment);
+        }
+      }
+      const contexts = [previous.analysisContext, analysisContext].filter((value): value is string => Boolean(value?.trim()));
+      const prompts = [previous.prompt, prompt].filter((value): value is string => Boolean(value?.trim()));
+      return {
+        prompt: [...new Set(prompts)].join('\n'),
+        images: [...(previous.images ?? []), ...(images ?? [])],
+        displayText: displayText || previous.displayText,
+        analysisContext: [...new Set(contexts)].join('\n\n'),
+        attachments: mergedAttachments,
+      };
+    });
+  }, []);
+
+  const clearPendingUploadSummary = useCallback(() => setPendingUploadSummary(null), []);
+
+  const addGeneratedFileToLatestAssistant = useCallback((file: GeneratedFile) => {
+    updateLastAssistant((last) => ({
+      ...last,
+      file,
+      files: [...(last.files ?? []).filter((item) => item.downloadUrl !== file.downloadUrl), file],
+    }));
+  }, [updateLastAssistant]);
 
   /**
    * 停止生成
@@ -343,6 +431,7 @@ export function useMessage(sessionId: string | null) {
     input,
     setInput,
     pendingImages,
+    pendingUploadAttachments: pendingUploadSummary?.attachments ?? pendingImages.map((image) => ({ name: image.name, kind: 'file' as const })),
     isLoading,
     contextRemain,
     modelQuotaInfo,
@@ -352,6 +441,10 @@ export function useMessage(sessionId: string | null) {
     fileInputRef,
     // 方法
     handleSend,
+    queueUploadSummary,
+    clearPendingUploadSummary,
+    addGeneratedFileToLatestAssistant,
+    hasPendingUploadSummary: pendingUploadSummary !== null,
     handleStop,
     handleImageSelect,
     removePendingImage,

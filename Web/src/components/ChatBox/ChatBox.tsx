@@ -10,6 +10,7 @@ export default function ChatBox({
   input,
   setInput,
   pendingImages,
+  pendingUploadAttachments,
   isLoading,
   handleSend,
   handleStop,
@@ -17,6 +18,14 @@ export default function ChatBox({
   removePendingImage,
   onPreviewFile,
   onPreviewProject,
+  onPreviewAttachment,
+  onArchiveSelect,
+  onFolderSelect,
+  onUploadImages,
+  importedUploadName,
+  hasPendingUploadSummary,
+  onRemoveImportedUpload,
+  onClearPendingUpload,
 }: ChatBoxProps) {
   return (
     <div className="relative flex h-full w-full flex-col">
@@ -25,7 +34,7 @@ export default function ChatBox({
         {messages.length === 0 ? (
           <WelcomeScreen onPromptClick={handleSend} />
         ) : (
-          <MessageList messages={messages} onPreviewFile={onPreviewFile} onPreviewProject={onPreviewProject} />
+          <MessageList messages={messages} onPreviewFile={onPreviewFile} onPreviewProject={onPreviewProject} onPreviewAttachment={onPreviewAttachment} />
         )}
       </div>
 
@@ -36,10 +45,18 @@ export default function ChatBox({
           setInput={setInput}
           isLoading={isLoading}
           pendingImages={pendingImages}
+          pendingUploadAttachments={pendingUploadAttachments}
           onSend={handleSend}
           onStop={handleStop}
           onImageSelect={handleImageSelect}
           onRemoveImage={removePendingImage}
+          onArchiveSelect={onArchiveSelect}
+          onFolderSelect={onFolderSelect}
+          onUploadImages={onUploadImages}
+          importedUploadName={importedUploadName}
+          hasPendingUploadSummary={hasPendingUploadSummary}
+          onRemoveImportedUpload={onRemoveImportedUpload}
+          onClearPendingUpload={onClearPendingUpload}
         />
       </div>
     </div>

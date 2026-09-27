@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import type { ParentToRuntimeMessage, RuntimeConsoleLevel, RuntimeMetadata, RuntimeToParentMessage } from './runtimeProtocol.ts';
 import { isParentToRuntimeMessage } from './runtimeProtocol.ts';
 import { normalizeRuntimeError, serializeConsoleArgs } from './runtimeSerialization.ts';
+import { installSandboxStorage } from './sandboxStorage.ts';
 
 declare global {
   interface Window {
@@ -18,9 +19,14 @@ declare global {
       jsxDevRuntime: typeof jsxDevRuntime;
       THREE: typeof THREE;
     };
+    __GOR_PREVIEW_DISPOSE__?: () => void;
   }
 }
 
+// Opaque sandbox origins cannot access browser-persistent Storage. Supply a
+// bounded, per-runtime in-memory implementation so generated apps can use the
+// familiar API without granting allow-same-origin or touching Gor's storage.
+installSandboxStorage(window);
 window.__GOR_PREVIEW_RUNTIME__ = { React, ReactDOM, ReactDOMClient, jsxRuntime, jsxDevRuntime, THREE };
 
 let active: RuntimeMetadata | null = null;
@@ -61,6 +67,12 @@ window.addEventListener('unhandledrejection', (event) => {
 });
 
 function resetDocument(): void {
+  try {
+    window.__GOR_PREVIEW_DISPOSE__?.();
+  } catch (error) {
+    console.warn('Preview runtime cleanup failed', error);
+  }
+  delete window.__GOR_PREVIEW_DISPOSE__;
   document.getElementById('root')?.replaceChildren();
   currentStyle?.remove();
   currentStyle = null;

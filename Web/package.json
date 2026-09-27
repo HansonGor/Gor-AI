@@ -4,7 +4,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "predev": "vite build --config vite.preview-runtime.config.js",
     "dev": "vite",
+    "prebuild": "vite build --config vite.preview-runtime.config.js",
     "build": "vite build",
     "test:preview": "node --experimental-strip-types --test scripts/preview-core.test.ts",
     "preview": "vite preview",
@@ -21,6 +23,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "esbuild-wasm": "^0.25.12",
+    "fflate": "0.8.3",
     "lucide-react": "^1.41.0",
     "pinyin-pro": "^3.29.3",
     "postcss": "^8.5.28",

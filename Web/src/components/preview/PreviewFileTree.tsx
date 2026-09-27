@@ -1,21 +1,46 @@
 import { useEffect, useMemo, useState } from 'react';
-import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { PanelLeftClose, PanelLeftOpen, Plus } from 'lucide-react';
 import { buildFileTree } from '../../preview/core/fileTree';
 import type { PreviewFiles } from '../../preview/core/types';
+import type { FileTreeNode } from '../../preview/core/types';
 import PreviewFileTreeNode from './PreviewFileTreeNode';
+import { Button } from '../ui/button';
+import { isSceneRendererProject } from '../../modeling/sceneSpec';
 
 interface PreviewFileTreeProps {
   files: PreviewFiles;
   selectedFilePath: string | null;
   onSelectFile: (path: string) => void;
+  onDownloadFile: (path: string) => void;
+  onCreateInDirectory: (directory: string) => void;
+  onRequestDelete: (node: FileTreeNode) => void;
 }
 
 export default function PreviewFileTree({
   files,
   selectedFilePath,
   onSelectFile,
+  onDownloadFile,
+  onCreateInDirectory,
+  onRequestDelete,
 }: PreviewFileTreeProps) {
-  const tree = useMemo(() => buildFileTree(files), [files]);
+  const tree = useMemo(() => {
+    const sceneInfrastructurePaths = new Set([
+      '/src/App.tsx',
+      '/src/main.tsx',
+      '/src/style.css',
+    ]);
+    const visibleFiles = !isSceneRendererProject(files)
+      ? files
+      : Object.fromEntries(Object.entries(files).filter(([path]) => !sceneInfrastructurePaths.has(path)));
+    const hideFolderMarker = (nodes: ReturnType<typeof buildFileTree>): ReturnType<typeof buildFileTree> =>
+      nodes
+        .filter((node) => !(node.type === 'file' && node.name === '.gor-folder'))
+        .map((node) => node.type === 'directory'
+          ? { ...node, children: hideFolderMarker(node.children ?? []) }
+          : node);
+    return hideFolderMarker(buildFileTree(visibleFiles));
+  }, [files]);
   const directoryPaths = useMemo(() => {
     const paths: string[] = [];
     const visit = (nodes: ReturnType<typeof buildFileTree>) =>
@@ -64,7 +89,12 @@ export default function PreviewFileTree({
       </button>
       {!collapsed && (
         <>
-          <div className="preview-file-tree-label">Files</div>
+          <div className="preview-file-tree-heading">
+            <div className="preview-file-tree-label">Files</div>
+            <Button type="button" variant="ghost" size="icon" className="preview-file-tree-create" onClick={() => onCreateInDirectory('/')} title="在项目根目录新建" aria-label="在项目根目录新建">
+              <Plus size={15} />
+            </Button>
+          </div>
           <ul>
             {tree.map((node) => (
               <PreviewFileTreeNode
@@ -75,6 +105,9 @@ export default function PreviewFileTree({
                 selectedFilePath={selectedFilePath}
                 onToggleDirectory={toggleDirectory}
                 onSelectFile={onSelectFile}
+                onDownloadFile={onDownloadFile}
+                onCreateInDirectory={onCreateInDirectory}
+                onRequestDelete={onRequestDelete}
               />
             ))}
           </ul>

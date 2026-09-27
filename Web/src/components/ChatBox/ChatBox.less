@@ -25,6 +25,63 @@
   }
 }
 
+.chat-archive-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 12px 0;
+  color: rgba(226, 232, 240, 0.76);
+  font-size: 12px;
+  line-height: 1.35;
+
+  .chat-archive-file-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    max-width: min(100%, 390px);
+    padding: 4px 6px 4px 11px;
+    border: 1px solid rgba(167, 139, 250, 0.28);
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(124, 104, 238, 0.12), rgba(124, 104, 238, 0.06));
+    color: #c4b5fd;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+
+    > svg { flex: 0 0 auto; opacity: 0.9; }
+  }
+
+  .chat-archive-name {
+    min-width: 0;
+    overflow: hidden;
+    color: inherit;
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-archive-state {
+    flex: 0 0 auto;
+    color: rgba(203, 213, 225, 0.66);
+    font-size: 11px;
+  }
+
+  .chat-archive-cancel {
+    width: 24px;
+    height: 24px;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    background: rgba(255, 255, 255, 0.1);
+    color: rgba(255, 255, 255, 0.88);
+    opacity: 1;
+    transition: background 140ms ease, color 140ms ease, transform 140ms ease;
+  }
+
+  .chat-archive-cancel:hover { background: rgba(248, 113, 113, 0.22); color: #fff; transform: scale(1.04); }
+}
+
 @media (min-width: 1024px) {
   .input-dock {
     padding: 0 32px 14px;
@@ -87,6 +144,188 @@
   color: #c9c1ff;
   font-size: 12px;
   cursor: pointer;
+}
+
+.message-artifact-actions {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+
+  .preview-project-open {
+    margin-top: 0;
+  }
+}
+
+.message-project-preview-summary {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(167, 155, 255, 0.12);
+  border-radius: 12px;
+  // Keep this informational surface close to the chat bubble, so it won't read as a third action button.
+  background: rgba(255, 255, 255, 0.025);
+  color: rgba(226, 222, 255, 0.68);
+}
+
+.message-project-preview-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 1px solid rgba(167, 155, 255, 0.16);
+  border-radius: 11px;
+  background: rgba(124, 104, 238, 0.09);
+  color: #c6bdff;
+
+  svg {
+    width: 19px;
+    height: 19px;
+  }
+}
+
+.message-project-preview-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+  line-height: 1.4;
+}
+
+.message-project-preview-label {
+  color: rgba(226, 222, 255, 0.58);
+  font-size: 11px;
+}
+
+.message-project-preview-name {
+  overflow: hidden;
+  min-width: 0;
+  color: #ece9ff;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-project-preview-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border: 1px solid rgba(167, 155, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(10, 10, 20, 0.18);
+  color: rgba(226, 222, 255, 0.72);
+  font-size: 11px;
+  line-height: 1.2;
+
+  small {
+    color: rgba(226, 222, 255, 0.46);
+    font-size: 9px;
+    letter-spacing: 0.04em;
+  }
+}
+
+.message-project-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.project-action-card {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 11px;
+  width: 100%;
+  min-width: 0;
+  min-height: 72px;
+  margin: 0;
+  padding: 11px 14px;
+  border-color: rgba(143, 131, 255, 0.28);
+  border-radius: 11px;
+  background: linear-gradient(135deg, rgba(124, 104, 238, 0.14), rgba(102, 126, 234, 0.08));
+  text-align: left;
+  white-space: normal;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+
+  > svg {
+    width: 19px;
+    height: 19px;
+    flex: 0 0 auto;
+    color: #c9c1ff;
+  }
+
+  &:hover {
+    border-color: rgba(167, 155, 255, 0.62);
+    background: linear-gradient(135deg, rgba(124, 104, 238, 0.23), rgba(102, 126, 234, 0.14));
+    transform: translateY(-1px);
+  }
+}
+
+@media (max-width: 520px) {
+  .message-project-preview-summary {
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 9px;
+    padding: 10px 11px;
+  }
+
+  .message-project-preview-icon {
+    width: 36px;
+    height: 36px;
+    grid-row: span 2;
+  }
+
+  .message-project-preview-kind {
+    grid-column: 2;
+    justify-self: start;
+    margin-top: -3px;
+  }
+
+  .message-project-actions {
+    grid-template-columns: 1fr;
+  }
+}
+
+.project-action-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 3px;
+}
+
+.project-action-title {
+  overflow: hidden;
+  color: #e9e6ff;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-action-description {
+  overflow: hidden;
+  color: rgba(226, 222, 255, 0.62);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uploaded-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 .project-change {
@@ -191,6 +430,58 @@
   display: block;
 }
 
+.uploaded-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.08rem;
+  margin-bottom: 0.08rem;
+}
+
+.uploaded-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.07rem;
+  max-width: min(100%, 5.5rem);
+  padding: 0.07rem 0.12rem;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+  background: rgba(27, 25, 62, 0.2);
+  color: inherit;
+  font-size: 0.24rem;
+  line-height: 1.3;
+
+  svg {
+    width: 0.28rem;
+    height: 0.28rem;
+    flex: 0 0 auto;
+  }
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@media (min-width: 1024px) {
+  .uploaded-attachments {
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+
+  .uploaded-attachment-chip {
+    max-width: min(100%, 360px);
+    gap: 7px;
+    padding: 5px 10px;
+    font-size: 12px;
+
+    svg {
+      width: 15px;
+      height: 15px;
+    }
+  }
+}
+
 // ========== 文件下载卡片 ==========
 .file-download-card {
   display: flex;
@@ -231,6 +522,36 @@
   .file-action {
     font-size: @font-size-caption;
     color: @color-primary;
+  }
+}
+
+.file-download-card-inline {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  margin-top: 0;
+  padding: 6px 10px;
+  gap: 8px;
+  border-radius: 7px;
+
+  .file-icon {
+    display: flex;
+    align-items: center;
+    font-size: 16px;
+
+    svg {
+      width: 16px;
+      height: 16px;
+    }
+  }
+
+  .file-name {
+    max-width: 220px;
+    font-size: 12px;
+  }
+
+  .file-action {
+    font-size: 11px;
   }
 }
 
@@ -502,8 +823,78 @@
   }
 }
 
+// The app uses its own theme classes rather than Tailwind's `.dark` class,
+// so give the token-based import popover an explicit dark palette.
+.chat-page:not(.theme-light) .chat-import-popover {
+  border-color: rgba(166, 158, 218, 0.2);
+  background: linear-gradient(145deg, rgba(31, 31, 47, 0.98), rgba(22, 22, 35, 0.98));
+  color: #f3f2f8;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.48), 0 0 0 1px rgba(255, 255, 255, 0.025);
+
+  .border-b { border-color: rgba(255, 255, 255, 0.09); }
+  h2, h3 { color: #f3f2f8; }
+  p { color: rgba(213, 211, 228, 0.68); }
+
+  .chat-import-option {
+    border-color: rgba(255, 255, 255, 0.09);
+    background: rgba(255, 255, 255, 0.035);
+
+    &:hover {
+      border-color: rgba(157, 140, 255, 0.35);
+      background: rgba(139, 121, 238, 0.075);
+    }
+
+    > span {
+      background: rgba(139, 121, 238, 0.14);
+      color: #b8aaff;
+    }
+  }
+
+  .chat-import-file-button {
+    border: 1px solid rgba(181, 167, 255, 0.24);
+    background: linear-gradient(135deg, #7565d9, #6655c8);
+    color: #fff;
+    box-shadow: 0 5px 16px rgba(83, 66, 174, 0.2);
+
+    &:hover { background: linear-gradient(135deg, #8373e6, #7462d8); }
+  }
+
+  .chat-import-folder-button {
+    border-color: rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.055);
+    color: #e7e5f1;
+
+    &:hover {
+      border-color: rgba(181, 167, 255, 0.32);
+      background: rgba(139, 121, 238, 0.1);
+      color: #fff;
+    }
+  }
+
+  [aria-label="关闭导入选项"] {
+    color: rgba(228, 226, 240, 0.62);
+    &:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+  }
+}
+
 // ========== 白天模式聊天界面 ==========
 .theme-light {
+  .chat-archive-status {
+    color: #475569;
+
+    .chat-archive-file-pill {
+      border-color: rgba(91, 74, 191, 0.24);
+      background: linear-gradient(135deg, rgba(91, 74, 191, 0.09), rgba(91, 74, 191, 0.04));
+      color: #5140b3;
+      box-shadow: 0 2px 8px rgba(31, 41, 55, 0.05);
+    }
+    .chat-archive-cancel {
+      background: rgba(91, 74, 191, 0.12);
+      color: #5140b3;
+    }
+    .chat-archive-cancel:hover { background: rgba(220, 38, 38, 0.12); color: #b91c1c; }
+    .chat-archive-state { color: #64748b; }
+  }
   .project-changes-title { color: #4f46e5; }
   .project-change { border-color: rgba(0, 0, 0, 0.12); }
   .project-change pre { background: #f3f4f6; color: #334155; }

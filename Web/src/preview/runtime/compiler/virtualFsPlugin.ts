@@ -3,7 +3,7 @@ import { normalizePreviewPath, resolvePreviewPath } from '../../core/pathUtils.t
 import type { PreviewFiles } from '../../core/types.ts';
 import { isBareSpecifier, resolveAllowedDependency } from './dependencyResolver.ts';
 
-const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.css', '.json'] as const;
+export const PREVIEW_SUPPORTED_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.css', '.json'] as const;
 
 function extensionOf(path: string): string {
   const name = path.slice(path.lastIndexOf('/') + 1);
@@ -32,13 +32,13 @@ export function resolveVirtualModule(files: PreviewFiles, specifier: string, imp
   const basePath = specifier.startsWith('/')
     ? normalizePreviewPath(specifier)
     : resolvePreviewPath(importer === '/' ? '/' : directoryOf(importer), specifier);
-  const hasKnownExtension = SOURCE_EXTENSIONS.includes(extensionOf(basePath) as typeof SOURCE_EXTENSIONS[number]);
+  const hasKnownExtension = PREVIEW_SUPPORTED_EXTENSIONS.includes(extensionOf(basePath) as typeof PREVIEW_SUPPORTED_EXTENSIONS[number]);
   const candidates = hasKnownExtension
     ? [basePath]
     : [
       basePath,
-      ...SOURCE_EXTENSIONS.map((extension) => `${basePath}${extension}`),
-      ...SOURCE_EXTENSIONS.map((extension) => `${basePath}/index${extension}`),
+      ...PREVIEW_SUPPORTED_EXTENSIONS.map((extension) => `${basePath}${extension}`),
+      ...PREVIEW_SUPPORTED_EXTENSIONS.map((extension) => `${basePath}/index${extension}`),
     ];
   const match = candidates.find((candidate) => Object.prototype.hasOwnProperty.call(files, candidate));
   if (!match) {
@@ -83,6 +83,7 @@ export const { Children, Component, Fragment, Profiler, PureComponent, StrictMod
 export default ReactDOM;
 export const { createPortal, flushSync, findDOMNode, hydrate, render, unmountComponentAtNode, version } = ReactDOM;`,
           'react-dom/client': `const ReactDOMClient = ${runtime}.ReactDOMClient;
+export default ReactDOMClient;
 export const { createRoot, hydrateRoot, version } = ReactDOMClient;`,
           'react/jsx-runtime': `const runtime = ${runtime}.jsxRuntime;
 export const { Fragment, jsx, jsxs } = runtime;`,

@@ -7,11 +7,11 @@ import os
 from datetime import datetime
 from langchain_core.tools import tool
 
-from config import config
+from storage import GENERATED_ROOT, ensure_storage_dirs
 
 # 生成文件存储目录
-GENERATED_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "generated")
-os.makedirs(GENERATED_DIR, exist_ok=True)
+ensure_storage_dirs()
+GENERATED_DIR = str(GENERATED_ROOT)
 
 
 def _build_download_url(filename: str) -> str:

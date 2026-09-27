@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { GeneratedFile } from '../../types';
 import { Button } from '../ui/button';
+import GlbModelPreview from './GlbModelPreview';
 
 type PreviewData =
   | {
@@ -165,6 +166,7 @@ export default function FilePreview({ file }: FilePreviewProps) {
       </div>
     );
   if (data) return <OfficePreview data={data} />;
+  if (extension === 'glb') return <GlbModelPreview file={file} />;
   if (isInline) {
     const src =
       extension === 'pdf'

@@ -132,6 +132,47 @@ async def init_db():
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             );
         """)
+        # One validated Virtual FS snapshot per chat session. Keep the session key as
+        # TEXT without a foreign key so this table works with both legacy TEXT and
+        # deployed UUID chat_sessions schemas; delete_session removes snapshots explicitly.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS session_preview_projects (
+                session_id TEXT PRIMARY KEY,
+                project JSONB NOT NULL,
+                origin TEXT NOT NULL DEFAULT 'generated',
+                upload_name TEXT,
+                revision BIGINT NOT NULL DEFAULT 1,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT session_preview_projects_origin_check
+                    CHECK (origin IN ('generated', 'uploaded-source'))
+            );
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS session_attachments (
+                id TEXT PRIMARY KEY,
+                -- Keep this TEXT without an FK so existing deployments with UUID
+                -- chat_sessions columns remain compatible, like preview projects.
+                session_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'file',
+                relative_path TEXT NOT NULL,
+                content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+                size BIGINT NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT session_attachments_kind_check CHECK (kind IN ('file', 'folder', 'archive'))
+            );
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS session_generated_artifacts (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                size BIGINT NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        """)
         # ----- 兼容旧表：确保新增字段存在 -----
         # 如果表是从旧版迁移而来，这些字段可能缺失，这里做补充
         await conn.execute("""
@@ -149,7 +190,167 @@ async def init_db():
         await conn.execute("""
             ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS attachments TEXT;
         """)
+        await conn.execute("""
+            ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS preview_changes JSONB;
+        """)
+        await conn.execute("""
+            ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS preview_snapshot JSONB;
+        """)
         print("[Database] 数据库表初始化完成")
+
+
+async def session_exists(session_id: str) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return bool(await conn.fetchval("SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE id = $1)", session_id))
+
+
+async def get_session_preview_project(session_id: str) -> dict | None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT project, origin, upload_name, revision, updated_at
+               FROM session_preview_projects WHERE session_id = $1""",
+            session_id,
+        )
+    if not row:
+        return None
+    project = row["project"]
+    if isinstance(project, str):
+        project = json.loads(project)
+    return {
+        "project": project,
+        "origin": row["origin"],
+        "uploadName": row["upload_name"],
+        "revision": row["revision"],
+        "updatedAt": row["updated_at"].isoformat(),
+    }
+
+
+async def save_session_preview_project(
+    session_id: str,
+    project: dict,
+    origin: str = "generated",
+    upload_name: str | None = None,
+) -> dict:
+    serialized_project = json.dumps(project, ensure_ascii=False, separators=(",", ":"))
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """INSERT INTO session_preview_projects (session_id, project, origin, upload_name)
+               VALUES ($1, $2::jsonb, $3, $4)
+               ON CONFLICT (session_id) DO UPDATE SET
+                   project = EXCLUDED.project,
+                   origin = EXCLUDED.origin,
+                   upload_name = EXCLUDED.upload_name,
+                   revision = session_preview_projects.revision + 1,
+                   updated_at = NOW()
+               RETURNING revision, updated_at""",
+            session_id,
+            serialized_project,
+            origin,
+            upload_name,
+        )
+        await conn.execute("UPDATE chat_sessions SET updated_at = NOW() WHERE id = $1", session_id)
+    return {"revision": row["revision"], "updatedAt": row["updated_at"].isoformat()}
+
+
+async def delete_session_preview_project(session_id: str) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM session_preview_projects WHERE session_id = $1", session_id)
+
+
+async def save_session_attachment(attachment_id: str, session_id: str, name: str, kind: str,
+                                  relative_path: str, content_type: str, size: int) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO session_attachments (id, session_id, name, kind, relative_path, content_type, size)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+            attachment_id, session_id, name, kind, relative_path, content_type, size,
+        )
+        await conn.execute("UPDATE chat_sessions SET updated_at = NOW() WHERE id = $1", session_id)
+
+
+async def get_session_attachment(session_id: str, attachment_id: str) -> dict | None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, name, kind, relative_path, content_type, size FROM session_attachments WHERE session_id = $1 AND id = $2",
+            session_id, attachment_id,
+        )
+    return dict(row) if row else None
+
+
+async def save_session_generated_artifact(
+    artifact_id: str, session_id: str, name: str, relative_path: str,
+    content_type: str, size: int, file_reference: dict,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if not await conn.fetchval("SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE id = $1)", session_id):
+                raise ValueError("会话不存在")
+            assistant = await conn.fetchrow(
+                "SELECT id, attachments FROM chat_messages WHERE session_id = $1 AND role = 'assistant' ORDER BY id DESC LIMIT 1 FOR UPDATE",
+                session_id,
+            )
+            if not assistant:
+                raise ValueError("找不到可关联产物的助手消息，请先完成一次模型生成。")
+            await conn.execute(
+                """INSERT INTO session_generated_artifacts (id, session_id, name, relative_path, content_type, size)
+                   VALUES ($1, $2, $3, $4, $5, $6)""",
+                artifact_id, session_id, name, relative_path, content_type, size,
+            )
+            try:
+                existing = json.loads(assistant["attachments"]) if assistant["attachments"] else []
+            except (TypeError, json.JSONDecodeError):
+                existing = []
+            if not isinstance(existing, list):
+                existing = []
+            existing = [item for item in existing if isinstance(item, dict)]
+            existing = [item for item in existing if item.get("artifactId") != artifact_id]
+            existing.append(file_reference)
+            await conn.execute(
+                "UPDATE chat_messages SET attachments = $1 WHERE id = $2",
+                json.dumps(existing, ensure_ascii=False), assistant["id"],
+            )
+            await conn.execute("UPDATE chat_sessions SET updated_at = NOW() WHERE id = $1", session_id)
+
+
+async def get_session_generated_artifact(session_id: str, artifact_id: str) -> dict | None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, name, relative_path, content_type, size FROM session_generated_artifacts WHERE session_id = $1 AND id = $2",
+            session_id, artifact_id,
+        )
+    return dict(row) if row else None
+
+
+async def delete_pending_session_attachment(session_id: str, attachment_id: str) -> str | None:
+    """Delete only an attachment that has not been committed to a chat message."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT relative_path FROM session_attachments WHERE session_id = $1 AND id = $2 FOR UPDATE",
+                session_id, attachment_id,
+            )
+            if not row:
+                return None
+            referenced = await conn.fetchval(
+                """SELECT EXISTS(
+                       SELECT 1 FROM chat_messages
+                       WHERE session_id = $1 AND attachments LIKE $2
+                   )""",
+                session_id, f"%{attachment_id}%",
+            )
+            if referenced:
+                return ""
+            await conn.execute("DELETE FROM session_attachments WHERE session_id = $1 AND id = $2", session_id, attachment_id)
+            return row["relative_path"]
 
 
 async def create_session(user_id: str = "default") -> dict:
@@ -199,7 +400,7 @@ async def load_messages(session_id: str) -> list:
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT id, session_id, role, content, images, attachments, created_at,
+            """SELECT id, session_id, role, content, images, attachments, preview_changes, preview_snapshot, created_at,
                       prompt_tokens, completion_tokens, total_tokens
                FROM chat_messages WHERE session_id = $1 ORDER BY created_at ASC""",
             session_id,
@@ -214,6 +415,16 @@ async def load_messages(session_id: str) -> list:
                     if row.get("attachments")
                     else (_legacy_html_attachments(row["content"]) or None)
                 ),
+                "preview_changes": (
+                    json.loads(row["preview_changes"])
+                    if isinstance(row.get("preview_changes"), str)
+                    else row.get("preview_changes")
+                ),
+                "preview_snapshot": (
+                    json.loads(row["preview_snapshot"])
+                    if isinstance(row.get("preview_snapshot"), str)
+                    else row.get("preview_snapshot")
+                ),
             }
             for row in rows
         ]
@@ -226,6 +437,8 @@ async def save_message(
     token_usage: Optional[dict] = None,
     images: Optional[list] = None,
     attachments: Optional[list] = None,
+    preview_changes: Optional[list] = None,
+    preview_snapshot: Optional[dict] = None,
 ) -> None:
     """
     保存单条消息，同时刷新会话的 updated_at 时间
@@ -246,11 +459,13 @@ async def save_message(
         if token_usage:
             # AI 回复：记录 Token 消耗
             await conn.execute(
-                """INSERT INTO chat_messages (session_id, role, content, images, attachments, prompt_tokens, completion_tokens, total_tokens)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+                """INSERT INTO chat_messages (session_id, role, content, images, attachments, preview_changes, preview_snapshot, prompt_tokens, completion_tokens, total_tokens)
+                   VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10)""",
                 session_id, role, content,
                 json.dumps(images) if images else None,
                 json.dumps(attachments, ensure_ascii=False) if attachments else None,
+                json.dumps(preview_changes, ensure_ascii=False) if preview_changes else None,
+                json.dumps(preview_snapshot, ensure_ascii=False) if preview_snapshot else None,
                 token_usage.get("prompt_tokens", 0),
                 token_usage.get("completion_tokens", 0),
                 token_usage.get("total_tokens", 0),
@@ -258,10 +473,12 @@ async def save_message(
         else:
             # 用户消息或不带 Token 数据：仅插入基本字段
             await conn.execute(
-                "INSERT INTO chat_messages (session_id, role, content, images, attachments) VALUES ($1, $2, $3, $4, $5)",
+                "INSERT INTO chat_messages (session_id, role, content, images, attachments, preview_changes, preview_snapshot) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)",
                 session_id, role, content,
                 json.dumps(images) if images else None,
                 json.dumps(attachments, ensure_ascii=False) if attachments else None,
+                json.dumps(preview_changes, ensure_ascii=False) if preview_changes else None,
+                json.dumps(preview_snapshot, ensure_ascii=False) if preview_snapshot else None,
             )
         # 更新会话的最后活动时间
         await conn.execute(
@@ -309,8 +526,42 @@ async def delete_session(session_id: str) -> None:
         session_id: 要删除的会话 ID
     """
     pool = await get_pool()
+    attachment_rows = []
+    generated_rows = []
     async with pool.acquire() as conn:
+        attachment_rows = await conn.fetch(
+            "SELECT relative_path FROM session_attachments WHERE session_id = $1", session_id
+        )
+        await conn.execute("DELETE FROM session_attachments WHERE session_id = $1", session_id)
+        generated_rows = await conn.fetch(
+            "SELECT relative_path FROM session_generated_artifacts WHERE session_id = $1", session_id
+        )
+        await conn.execute("DELETE FROM session_generated_artifacts WHERE session_id = $1", session_id)
+        await conn.execute("DELETE FROM session_preview_projects WHERE session_id = $1", session_id)
         await conn.execute("DELETE FROM chat_sessions WHERE id = $1", session_id)
+    from storage import UPLOAD_ROOT
+    for row in attachment_rows:
+        relative = Path(row["relative_path"])
+        if relative.is_absolute() or ".." in relative.parts:
+            continue
+        target = (UPLOAD_ROOT / relative).resolve()
+        if target.is_relative_to(UPLOAD_ROOT) and not target.is_symlink():
+            try:
+                target.unlink(missing_ok=True)
+                target.parent.rmdir()
+            except OSError:
+                pass
+    from storage import GENERATED_ROOT
+    for row in generated_rows:
+        relative = Path(row["relative_path"])
+        if relative.is_absolute() or ".." in relative.parts:
+            continue
+        target = (GENERATED_ROOT / relative).resolve()
+        if target.is_relative_to(GENERATED_ROOT) and not target.is_symlink():
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 async def auto_generate_session_title(session_id: str) -> None:

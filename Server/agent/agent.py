@@ -174,6 +174,7 @@ async def run_agent(
 
             # 检测文档生成工具返回的下载链接，发送 file_ready 事件
             # 检测视频生成工具返回的视频URL，发送 video_ready 事件
+            tool_result_for_context = str(result)
             try:
                 parsed = json.loads(str(result))
                 if parsed.get("success") and parsed.get("downloadUrl"):
@@ -218,13 +219,29 @@ async def run_agent(
                         "content": parsed["content"],
                         "diff": parsed["diff"],
                     })
+                if tool_name == "set_3d_scene" and parsed.get("success") and isinstance(parsed.get("sceneSpec"), dict):
+                    scene_content = json.dumps(parsed["sceneSpec"], ensure_ascii=False, separators=(",", ":"))
+                    send_event({
+                        "type": "preview_file_changed",
+                        "projectId": preview_workspace.project_id if preview_workspace else "",
+                        "path": "/src/scene.json",
+                        "content": scene_content,
+                        "diff": "SceneSpec updated",
+                    })
+                    # Keep the full SceneSpec out of the model's follow-up context.
+                    tool_result_for_context = json.dumps({
+                        "success": True,
+                        "sceneName": parsed["sceneSpec"].get("name", "3D Scene"),
+                        "objectCount": len(parsed["sceneSpec"].get("objects", [])),
+                        "message": "SceneSpec 已更新并发送到 Preview。",
+                    }, ensure_ascii=False)
             except (json.JSONDecodeError, TypeError):
                 # 非 JSON 结果，忽略
                 pass
 
             messages.append(ToolMessage(
                 tool_call_id=tc.get("id", ""),
-                content=str(result),
+                content=tool_result_for_context,
             ))
 
     if iterations <= 0:

@@ -1,13 +1,17 @@
 // SSE 聊天 API 封装
 import { parseSSEStream } from '../utils/sse';
 import config from '../config';
-import type { Session, TokenUsage, ModelQuotaInfo, ProjectChange } from '../types';
+import type { Session, TokenUsage, ModelQuotaInfo, ProjectChange, UploadedAttachment } from '../types';
 import type { PreviewProject } from '../preview/core/types.ts';
+import type { GeneratedFile } from '../types';
 
 interface SendChatMessageParams {
   sessionId: string;
   message: string;
-  messages?: Array<{ role: string; content: string; images?: string[] }>;
+  messages?: Array<{ role: string; content: string; images?: string[]; attachments?: UploadedAttachment[] }>;
+  attachments?: UploadedAttachment[];
+  analysisContext?: string;
+  analysisContextMode?: 'summary' | 'reference';
   previewProject?: PreviewProject;
 }
 
@@ -53,6 +57,47 @@ export async function getSessionMessages(sessionId: string): Promise<any[]> {
     throw new Error(data.error || '获取消息失败');
   }
   return data.messages;
+}
+
+export async function uploadSessionAttachment(
+  sessionId: string,
+  file: File | Blob,
+  name: string,
+  kind: NonNullable<UploadedAttachment['kind']>,
+): Promise<UploadedAttachment> {
+  const form = new FormData();
+  form.append('file', file, name);
+  form.append('name', name);
+  form.append('kind', kind);
+  const response = await fetch(`/api/chat/session/${encodeURIComponent(sessionId)}/attachments`, {
+    method: 'POST',
+    body: form,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success || !data.attachment) {
+    throw new Error(data.detail || data.error || '附件保存失败，请重试。');
+  }
+  return data.attachment as UploadedAttachment;
+}
+
+export async function saveGeneratedGlb(sessionId: string, blob: Blob, name: string): Promise<GeneratedFile> {
+  const form = new FormData();
+  form.append('file', blob, name.endsWith('.glb') ? name : `${name}.glb`);
+  const response = await fetch(`/api/chat/session/${encodeURIComponent(sessionId)}/generated-artifacts`, {
+    method: 'POST',
+    body: form,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success || !data.file) throw new Error(data.detail || 'GLB 保存失败，请重试。');
+  return data.file as GeneratedFile;
+}
+
+export async function deletePendingSessionAttachment(sessionId: string, attachmentId: string): Promise<void> {
+  const response = await fetch(
+    `/api/chat/session/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    { method: 'DELETE' },
+  );
+  if (!response.ok) throw new Error('暂存附件未能从服务器清理。');
 }
 
 /**
@@ -108,6 +153,9 @@ export async function sendChatMessage(
   let sessionId: string | undefined;
   let message: string | undefined;
   let messages: any[] | undefined;
+  let attachments: UploadedAttachment[] | undefined;
+  let analysisContext: string | undefined;
+  let analysisContextMode: 'summary' | 'reference' | undefined;
   let previewProject: PreviewProject | undefined;
   if (Array.isArray(params)) {
     messages = params;
@@ -115,6 +163,9 @@ export async function sendChatMessage(
     sessionId = params.sessionId;
     message = params.message;
     messages = params.messages;
+    attachments = params.attachments;
+    analysisContext = params.analysisContext;
+    analysisContextMode = params.analysisContextMode;
     previewProject = params.previewProject;
   }
 
@@ -125,7 +176,7 @@ export async function sendChatMessage(
         'Content-Type': 'application/json',
         Accept: 'text/event-stream',
       },
-      body: JSON.stringify({ sessionId, message, messages, previewProject }),
+      body: JSON.stringify({ sessionId, message, messages, attachments, analysisContext, analysisContextMode, previewProject }),
       signal,
     });
 

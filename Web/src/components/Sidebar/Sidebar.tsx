@@ -22,6 +22,7 @@ export default function Sidebar({
   onSelectSession,
   onCreateSession,
   onDeleteSession,
+  theme = 'dark',
 }: SidebarProps) {
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   return (
@@ -104,17 +105,30 @@ export default function Sidebar({
           if (!open) setPendingDelete(null);
         }}
       >
-        <AlertDialogContent>
+        <AlertDialogContent
+          className={`session-delete-dialog w-[min(480px,calc(100%-32px))] max-w-none gap-0 rounded-[20px] p-5 shadow-[0_28px_90px_rgba(0,0,0,0.5)] sm:p-6 ${
+            theme === 'dark'
+              ? 'border-white/10 bg-[#191923] text-[#f4f3f8]'
+              : 'border-slate-200 bg-white text-slate-900 shadow-[0_24px_70px_rgba(15,23,42,0.2)]'
+          }`}
+        >
           <AlertDialogHeader>
-            <AlertDialogTitle>删除这条会话？</AlertDialogTitle>
-            <AlertDialogDescription>
+            <AlertDialogTitle className="flex items-center gap-3 text-[17px] tracking-tight">
+              <span className={`flex h-10 w-10 items-center justify-center rounded-xl ${theme === 'dark' ? 'bg-red-500/10 text-red-300' : 'bg-red-50 text-red-600'}`}>
+                <Trash2 size={18} aria-hidden="true" />
+              </span>
+              删除这条会话？
+            </AlertDialogTitle>
+            <AlertDialogDescription className={`pl-[52px] text-[13px] leading-5 ${theme === 'dark' ? 'text-white/55' : 'text-slate-500'}`}>
               会话与历史消息会从列表中移除，此操作无法撤销。
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+          <AlertDialogFooter className={`mt-5 flex-row gap-2 border-t pt-4 ${theme === 'dark' ? 'border-white/[0.08]' : 'border-slate-100'}`}>
+            <AlertDialogCancel className={`h-10 min-w-[88px] rounded-xl ${theme === 'dark' ? 'border-white/10 bg-white/[0.04] text-white/75 hover:bg-white/[0.09] hover:text-white' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
+              取消
+            </AlertDialogCancel>
             <AlertDialogAction
-              className="bg-red-600 text-white hover:bg-red-500"
+              className="h-10 min-w-[88px] rounded-xl bg-red-600 text-white shadow-sm shadow-red-950/20 hover:bg-red-500"
               onClick={() => {
                 if (pendingDelete) onDeleteSession(pendingDelete);
                 setPendingDelete(null);
