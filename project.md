@@ -118,9 +118,10 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 - 新版 `create_presentation` 工具接收版本化的语义 `PresentationDesign v1.0`，包含 5 个主题、16:9/4:3 画幅与 15 种页面类型；输入由 Pydantic 严格校验，页面 ID 必须唯一，图表/表格/指标数据有明确上限。Agent 提示要求先规划叙事节奏，再调用该工具；历史最近一份 PPT Schema 会作为修改请求上下文。
 - `Server/tools/presentation_renderer.py` 使用 `python-pptx` 生成真实可编辑的 `.pptx`：文本、形状、原生图表和表格均为 PowerPoint 元素。最终名按标题加 `.pptx`，文件写入 `GOR_STORAGE_DIR` 的生成目录；SSE 暴露最终文件、artifact/project/snapshot IDs 与源码 Schema。
 - 助手回复以稳定 `assistantMessageId` 写入数据库；`chat_messages.client_message_id` 唯一索引用于防重复写入，`preview_snapshot` JSONB 保存只属于该消息的 presentation Schema、`/presentation.json`、QA 结果和最终 `.pptx` 引用。附件列表只保留轻量文件元数据，避免重复复制完整 Schema。项目历史修改会创建新 UUID 快照，不覆盖旧消息。
-- Preview Worker 将 PPT 作为独立 `presentation` renderer：支持逐页预览、缩略导航、标题/正文/指标/图表/表格/时间线等页面呈现，以及查看/下载 `/presentation.json` 和下载 `.pptx`。展示条目按 artifact ID 去重；从气泡打开时，Preview 与 Code 使用同一消息快照，不读共享 React/Three Virtual FS。
-- 版面引擎会将过长正文/卡片拆为续页、将表格按每页 5 行拆分、将时间线按每页 4 项拆分，并把多指标及卡片布局规范为可读网格；导出前会拒绝任何形状几何边界超出画布的文件。它仍不等同于 PowerPoint 像素渲染或视觉模型检测：字体实际换行/内框文字裁切仍需用 Office/LibreOffice 渲染回归验证，Visual QA 也没有最多两轮 AI 修复。图片检索/图片生成 provider 尚未接入；`image-text` / `full-image` 使用主题化矢量占位视觉，不得对用户声称已生成真实照片或匹配了素材。
-- 当前为可运行的第一版，不覆盖 spec 中所有产品级能力：暂无服务端 PPT artifact 专用表/文件夹打包、外部图像素材服务、缩略图 PNG/本机 Office 对照渲染、视觉模型分析与自动修复重跑。可在具备相应 provider 后按 Artifact Adapter 接入，不影响当前 per-message 快照隔离与 PPTX/Schema 下载闭环。
+- Preview Worker 将 PPT 作为独立 `presentation` renderer：支持逐页预览、缩略导航、标题/正文/指标/图表/表格/时间线等页面呈现，以及查看/下载 `/presentation.json` 和下载 `.pptx`。展示条目按 artifact ID 去重；从气泡打开时，Preview 与 Code 使用同一消息快照，不读共享 React/Three Virtual FS。每页图片 URL 和署名元数据随消息快照传给预览组件，页面切换时只展示当前页对应的背景图。
+- **PPT 图片背景约定**：配置 `PEXELS_API_KEY` 后，服务端会优先根据每页 `imageQuery` 从 Pexels 检索与页面内容相关的照片，下载照片并嵌入 `.pptx`，同时保留摄影师、照片页和 Pexels 的署名链接。搜索失败、无密钥或没有合适照片时继续生成，并使用所选主题的渐变背景兜底。图片按画布比例裁切铺满，不拉伸；主题色遮罩通过 DrawingML alpha 通道写入，保证照片可见且文字有对比度。预览侧也读取同一份图片元数据，以 `cover` 显示，并在可用空间内等比缩放整页，不变形；新增主题或 renderer 时要同时验证导出 PPTX 和 Preview Worker。
+- 版面引擎会将过长正文/卡片拆为续页、将表格按每页 5 行拆分、将时间线按每页 4 项拆分，并把多指标及卡片布局规范为可读网格；导出前会拒绝任何形状几何边界超出画布的文件。几何边界检查不等同于 PowerPoint 像素渲染或视觉模型检测：字体实际换行/内框文字裁切仍需用 Office/LibreOffice 渲染回归验证，Visual QA 也没有最多两轮 AI 修复。
+- 当前仍不覆盖 spec 中所有产品级能力：暂无服务端 PPT artifact 专用表/文件夹打包、缩略图 PNG、本机 Office 对照渲染、视觉模型分析与自动修复重跑。Pexels 是当前接入的图片素材 provider；后续可按同一图片解析接口增加其他素材服务，不改变 per-message 快照隔离与 PPTX/Schema 下载闭环。
 
 ### 天气页 `#/weather`
 

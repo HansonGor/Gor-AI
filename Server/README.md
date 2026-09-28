@@ -40,6 +40,10 @@ server_python/
 │   ├── weather.py          # 天气查询工具
 │   ├── web_search.py       # 联网搜索工具
 │   ├── document.py         # 文档生成工具（Word/Excel/PPT/PDF）
+│   ├── presentation.py     # Design Schema 校验、图片解析、PPTX 与预览快照生成
+│   ├── presentation_design.py # 页面结构、主题与内容布局规则
+│   ├── presentation_renderer.py # 可编辑 PPTX 页面渲染
+│   ├── pexels.py           # Pexels 搜图、下载与署名信息
 │   ├── video.py            # 小云雀视频生成工具
 │   └── vector_search.py    # RAG 向量检索工具
 ├── routes/
@@ -113,6 +117,8 @@ python main.py
 服务将在 `http://localhost:3001` 启动。
 
 设计型 PPT 会尽量为每页从 Pexels 获取与内容相关的背景照片，并在幻灯片中署名链接摄影师、照片页和 Pexels。若未配置 `PEXELS_API_KEY`、图片服务不可用或某页没有匹配照片，对应页面使用主题默认背景，PPT 仍会生成。照片会按比例裁切铺满页面，并叠加主题色遮罩来保证文字可读；模型应为每页提供具体、与页面主题匹配的英文 `imageQuery`。
+
+生成的 PPT 页面图片也会随该条助手消息的 Preview 快照提供给 Preview Worker。预览按主题色叠加半透明遮罩并使用 `cover` 裁切背景，在可用画布内等比缩放幻灯片，不拉伸比例。修改背景透明度时必须写入 PPTX DrawingML alpha 通道；仅设置 `python-pptx` 的 `FillFormat.transparency` 不会可靠地序列化到文件，可能导致主题色完全盖住照片。无 API Key、请求失败或无匹配照片时，PPT 和预览都应回退到主题渐变底色，不能因此中断生成。
 
 ### 4. 健康检查
 
