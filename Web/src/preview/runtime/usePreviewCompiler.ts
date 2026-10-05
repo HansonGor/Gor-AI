@@ -23,10 +23,11 @@ const INITIAL_STATE: PreviewBuildState = {
   workerError: null,
 };
 
-export function usePreviewCompiler(projectId: string, files: PreviewFiles) {
+export function usePreviewCompiler(projectId: string, files: PreviewFiles, revision = 0) {
   const clientRef = useRef<PreviewWorkerClient | null>(null);
   const lifecycleGenerationRef = useRef(0);
   const buildGenerationRef = useRef(0);
+  const buildCallsRef = useRef(0);
   const [state, setState] = useState<PreviewBuildState>(INITIAL_STATE);
 
   const startWorker = useCallback(() => {
@@ -72,29 +73,49 @@ export function usePreviewCompiler(projectId: string, files: PreviewFiles) {
   const build = useCallback(async (entryPoint: string) => {
     const client = clientRef.current;
     if (!client) return null;
+    const buildCall = ++buildCallsRef.current;
     const generation = ++buildGenerationRef.current;
+    console.info(`[PreviewBuild] project_id=${projectId} revision=${revision} build_call=${buildCall} status=started`);
     setState({ status: 'building', result: null, diagnostics: [], workerError: null });
     try {
       await client.syncFiles(projectId, files);
       const result = await client.build(projectId, entryPoint);
       if (generation !== buildGenerationRef.current) return null;
       setState({ status: 'success', result, diagnostics: [], workerError: null });
+      console.info(`[PreviewBuild] project_id=${projectId} revision=${revision} build_call=${buildCall} status=success`);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('preview_build_result', {
+          detail: { projectId, revision, success: true, diagnostics: [], buildCall },
+        }));
+      }
       return result;
     } catch (error) {
       if (generation !== buildGenerationRef.current || error instanceof StalePreviewBuildError) return null;
+      let diagnostics: BuildDiagnostic[] = [];
       if (error instanceof PreviewBuildError) {
-        setState({ status: 'error', result: null, diagnostics: error.diagnostics, workerError: null });
+        diagnostics = error.diagnostics;
+        setState({ status: 'error', result: null, diagnostics, workerError: null });
       } else {
+        const message = error instanceof Error ? error.message : String(error);
         setState({
           status: 'error',
           result: null,
           diagnostics: [],
-          workerError: error instanceof Error ? error.message : String(error),
+          workerError: message,
         });
+        diagnostics = [{ message, file: null, line: null, column: null, lineText: null }];
+      }
+      console.error(
+        `[PreviewBuild] project_id=${projectId} revision=${revision} build_call=${buildCall} status=error diagnostics=${JSON.stringify(diagnostics.map((item) => ({ path: item.file, line: item.line, column: item.column, message: item.message })))}`,
+      );
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('preview_build_result', {
+          detail: { projectId, revision, success: false, diagnostics, buildCall },
+        }));
       }
       return null;
     }
-  }, [files, projectId]);
+  }, [files, projectId, revision]);
 
   return { state, build, restartWorker: startWorker };
 }

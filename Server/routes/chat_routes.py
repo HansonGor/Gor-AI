@@ -3,8 +3,8 @@
 职责：会话创建、消息查询、会话列表、消息保存、会话删除
 """
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field
 from typing import Optional
 import re
 import uuid
@@ -27,7 +27,7 @@ from db.supabase_chat import (
     save_message,
     session_exists,
 )
-from tools.preview_project import PreviewProjectWorkspace
+from services.preview.workspace import BINARY_EXTENSIONS, PreviewProjectWorkspace, normalize_virtual_path
 from tools.scene_spec import SceneSpec
 from storage import GENERATED_ROOT, UPLOAD_ROOT, ensure_storage_dirs
 from glb_validation import GlbValidationError, validate_glb_stream
@@ -37,6 +37,7 @@ router = APIRouter()
 
 class CreateSessionRequest(BaseModel):
     userId: str = "default"
+    sessionId: Optional[uuid.UUID] = None
 
 
 class SaveMessageRequest(BaseModel):
@@ -51,9 +52,15 @@ class SavePreviewProjectRequest(BaseModel):
     project: dict
     origin: str = "generated"
     uploadName: Optional[str] = None
+    expectedRevision: Optional[int] = None
 
 
-_PERSISTED_SOURCE_EXTENSIONS = re.compile(r"\.(?:html?|[cm]?js|jsx|[cm]?ts|tsx|css|json|svg|txt|md|markdown|ya?ml)$", re.IGNORECASE)
+class ReadPreviewProjectFilesRequest(BaseModel):
+    projectId: str = Field(min_length=1, max_length=120)
+    paths: list[str] = Field(min_length=1, max_length=100)
+    expectedRevision: int = Field(ge=0)
+
+
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_GENERATED_GLB_BYTES = 32 * 1024 * 1024
 
@@ -70,26 +77,31 @@ def _validate_uploaded_source_project(project: dict) -> dict:
     name = project.get("name")
     template = project.get("template")
     files = project.get("files")
+    revision = project.get("revision", 0)
     if not isinstance(project_id, str) or not 1 <= len(project_id) <= 100:
         raise ValueError("Preview Project ID 无效。")
     if not isinstance(name, str) or not name.strip() or len(name) > 80:
         raise ValueError("项目名称无效。")
     if template not in {"react", "html"} or not isinstance(files, dict):
         raise ValueError("Preview Project 模板或文件集无效。")
+    if type(revision) is not int or not 0 <= revision <= 9_007_199_254_740_990:
+        raise ValueError("Preview Project revision 无效。")
     if not 1 <= len(files) <= 100:
         raise ValueError("源码项目文件数量无效，最多支持 100 个文本文件。")
 
     validated_files = {}
     total_bytes = 0
     for path, content in files.items():
-        if not isinstance(path, str) or not path.startswith("/") or "\\" in path or "\x00" in path:
-            raise ValueError("源码文件路径无效。")
-        parts = path[1:].split("/")
-        if any(not part or part in {".", ".."} or part in {"node_modules", ".git", "__MACOSX"} for part in parts):
-            raise ValueError("源码文件路径包含不允许的目录。")
-        if not _PERSISTED_SOURCE_EXTENSIONS.search(parts[-1]):
-            raise ValueError("源码项目包含不支持的文件类型。")
-        if not isinstance(content, str):
+        try:
+            normalized_path = normalize_virtual_path(path)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"源码文件路径无效：{exc}") from exc
+        if normalized_path != path:
+            raise ValueError("源码文件路径必须使用以 / 开头的规范格式。")
+        extension = "." + path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
+        if extension in BINARY_EXTENSIONS:
+            raise ValueError("二进制产物请使用附件/产物上传，不要放入源码项目。")
+        if not isinstance(content, str) or "\x00" in content:
             raise ValueError("源码文件内容必须是文本。")
         total_bytes += len(content.encode("utf-8"))
         if total_bytes > 5_000_000:
@@ -97,14 +109,14 @@ def _validate_uploaded_source_project(project: dict) -> dict:
         validated_files[path] = content
     if "/index.html" not in validated_files:
         raise ValueError("项目必须包含根目录 /index.html。")
-    return {"id": project_id, "name": name.strip(), "template": template, "files": validated_files}
+    return {"id": project_id, "name": name.strip(), "template": template, "files": validated_files, "revision": revision}
 
 
 @router.post("/session/create")
 async def create_session_endpoint(body: CreateSessionRequest):
     """创建新会话"""
     try:
-        session = await create_session(body.userId)
+        session = await create_session(body.userId, str(body.sessionId) if body.sessionId else None)
         return {"success": True, "sessionId": session["id"], "session": session}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"创建会话失败: {str(e)}")
@@ -293,6 +305,71 @@ async def get_session_preview_project_endpoint(session_id: str):
         raise HTTPException(status_code=500, detail=f"读取 Preview Project 失败: {str(e)}")
 
 
+@router.post("/session/{session_id}/preview-project/files/read")
+async def read_session_preview_project_files_endpoint(
+    session_id: str,
+    body: ReadPreviewProjectFilesRequest,
+):
+    """Batch-read authoritative changed source files for one exact content revision."""
+    if not await session_exists(session_id):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    snapshot = await get_session_preview_project(session_id)
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Preview Project 不存在")
+
+    project = snapshot.get("project")
+    if not isinstance(project, dict) or project.get("id") != body.projectId:
+        raise HTTPException(status_code=409, detail="Preview Project ID 与当前会话项目不匹配。")
+    current_revision = project.get("revision", 0)
+    if type(current_revision) is not int or current_revision < 0:
+        raise HTTPException(status_code=500, detail="服务器 Preview Project revision 无效。")
+    if body.expectedRevision != current_revision:
+        current_code = "PREVIEW_REVISION_ADVANCED" if body.expectedRevision < current_revision else "PREVIEW_REVISION_UNAVAILABLE"
+        return JSONResponse(status_code=409, content={
+            "success": False,
+            "code": current_code,
+            "requestedRevision": body.expectedRevision,
+            "currentRevision": current_revision,
+        })
+
+    files = project.get("files")
+    if not isinstance(files, dict):
+        raise HTTPException(status_code=500, detail="服务器 Preview Project 文件集无效。")
+
+    requested_paths = list(dict.fromkeys(body.paths))
+    selected_files = []
+    content_bytes = 0
+    for requested_path in requested_paths:
+        try:
+            path = normalize_virtual_path(requested_path)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"源码路径无效：{exc}") from exc
+        if path != requested_path:
+            raise HTTPException(status_code=422, detail="源码路径必须使用规范的绝对虚拟路径。")
+        extension = "." + path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
+        if extension in BINARY_EXTENSIONS:
+            raise HTTPException(status_code=422, detail="二进制文件不能通过源码同步接口读取。")
+        content = files.get(path)
+        if not isinstance(content, str) or "\x00" in content:
+            raise HTTPException(status_code=404, detail=f"源码文件不存在：{path}")
+        content_bytes += len(content.encode("utf-8"))
+        selected_files.append({"path": path, "content": content})
+
+    result = {
+        "success": True,
+        "projectId": body.projectId,
+        "revision": current_revision,
+        "serverRevision": snapshot.get("revision", 0),
+        "files": selected_files,
+    }
+    payload_bytes = len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    print(
+        f"[PreviewSync] session={session_id} project={body.projectId} revision={current_revision} "
+        f"files={len(selected_files)} content_bytes={content_bytes} response_bytes={payload_bytes}"
+    )
+    return result
+
+
 @router.put("/session/{session_id}/preview-project")
 async def save_session_preview_project_endpoint(session_id: str, body: SavePreviewProjectRequest):
     """校验并保存会话 Preview Project；只接受浏览器虚拟文件系统内容。"""
@@ -317,6 +394,7 @@ async def save_session_preview_project_endpoint(session_id: str, body: SavePrevi
                 "name": name.strip(),
                 "template": workspace.template,
                 "files": workspace.files,
+                "revision": workspace.revision,
             }
             if "/src/scene.json" in workspace.files:
                 try:
@@ -338,8 +416,13 @@ async def save_session_preview_project_endpoint(session_id: str, body: SavePrevi
             validated_project,
             body.origin,
             body.uploadName.strip() if body.uploadName else None,
+            body.expectedRevision,
         )
         return {"success": True, **result}
+    except RuntimeError as e:
+        if str(e) == "PREVIEW_PROJECT_REVISION_CONFLICT":
+            raise HTTPException(status_code=409, detail="Preview 项目已被其他操作更新，请刷新后重试。")
+        raise HTTPException(status_code=500, detail=f"保存 Preview Project 失败: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"保存 Preview Project 失败: {str(e)}")
 

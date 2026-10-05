@@ -1,0 +1,82 @@
+{
+  "name": "gor-vscode",
+  "displayName": "Gor",
+  "description": "Connect VS Code to Gor Server.",
+  "version": "0.1.0",
+  "publisher": "gor",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:gor.reconnect",
+    "onCommand:gor.openChat"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "gor.reconnect",
+        "title": "Gor: Reconnect"
+      },
+      {
+        "command": "gor.openChat",
+        "title": "Gor: Open Chat"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "gor",
+          "title": "Gor",
+          "icon": "resources/gor.svg"
+        }
+      ]
+    },
+    "views": {
+      "gor": [
+        {
+          "type": "webview",
+          "id": "gor.chatView",
+          "name": "Gor Chat"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Gor",
+      "properties": {
+        "gor.serverUrl": {
+          "type": "string",
+          "default": "ws://localhost:3001/ws/vscode",
+          "description": "Gor Server WebSocket URL."
+        },
+        "gor.httpBaseUrl": {
+          "type": "string",
+          "default": "http://localhost:3001",
+          "description": "Base HTTP URL for Gor chat APIs."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node --test",
+    "build:webview": "npm --prefix ../Web run build:extension",
+    "watch:webview": "node ./scripts/watch-webview.mjs",
+    "vscode:prepublish": "npm run build:webview && npm run compile"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.8.3"
+  }
+}

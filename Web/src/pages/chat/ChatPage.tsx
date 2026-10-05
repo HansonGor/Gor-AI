@@ -4,18 +4,15 @@ import {
   ArrowLeft,
   ChevronLeft,
   Menu,
-  Bell,
-  Sun,
-  Moon,
-  MonitorPlay,
   PanelLeftClose,
   PanelLeftOpen,
+  PanelRightClose,
   PanelRightOpen,
 } from 'lucide-react';
 import { Button } from '../../components/ui/button';
-import { Badge } from '../../components/ui/badge';
-import AppAvatar from '../../components/AppAvatar';
 import ChatBox from '../../components/ChatBox';
+import SessionCacheLoader from '../../components/ChatBox/SessionCacheLoader';
+import GorBrandLogo from '../../components/GorBrandLogo';
 import WebPreview from '../../components/ChatBox/WebPreview';
 import PreviewWorker from '../../components/ChatBox/PreviewWorker';
 import type {
@@ -37,7 +34,7 @@ import { validateSceneSpec } from '../../modeling/sceneSpec';
 import { createUploadSummaryRequest } from '../../utils/uploadSummary';
 import { getSessionPreview, getSessionPreviewArtifact, saveSessionPreview, saveSessionPreviewUi } from '../../utils/sessionPreviewStorage';
 import { getSessionPreviewProject, saveSessionPreviewProject } from '../../api/previewProject';
-import { hasCurrentProjectSource, hasPreviewFiles } from '../../preview/core/previewFilePresence';
+import { hasCurrentProjectSource, hasPreviewFiles, isPreviewableGeneratedFile, isPreviewableUploadedAttachment } from '../../preview/core/previewFilePresence';
 import { getSnapshotBackedHtmlArtifactUrls } from '../../preview/core/snapshotArtifactDedup';
 import { canonicalizePresentationFiles, isPresentationSnapshotFile } from '../../preview/core/presentationSnapshot';
 import { deletePendingSessionAttachment, saveGeneratedGlb, uploadSessionAttachment } from '../../api/chat';
@@ -45,10 +42,12 @@ import { createTemplateFiles } from '../../preview/templates';
 import { useFeedback } from '../../components/ui/feedback';
 
 export default function ChatPage() {
+  const isVscodePluginMode = document.documentElement.dataset.gorClientMode === 'vscode';
   const {
     sessions,
     sessionId,
     isSessionReady,
+    isSessionCacheLoading,
     messages,
     projectChanges,
     projectRevision,
@@ -60,6 +59,7 @@ export default function ChatPage() {
     isLoading,
     selectSession,
     createNewSession,
+    waitForSessionCreation,
     deleteSessionById,
     handleSend,
     queueUploadSummary,
@@ -74,6 +74,7 @@ export default function ChatPage() {
   } = useChat();
 
   const {
+    isPC,
     mobileSidebarVisible,
     sidebarOpen,
     togglePCSidebar,
@@ -81,8 +82,40 @@ export default function ChatPage() {
     closeMobileSidebar,
   } = useLayout();
 
-  const { theme, toggleTheme } = useTheme();
+  const { theme } = useTheme();
   const { notify } = useFeedback();
+  const [canGoBack, setCanGoBack] = useState(() => (
+    nativeBridge.shouldShowBackButton()
+    || (typeof window.history.state?.idx === 'number' && window.history.state.idx > 0)
+  ));
+  const [mobileSidebarMounted, setMobileSidebarMounted] = useState(mobileSidebarVisible);
+
+  useEffect(() => {
+    if (mobileSidebarVisible) {
+      setMobileSidebarMounted(true);
+      return;
+    }
+    if (!mobileSidebarMounted) return;
+
+    const unmountTimer = window.setTimeout(() => setMobileSidebarMounted(false), 260);
+    return () => window.clearTimeout(unmountTimer);
+  }, [mobileSidebarVisible, mobileSidebarMounted]);
+
+  useEffect(() => {
+    const updateBackAvailability = () => {
+      const historyIndex = window.history.state?.idx;
+      setCanGoBack(
+        nativeBridge.shouldShowBackButton()
+        || (typeof historyIndex === 'number' && historyIndex > 0),
+      );
+    };
+    window.addEventListener('popstate', updateBackAvailability);
+    window.addEventListener('hashchange', updateBackAvailability);
+    return () => {
+      window.removeEventListener('popstate', updateBackAvailability);
+      window.removeEventListener('hashchange', updateBackAvailability);
+    };
+  }, []);
   const handleSaveSceneGlb = useCallback(async (blob: Blob, name: string) => {
     if (!sessionId) throw new Error('当前没有活动会话，无法保存模型。');
     const file = await saveGeneratedGlb(sessionId, blob, name);
@@ -92,6 +125,7 @@ export default function ChatPage() {
   }, [sessionId, addGeneratedFileToLatestAssistant, notify]);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewWorkerOpen, setPreviewWorkerOpen] = useState(false);
+  const [previewWorkerMounted, setPreviewWorkerMounted] = useState(false);
   const [previewWorkerMode, setPreviewWorkerMode] = useState<PreviewWorkerMode>('preview');
   const [previewWorkerTarget, setPreviewWorkerTarget] = useState<PreviewWorkerTarget>('project');
   const [activeProjectSnapshotMessageId, setActiveProjectSnapshotMessageId] = useState<string | null>(null);
@@ -107,20 +141,36 @@ export default function ChatPage() {
   const [loadedPreviewSessionId, setLoadedPreviewSessionId] = useState<string | null>(null);
   const previewProjectState = usePreviewProjectStore();
   const projectSnapshots = useMemo(() => {
-    const seen = new Set<string>();
-    return messages.flatMap((message) => {
+    const latestByProject = new Map<string, PreviewProjectSnapshot>();
+    messages.forEach((message) => {
       const snapshot = message.role === 'assistant' ? message.previewSnapshot : undefined;
-      if (!snapshot || seen.has(snapshot.messageId)) return [];
-      seen.add(snapshot.messageId);
-      return [snapshot];
+      if (!snapshot) return;
+      const snapshotProjectId = snapshot.projectId || snapshot.id;
+      if (
+        snapshot.template !== 'presentation'
+        && snapshotProjectId === previewProjectState.project.id
+        && (hasServerPreviewProject || previewProjectState.project.serverRevision !== undefined)
+      ) return;
+      // Preview Project edits update one project across turns. Keep only its newest
+      // snapshot in the Worker list; distinct project IDs remain separate artifacts.
+      const projectKey = `${snapshot.template}:${snapshot.projectId || snapshot.id}`;
+      latestByProject.delete(projectKey);
+      latestByProject.set(projectKey, snapshot);
     });
-  }, [messages]);
+    return [...latestByProject.values()];
+  }, [messages, previewProjectState.project.id, previewProjectState.project.serverRevision, hasServerPreviewProject]);
   const messagePreviewArtifacts = useMemo(() => messages.flatMap((message) => {
     if (message.role !== 'assistant') return [];
     const files = message.files?.length ? message.files : message.file ? [message.file] : [];
+    if (
+      message.previewSnapshot
+      && message.previewSnapshot.template !== 'presentation'
+      && (message.previewSnapshot.projectId || message.previewSnapshot.id) === previewProjectState.project.id
+      && (hasServerPreviewProject || previewProjectState.project.serverRevision !== undefined)
+    ) return files.length ? [{ messageId: message.id, snapshot: null, files }] : [];
     if (!message.previewSnapshot && files.length === 0) return [];
     return [{ messageId: message.previewSnapshot?.messageId ?? message.id, snapshot: message.previewSnapshot ?? null, files }];
-  }), [messages]);
+  }), [messages, previewProjectState.project.id, previewProjectState.project.serverRevision, hasServerPreviewProject]);
   const activeProjectSnapshot = projectSnapshots.find((snapshot) => snapshot.messageId === activeProjectSnapshotMessageId) ?? null;
   const loadedPreviewSessionRef = useRef<string | null>(null);
   const activeSessionRef = useRef(sessionId);
@@ -159,8 +209,7 @@ export default function ChatPage() {
     });
     const existingChangedPaths = [...changedPaths].filter((path) => Object.prototype.hasOwnProperty.call(previewProjectState.project.files, path));
     if (hasImportedSource) {
-      const sourcePaths = Object.keys(previewProjectState.project.files).filter((path) => /\.(?:html?|[cm]?[jt]sx?|css|json|svg|md|txt)$/i.test(path));
-      return [...new Set([...sourcePaths, ...existingChangedPaths])];
+      return [...new Set([...Object.keys(previewProjectState.project.files), ...existingChangedPaths])];
     }
     return existingChangedPaths;
   }, [messages, previewProjectState.project.files, hasImportedSource]);
@@ -260,7 +309,10 @@ export default function ChatPage() {
       }
       if (savedNameMatches && savedContent?.kind === 'source') {
         const store = usePreviewProjectStore.getState();
-        store.importProject(savedContent.template, savedContent.files, savedContent.name, savedContent.projectId);
+        store.importProject(
+          savedContent.template, savedContent.files, savedContent.name, savedContent.projectId,
+          savedContent.revision, undefined, 'uploaded-source', savedUploadName,
+        );
         store.requestBuildAndRun();
         setImportedDist(null);
         setHasImportedSource(true);
@@ -287,7 +339,7 @@ export default function ChatPage() {
           setPreviewWorkerTarget('uploaded-dist');
         } else {
           const store = usePreviewProjectStore.getState();
-          store.importProject(restored.template, restored.files, restored.name);
+          store.importProject(restored.template, restored.files, restored.name, undefined, undefined, undefined, 'uploaded-source', attachment.name);
           store.requestBuildAndRun();
           setImportedDist(null);
           setHasImportedSource(true);
@@ -302,7 +354,11 @@ export default function ChatPage() {
           && serverArtifact.uploadName?.trim().replace(/\.zip$/i, '').toLocaleLowerCase() === attachmentName;
         if (serverNameMatches && serverArtifact) {
           const store = usePreviewProjectStore.getState();
-          store.importProject(serverArtifact.project.template, serverArtifact.project.files, serverArtifact.project.name, serverArtifact.project.id);
+          store.importProject(
+            serverArtifact.project.template, serverArtifact.project.files, serverArtifact.project.name,
+            serverArtifact.project.id, serverArtifact.project.revision, serverArtifact.revision,
+            serverArtifact.origin, serverArtifact.uploadName,
+          );
           store.requestBuildAndRun();
           setImportedDist(null);
           setHasImportedSource(true);
@@ -324,22 +380,49 @@ export default function ChatPage() {
   const hasProjectSource = hasCurrentProjectSource(
     Object.keys(previewProjectState.project.files).length,
     visibleImportedSource,
-    hasServerPreviewProject,
+    hasServerPreviewProject || previewProjectState.project.serverRevision !== undefined,
     previewSourcePaths.length,
   );
-  const hasVisibleCurrentProject = hasProjectSource && !hiddenArtifactKeys.includes(`project:${previewProjectState.project.id}`);
+  // A session-level server project alone is not enough to show the Worker entry:
+  // require source tied to a message in this conversation or an explicitly imported source.
+  const hasVisibleCurrentProjectSnapshot = messages.some((message) => {
+    const snapshot = message.role === 'assistant' ? message.previewSnapshot : undefined;
+    if (!snapshot || snapshot.template === 'presentation') return false;
+    if ((snapshot.projectId || snapshot.id) !== previewProjectState.project.id) return false;
+    return !hiddenArtifactKeys.includes(`project-snapshot:${snapshot.messageId || message.id}`);
+  });
+  const hasVisibleCurrentProject = (
+    hasCurrentProjectSource(
+      Object.keys(previewProjectState.project.files).length,
+      visibleImportedSource,
+      false,
+      previewSourcePaths.length,
+    ) || hasVisibleCurrentProjectSnapshot
+  ) && !hiddenArtifactKeys.includes(`project:${previewProjectState.project.id}`);
   const hasVisibleProjectSnapshot = projectSnapshots.some(
     (snapshot) => !hiddenArtifactKeys.includes(`project-snapshot:${snapshot.messageId}`),
   );
+  const previewableGeneratedFileCount = visibleGeneratedFiles.filter(isPreviewableGeneratedFile).length;
+  const previewableUploadedAttachmentCount = visibleUploadedAttachments.filter(isPreviewableUploadedAttachment).length;
   const hasPreviewWorkerContent = isPreviewSessionLoaded && hasPreviewFiles({
     currentProjectVisible: hasVisibleCurrentProject,
     projectSnapshotCount: hasVisibleProjectSnapshot ? 1 : 0,
-    generatedFileCount: visibleGeneratedFiles.length,
-    uploadedAttachmentCount: visibleUploadedAttachments.length,
+    generatedFileCount: previewableGeneratedFileCount,
+    uploadedAttachmentCount: previewableUploadedAttachmentCount,
     hasImportedDist: visibleImportedDist !== null,
   });
-  const visiblePreviewWorkerOpen = isPreviewSessionLoaded && previewWorkerOpen && hasPreviewWorkerContent;
+  const visiblePreviewWorkerOpen = !isVscodePluginMode && isPreviewSessionLoaded && previewWorkerOpen && hasPreviewWorkerContent;
+  useEffect(() => {
+    if (visiblePreviewWorkerOpen) {
+      setPreviewWorkerMounted(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setPreviewWorkerMounted(false), 360);
+    return () => window.clearTimeout(timer);
+  }, [visiblePreviewWorkerOpen]);
   const visiblePreviewOpen = isPreviewSessionLoaded && previewOpen;
+  const activeSessionTitleRaw = sessions.find((session) => session.id === sessionId)?.title;
+  const activeSessionTitle = !activeSessionTitleRaw || activeSessionTitleRaw === '新对话' ? '新章' : activeSessionTitleRaw;
 
   useEffect(() => {
     if (!isPreviewSessionLoaded || hasPreviewWorkerContent) return;
@@ -381,7 +464,10 @@ export default function ChatPage() {
           if (serverSnapshot) {
             const store = usePreviewProjectStore.getState();
             const savedProject = serverSnapshot.project;
-            store.importProject(savedProject.template, savedProject.files, savedProject.name, savedProject.id);
+            store.importProject(
+              savedProject.template, savedProject.files, savedProject.name, savedProject.id,
+              savedProject.revision, serverSnapshot.revision, serverSnapshot.origin, serverSnapshot.uploadName,
+            );
             if (localSnapshot?.selectedFilePath) store.selectFile(localSnapshot.selectedFilePath);
             persistedSourceProjectIdRef.current = store.project.id;
             store.requestBuildAndRun();
@@ -390,7 +476,11 @@ export default function ChatPage() {
             setImportedUploadName(serverSnapshot.origin === 'uploaded-source' ? serverSnapshot.uploadName : localSnapshot?.uploadName ?? null);
           } else if (localSnapshot?.content.kind === 'source') {
             const store = usePreviewProjectStore.getState();
-            store.importProject(localSnapshot.content.template, localSnapshot.content.files, localSnapshot.content.name, localSnapshot.content.projectId);
+            store.importProject(
+              localSnapshot.content.template, localSnapshot.content.files, localSnapshot.content.name,
+              localSnapshot.content.projectId, localSnapshot.content.revision, undefined,
+              'uploaded-source', localSnapshot.uploadName,
+            );
             if (localSnapshot.selectedFilePath) store.selectFile(localSnapshot.selectedFilePath);
             persistedSourceProjectIdRef.current = store.project.id;
             store.requestBuildAndRun();
@@ -401,14 +491,13 @@ export default function ChatPage() {
           if (localSnapshot) {
             if (!serverSnapshot) setImportedUploadName(localSnapshot.uploadName);
             setPreviewOpen(localSnapshot.previewOpen);
-            setPreviewWorkerOpen(localSnapshot.previewWorkerOpen || Boolean(serverSnapshot));
+            setPreviewWorkerOpen(Boolean(localSnapshot.previewWorkerOpen));
             setPreviewWorkerMode(localSnapshot.previewWorkerMode);
             // A per-message snapshot is selected in-memory; the worker's UI snapshot only
             // stores the target kind, so do not restore an orphaned snapshot target.
             setPreviewWorkerTarget(localSnapshot.previewWorkerTarget === 'project-snapshot' ? 'project' : localSnapshot.previewWorkerTarget);
             restoredActivePreviewFileUrlRef.current = localSnapshot.activePreviewFileUrl;
           } else if (serverSnapshot) {
-            setPreviewWorkerOpen(true);
             setPreviewWorkerTarget('project');
           }
           // The generated-file history may still be loading; its existing selection effect
@@ -454,6 +543,7 @@ export default function ChatPage() {
           name: sourceProjectSnapshot.name,
           template: sourceProjectSnapshot.template,
           files: sourceProjectSnapshot.files,
+          revision: sourceProjectSnapshot.revision,
         }
       : importedDist
         ? { kind: 'dist' as const, archive: importedDist }
@@ -493,22 +583,46 @@ export default function ChatPage() {
     const defaultFiles = createTemplateFiles(project.template);
     const differsFromTemplate = project.name !== (project.template === 'react' ? 'React Preview' : 'HTML Preview')
       || JSON.stringify(project.files) !== JSON.stringify(defaultFiles);
-    if (!hasImportedSource && !hasServerPreviewProject && !differsFromTemplate) return;
+    const hasUnsavedSource = (project.revision ?? 0) !== (project.persistedRevision ?? -1);
+    if (!hasUnsavedSource) return;
+    if (!hasImportedSource && !hasServerPreviewProject && project.serverRevision === undefined && !differsFromTemplate) return;
 
     const timer = window.setTimeout(() => {
       const save = async () => {
-        await saveSessionPreviewProject(
+        const latestProject = usePreviewProjectStore.getState().project;
+        if (
+          latestProject.id !== project.id
+          || latestProject.revision !== project.revision
+          || latestProject.serverRevision !== project.serverRevision
+        ) return;
+        const saved = await saveSessionPreviewProject(
           sessionId,
           project,
-          hasImportedSource ? 'uploaded-source' : 'generated',
-          hasImportedSource ? importedUploadName : null,
+          hasImportedSource ? 'uploaded-source' : project.origin ?? 'generated',
+          hasImportedSource ? importedUploadName : project.uploadName ?? null,
+          project.serverRevision,
         );
-        if (activeSessionRef.current === sessionId) setHasServerPreviewProject(true);
+        if (activeSessionRef.current === sessionId) {
+          usePreviewProjectStore.getState().markServerSaved(
+            project.id,
+            project.revision ?? 0,
+            saved.revision,
+            hasImportedSource ? 'uploaded-source' : project.origin ?? 'generated',
+            hasImportedSource ? importedUploadName : project.uploadName ?? null,
+          );
+          setHasServerPreviewProject(true);
+        }
       };
       serverSaveQueueRef.current = serverSaveQueueRef.current
         .catch(() => undefined)
         .then(save)
         .catch((error: unknown) => {
+          const latestProject = usePreviewProjectStore.getState().project;
+          if (
+            latestProject.id === project.id
+            && latestProject.serverRevision !== project.serverRevision
+            && latestProject.persistedRevision === latestProject.revision
+          ) return;
           console.warn('[Preview] 保存服务端 Preview 项目失败:', error);
           if (!failedPersistenceSessionsRef.current.has(sessionId)) {
             failedPersistenceSessionsRef.current.add(sessionId);
@@ -641,7 +755,10 @@ export default function ChatPage() {
       pendingImportedPreviewRef.current = null;
       const { imported, uploadName } = pendingPreview;
       if (imported.kind === 'source') {
-        usePreviewProjectStore.getState().importProject(imported.template, imported.files, imported.name);
+        usePreviewProjectStore.getState().importProject(
+          imported.template, imported.files, imported.name, undefined, undefined, undefined,
+          'uploaded-source', uploadName,
+        );
         usePreviewProjectStore.getState().requestBuildAndRun();
         setImportedDist(null);
         setHasImportedSource(true);
@@ -679,12 +796,13 @@ export default function ChatPage() {
     if (!signal?.aborted) {
       const summary = createUploadSummaryRequest(imported, file.name, 'archive');
       if (!sessionId) throw new Error('会话尚未准备好，请稍后重试。');
+      if (!(await waitForSessionCreation(sessionId))) throw new Error('新会话创建失败，请重试。');
       summary.attachments = [{ ...summary.attachments[0], ...await uploadSessionAttachment(sessionId, file, file.name, 'archive') }];
       if (signal?.aborted) return;
       applyImportedPreview(imported, file.name, signal);
       queueUploadSummary(summary.prompt, undefined, summary.displayText, summary.analysisContext, summary.attachments);
     }
-  }, [applyImportedPreview, queueUploadSummary, sessionId]);
+  }, [applyImportedPreview, queueUploadSummary, sessionId, waitForSessionCreation]);
 
   const handleFolderSelect = useCallback(async (files: FileList | File[], signal?: AbortSignal) => {
     const imported = await importPreviewDirectory(files, signal);
@@ -694,6 +812,7 @@ export default function ChatPage() {
     if (!signal?.aborted) {
       const summary = createUploadSummaryRequest(imported, folderName, 'folder');
       if (!sessionId) throw new Error('会话尚未准备好，请稍后重试。');
+      if (!(await waitForSessionCreation(sessionId))) throw new Error('新会话创建失败，请重试。');
       const archiveBlob = new Blob([Uint8Array.from(imported.archiveBytes).buffer as ArrayBuffer], { type: 'application/zip' });
       if (isFolderUpload) {
         const stored = await uploadSessionAttachment(sessionId, archiveBlob, `${folderName}.zip`, 'folder');
@@ -712,7 +831,7 @@ export default function ChatPage() {
       applyImportedPreview(imported, folderName, signal);
       queueUploadSummary(summary.prompt, undefined, summary.displayText, summary.analysisContext, summary.attachments);
     }
-  }, [applyImportedPreview, queueUploadSummary, sessionId]);
+  }, [applyImportedPreview, queueUploadSummary, sessionId, waitForSessionCreation]);
 
   const removeImportedUpload = useCallback(() => {
     if (sessionId) {
@@ -739,6 +858,11 @@ export default function ChatPage() {
     [selectSession, closeMobileSidebar],
   );
 
+  const handleCreateSessionFromMobileSidebar = useCallback(() => {
+    void createNewSession();
+    closeMobileSidebar();
+  }, [createNewSession, closeMobileSidebar]);
+
   const showNativeBack = nativeBridge.shouldShowBackButton();
   const handleHeaderLeft = useCallback(() => {
     if (showNativeBack) {
@@ -749,20 +873,21 @@ export default function ChatPage() {
   }, [showNativeBack, openMobileSidebar]);
 
   const goBack = useCallback(() => {
-    if (window.history.length > 1) {
-      window.history.back();
-    } else {
-      window.location.hash = '#/';
+    if (!canGoBack) return;
+    if (nativeBridge.shouldShowBackButton()) {
+      nativeBridge.goBack();
+      return;
     }
-  }, []);
+    window.history.back();
+  }, [canGoBack]);
 
   return (
-    <div
-      className={`chat-page theme-${theme} relative flex h-full flex-row overflow-hidden bg-[#0f0f19] text-[#f5f5f7]`}
-    >
+    <div className={`chat-page theme-${theme} ${isVscodePluginMode ? 'is-vscode-plugin' : ''} ${sidebarOpen ? '' : 'is-sidebar-collapsed'} ${mobileSidebarVisible ? 'is-mobile-sidebar-open' : ''} ${messages.length === 0 ? 'is-empty-chat' : ''} ${hasPreviewWorkerContent && !isVscodePluginMode ? 'has-preview-worker-content' : ''} ${visiblePreviewWorkerOpen ? 'has-preview-worker-open' : ''}`}>
+      <div className="gor-brand chat-persistent-brand">
+        <GorBrandLogo />
+      </div>
       {/* PC端常驻左侧边栏 */}
-      {sidebarOpen && (
-        <aside className="hidden lg:flex lg:h-full lg:w-[280px] lg:shrink-0 lg:border-r lg:border-white/5 lg:bg-[#0b0b14]">
+        <aside className="chat-sidebar-desktop hidden lg:flex" aria-hidden={!sidebarOpen}>
           <Sidebar
             sessions={sessions}
             activeSessionId={sessionId}
@@ -773,33 +898,29 @@ export default function ChatPage() {
             isCollapsed={false}
           />
         </aside>
-      )}
-      <Button
+      <button
         type="button"
-        variant="ghost"
-        size="icon"
+        className={`chat-sidebar-float-toggle ${sidebarOpen ? 'is-open' : 'is-closed'}`}
         onClick={togglePCSidebar}
-        className={`desktop-sidebar-toggle absolute top-1/2 z-30 hidden h-9 w-7 -translate-y-1/2 rounded-r-lg border shadow-md lg:grid ${sidebarOpen ? 'left-[calc(280px-28px)]' : 'left-0'}`}
         aria-label={sidebarOpen ? '收起会话侧边栏' : '展开会话侧边栏'}
         title={sidebarOpen ? '收起会话列表' : '展开会话列表'}
       >
-        {sidebarOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}
-      </Button>
-
+        {sidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
+      </button>
       {/* 移动端悬浮侧边栏 */}
-      {mobileSidebarVisible && (
+      {mobileSidebarMounted && (
         <>
           <div
-            className="fixed inset-0 z-40 bg-black/50"
+            className={`chat-mobile-mask ${mobileSidebarVisible ? 'is-entering' : 'is-closing'}`}
             onClick={closeMobileSidebar}
             aria-hidden="true"
           />
-          <div className="fixed inset-y-0 left-0 z-50 lg:hidden">
+          <div className={`chat-sidebar-mobile ${mobileSidebarVisible ? 'is-entering' : 'is-closing'}`}>
             <Sidebar
               sessions={sessions}
               activeSessionId={sessionId}
               onSelectSession={handleSelectSession}
-              onCreateSession={createNewSession}
+              onCreateSession={handleCreateSessionFromMobileSidebar}
               onDeleteSession={deleteSessionById}
               theme={theme}
               isCollapsed={false}
@@ -809,90 +930,57 @@ export default function ChatPage() {
       )}
 
       {/* 右侧主内容区 */}
-      <div className="chat-main-content relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-[#0f0f19]">
-        <header className="chat-header relative flex shrink-0 items-center justify-between bg-[#0f0f19]/70 backdrop-blur-xl px-[0.28rem] pb-[0.18rem] pt-[0.22rem] shadow-sm lg:px-8 lg:py-3.5">
-          <div className="chat-header-left flex items-center gap-[0.18rem] lg:hidden">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={goBack}
-              aria-label="返回上一页"
-              title="返回上一页"
-              className="chat-icon-btn h-[0.72rem] w-[0.72rem] rounded-full bg-transparent text-white/80 hover:bg-transparent hover:text-white active:scale-90"
-            >
-              <ArrowLeft size={22} />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={handleHeaderLeft}
-              aria-label={showNativeBack ? '返回首页' : '打开会话列表'}
-              className="chat-icon-btn h-[0.72rem] w-[0.72rem] rounded-full text-white hover:bg-white/10 hover:text-white active:scale-95"
-            >
-              {showNativeBack ? <ChevronLeft size={22} /> : <Menu size={20} />}
-            </Button>
-          </div>
-          <span className="chat-brand absolute left-1/2 -translate-x-1/2 text-[0.3rem] font-medium tracking-wide text-white/60 lg:text-base">
-            Assistant
-          </span>
-          <div className="chat-header-right flex items-center gap-[0.12rem] lg:ml-auto lg:gap-3">
-            {isPreviewSessionLoaded && projectRevision > 0 && (
+      <div className="chat-main-content">
+        <header className="chat-header">
+          <div className="chat-header-heading">
+            <div className={`chat-header-left ${isVscodePluginMode ? '' : 'lg:hidden'}`}>
+              {canGoBack && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={goBack}
+                  aria-label="返回上一页"
+                  title="返回上一页"
+                  className="chat-icon-btn h-[0.72rem] w-[0.72rem] rounded-full bg-transparent text-white/80 hover:bg-transparent hover:text-white active:scale-90"
+                >
+                  <ArrowLeft size={22} />
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() =>
-                  setPreviewOpen((open) => {
-                    const next = !open;
-                    if (next) setPreviewWorkerOpen(false);
-                    return next;
-                  })
-                }
-                aria-label={previewOpen ? '收起项目网页预览' : '打开项目网页预览'}
-                title={previewOpen ? '收起项目网页预览' : '打开项目网页预览'}
-                className="chat-icon-btn h-[0.72rem] w-[0.72rem] rounded-full text-white hover:bg-white/10 lg:h-9 lg:w-9"
+                onClick={messages.length === 0 ? (isPC ? togglePCSidebar : openMobileSidebar) : handleHeaderLeft}
+                aria-label={messages.length === 0 ? (isPC && sidebarOpen ? '收起会话列表' : '打开会话列表') : !showNativeBack ? '打开会话列表' : '返回首页'}
+                className="chat-icon-btn h-[0.72rem] w-[0.72rem] rounded-full text-white hover:bg-white/10 hover:text-white active:scale-95"
               >
-                <MonitorPlay size={18} />
+                  {messages.length === 0 && isPC ? (sidebarOpen ? <PanelLeftClose size={22} /> : <PanelLeftOpen size={22} />) : messages.length === 0 || !showNativeBack ? <Menu size={22} /> : <ChevronLeft size={22} />}
               </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={toggleTheme}
-              aria-label={theme === 'dark' ? '切换到白天模式' : '切换到暗黑模式'}
-              className="chat-icon-btn h-[0.72rem] w-[0.72rem] rounded-full text-white hover:bg-white/10 hover:text-white active:scale-95 lg:h-9 lg:w-9"
-            >
-              {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
-            </Button>
-            <AppAvatar className="chat-header-avatar h-[0.62rem] w-[0.62rem] rounded-full lg:h-9 lg:w-9" />
-            <div className="chat-bell relative flex h-[0.72rem] w-[0.72rem] shrink-0 items-center justify-center text-white lg:h-9 lg:w-9">
-              <Bell size={18} />
-              <Badge className="chat-bell-badge absolute -right-[0.16rem] -top-[0.06rem] h-[0.36rem] min-w-[0.36rem] items-center justify-center rounded-full border-none bg-gradient-to-br from-rose-500 to-red-500 px-[0.06rem] pb-[0.02rem] text-[0.2rem] font-semibold leading-none text-white lg:-right-1 lg:-top-0.5 lg:h-4 lg:min-w-4 lg:text-[10px]">
-                2
-              </Badge>
             </div>
-            {hasPreviewWorkerContent && (
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() =>
-                  visiblePreviewWorkerOpen ? setPreviewWorkerOpen(false) : openPreviewWorker()
-                }
-                aria-label={visiblePreviewWorkerOpen ? '关闭 Preview Worker' : '打开 Preview Worker'}
-                title={visiblePreviewWorkerOpen ? '关闭 Preview Worker' : 'Preview Worker'}
-                className={`preview-worker-trigger chat-icon-btn relative h-[0.72rem] w-[0.72rem] rounded-full text-white hover:bg-white/10 lg:h-9 lg:w-9 ${visiblePreviewWorkerOpen ? 'is-active' : ''}`}
+            <div className="chat-mobile-brand"><GorBrandLogo /></div>
+            <div className="chat-session-title" title={activeSessionTitle}>
+              <span>{activeSessionTitle}</span>
+            </div>
+          </div>
+          <div className="chat-header-right">
+            {!isVscodePluginMode && hasPreviewWorkerContent && (
+              <button
+                type="button"
+                className="chat-preview-worker-toggle"
+                onClick={() => { visiblePreviewWorkerOpen ? setPreviewWorkerOpen(false) : openPreviewWorker(); }}
+                aria-label={visiblePreviewWorkerOpen ? '收起 Preview Worker' : '展开 Preview Worker'}
+                aria-expanded={visiblePreviewWorkerOpen}
+                title={visiblePreviewWorkerOpen ? '收起 Preview Worker' : '展开 Preview Worker'}
               >
-                <PanelRightOpen size={18} />
-                {generatedFiles.length > 0 && (
-                  <span className="preview-worker-count">{generatedFiles.length}</span>
-                )}
-              </Button>
+                {visiblePreviewWorkerOpen ? <PanelRightClose size={19} /> : <PanelRightOpen size={19} />}
+                {previewableGeneratedFileCount > 0 && <span>{previewableGeneratedFileCount}</span>}
+              </button>
             )}
           </div>
         </header>
 
-        <main className="chat-main relative flex min-h-0 flex-1 overflow-hidden bg-[#0f0f19]">
+        <main className="chat-main">
           <div className="chat-conversation min-w-0 flex-1">
-            {isSessionReady ? (
+            {isSessionReady && !isSessionCacheLoading ? (
               <ChatBox
                 key={sessionId ?? 'chat'}
                 messages={messages}
@@ -912,14 +1000,18 @@ export default function ChatPage() {
                 hasPendingUploadSummary={hasPendingUploadSummary}
                 onRemoveImportedUpload={removeImportedUpload}
                 onClearPendingUpload={clearPendingUploadSummary}
-                onPreviewFile={openPreviewWorker}
-                onPreviewAttachment={handlePreviewAttachment}
-                onPreviewProject={(file, intent = 'preview', sourcePath, snapshot) => {
+                onPreviewFile={isVscodePluginMode ? undefined : openPreviewWorker}
+                onPreviewAttachment={isVscodePluginMode ? undefined : handlePreviewAttachment}
+                onPreviewProject={isVscodePluginMode ? undefined : (file, intent = 'preview', sourcePath, snapshot) => {
                   if (snapshot) {
+                    const currentSnapshot = projectSnapshots.find((candidate) =>
+                      candidate.template === snapshot.template
+                      && (candidate.projectId || candidate.id) === (snapshot.projectId || snapshot.id),
+                    ) ?? snapshot;
                     setPreviewOpen(false);
-                    setActiveProjectSnapshotMessageId(snapshot.messageId);
+                    setActiveProjectSnapshotMessageId(currentSnapshot.messageId);
                     setActiveProjectSourcePath(sourcePath);
-                    restorePreviewArtifact(`project-snapshot:${snapshot.messageId}`);
+                    restorePreviewArtifact(`project-snapshot:${currentSnapshot.messageId}`);
                     setPreviewWorkerTarget('project-snapshot');
                     setPreviewWorkerMode(intent === 'source' ? 'code' : 'preview');
                     setPreviewWorkerOpen(true);
@@ -950,16 +1042,14 @@ export default function ChatPage() {
                 }}
               />
             ) : (
-              <div className="app-loading flex h-full flex-col items-center justify-center gap-[0.2rem]">
-                <div className="loading-spinner"></div>
-                <span className="text-[0.26rem]">正在初始化...</span>
-              </div>
+              <SessionCacheLoader statusText={isSessionReady ? '正在读取会话缓存' : '正在初始化会话'} />
             )}
           </div>
           {visiblePreviewOpen && (
             <WebPreview revision={projectRevision} onClose={() => setPreviewOpen(false)} />
           )}
-          {visiblePreviewWorkerOpen && (
+          {!isVscodePluginMode && <div className={`chat-preview-worker-slot ${visiblePreviewWorkerOpen ? 'is-open' : ''}`} aria-hidden={!visiblePreviewWorkerOpen}>
+          {(visiblePreviewWorkerOpen || (previewWorkerMounted && isPreviewSessionLoaded && hasPreviewWorkerContent)) && (
             <PreviewWorker
               files={visibleGeneratedFiles}
               messagePreviewArtifacts={messagePreviewArtifacts}
@@ -992,6 +1082,7 @@ export default function ChatPage() {
               onClose={() => setPreviewWorkerOpen(false)}
             />
           )}
+          </div>}
         </main>
       </div>
     </div>

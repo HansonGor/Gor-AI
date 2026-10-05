@@ -11,6 +11,37 @@ export interface TokenUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  llm_call_count?: number;
+  last_prompt_tokens?: number;
+  calls?: Array<{
+    index: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    reason: string;
+    contains_preview_committed_content?: boolean;
+    contains_preview_file_changed_content?: boolean;
+    contains_frontend_synced_full_source?: boolean;
+    preview_source_chars?: number;
+    search_snippet_chars?: number;
+    range_read_chars?: number;
+    full_preview_file_chars?: number;
+    committed_content_chars?: number;
+    preview_file_changed_chars?: number;
+  }>;
+  execution_llm_calls?: number;
+  final_response_llm_calls?: number;
+  preview_tool_calls?: number;
+  search_calls?: number;
+  search_queries?: string[];
+  read_calls?: number;
+  range_read_chars?: number;
+  full_preview_file_chars?: number;
+  read_reason?: string[];
+  patch_calls?: number;
+  batch_patch_calls?: number;
+  patch_operations?: number;
+  preview_commit_payload_bytes?: number;
+  preview_sync_fetch_bytes?: number;
 }
 
 export interface ModelQuotaInfo {
@@ -27,6 +58,7 @@ export interface ProjectChange {
 
 export interface PreviewFileChange extends ProjectChange {
   projectId: string;
+  revision?: number;
 }
 
 export interface PreviewProjectSnapshot {
@@ -37,25 +69,103 @@ export interface PreviewProjectSnapshot {
   /** Final preview artifact format (e.g. .html for React, .glb for a SceneSpec). */
   outputExtension: string;
   files: Record<string, string>;
+  revision?: number;
   artifactId?: string;
   projectId?: string;
   snapshotId?: string;
   presentationSchema?: PresentationSchema;
   presentationBackgrounds?: Record<string, PresentationBackground>;
+  renderedSlides?: PresentationRenderedSlide[];
+  antiAIPatternReport?: Record<string, any>;
+  designCritique?: Record<string, any>;
   finalArtifact?: GeneratedFile;
   storyOutline?: string[];
-  visualQA?: { passed?: boolean; issues?: Array<{ severity: string; message: string }>; attempts?: number; maxAttempts?: number };
+  visualQA?: {
+    passed?: boolean;
+    issues?: Array<{ severity: string; message: string }>;
+    attempts?: number;
+    maxAttempts?: number;
+  };
 }
 
+export type PresentationMotionEffect =
+  | 'none'
+  | 'appear'
+  | 'fade'
+  | 'rise'
+  | 'wipe'
+  | 'fly'
+  | 'zoom'
+  | 'grow'
+  | 'pulse'
+  | 'colorEmphasis'
+  | 'fadeOut';
+export interface PresentationMotionCue {
+  target: string;
+  effect: PresentationMotionEffect;
+  trigger: 'withPrevious' | 'afterPrevious' | 'onClick';
+  start: number;
+  duration: number;
+  delay: number;
+  order: number;
+  clickIndex: number;
+  direction: 'up' | 'left' | 'right' | 'down';
+  distance: 'micro' | 'short' | 'medium';
+}
+export interface PresentationTransition {
+  effect: 'none' | 'fade' | 'push' | 'wipe' | 'morph';
+  duration: number;
+  direction: 'up' | 'left' | 'right' | 'down';
+  requestedEffect?: string | null;
+  fallbackReason?: string | null;
+}
 export interface PresentationSchema {
   version: '1.0';
   title: string;
   description?: string;
   audience?: string;
   purpose?: string;
+  artDirection?: Record<string, any>;
+  designDNA?: Record<string, any>;
+  referenceDesignProfile?: Record<string, any>;
+  referencePlan?: {
+    brief: { topic: string; language: 'zh' | 'en'; presentationType: string; industry: string; audience: string; style: string };
+    sourceWeights: Array<{ source: string; baseWeight: number; scenarioRelevance: number; styleRelevance: number; languageRelevance: number; industryRelevance: number; audienceRelevance: number; formatRelevance: number; retrievalRelevance: number; rawWeight: number; finalWeight: number }>;
+    primarySources: string[];
+    secondarySources: string[];
+    calibrationSources: string[];
+    referenceIntent: Record<string, string[]>;
+    blendedDNA: Record<string, string>;
+    appliedDNA: Record<string, string>;
+    layoutGrammar: string[];
+    motionDirection: string;
+    languageCalibration: { language: 'zh' | 'en'; fontFamily: string; titleScale: number; bodyLineSpacing: number; guidance: string };
+    decisionTrace: Record<string, string>;
+    providerStatus: string;
+    userReferenceApplied: boolean;
+    retrievedReferences: Array<{ source: string; title: string; url: string; snippet: string }>;
+  } | null;
   theme: 'modern-light' | 'modern-dark' | 'business' | 'minimal' | 'technology';
   aspectRatio: '16:9' | '4:3';
-  slides: Array<Record<string, any> & { id: string; type: string; title?: string; subtitle?: string; supportingPoints?: string[] }>;
+  motionLanguage?: {
+    style: 'minimal' | 'professional' | 'cinematic' | 'editorial' | 'dynamic' | 'data-driven';
+    energy: 'low' | 'medium' | 'high';
+    playback: 'automatic' | 'onClick' | 'none';
+    maxAnimatedGroupsPerSlide: number;
+    [key: string]: unknown;
+  } | null;
+  slides: Array<
+    Record<string, any> & {
+      id: string;
+      type: string;
+      title?: string;
+      subtitle?: string;
+      supportingPoints?: string[];
+      transition?: PresentationTransition | null;
+      animationTimeline?: PresentationMotionCue[] | null;
+      motionDisabled?: boolean;
+    }
+  >;
 }
 
 export interface PresentationBackground {
@@ -63,6 +173,15 @@ export interface PresentationBackground {
   photographer: string;
   photographerUrl: string;
   photoUrl: string;
+  imageRole?: 'hero' | 'background' | 'editorial' | 'product' | 'supporting' | 'texture' | 'none';
+}
+
+export interface PresentationRenderedSlide {
+  slideId: string;
+  index: number;
+  url: string;
+  thumbnailUrl?: string;
+  mimeType?: string;
 }
 
 export interface GeneratedFile {
@@ -80,6 +199,9 @@ export interface GeneratedFile {
   editableSource?: boolean;
   presentationSchema?: PresentationSchema;
   presentationBackgrounds?: Record<string, PresentationBackground>;
+  renderedSlides?: PresentationRenderedSlide[];
+  antiAIPatternReport?: Record<string, any>;
+  designCritique?: Record<string, any>;
   sourceFiles?: Record<string, string>;
   storyOutline?: string[];
   visualQA?: PreviewProjectSnapshot['visualQA'];
@@ -94,6 +216,42 @@ export interface UploadedAttachment {
   size?: number;
 }
 
+export interface SearchSource {
+  /** 来源编号，如 S1，对应回答正文中的 [S1] 引用标记 */
+  sourceId?: string;
+  title: string;
+  url: string;
+  snippet?: string;
+  /** 真实域名（由后端从 URL 解析，如 xiaohongshu.com） */
+  domain?: string;
+  /** 来源平台/站点名（如小红书、GitHub） */
+  source?: string;
+  sourceType?: string;
+  /** 实际返回该结果的 Search Provider（如 doubao / tavily / serper / github） */
+  provider?: string;
+  query?: string;
+}
+
+export interface SearchTraceEntry {
+  provider: string;
+  status: 'success' | 'empty' | 'error';
+  error?: string;
+  result_count?: number;
+  domains?: string[];
+}
+
+export interface SearchTrace {
+  /** 实际尝试过的 Provider（含失败/空结果） */
+  attemptedProviders: string[];
+  /** 实际成功返回结果的 Provider（不能把失败的也算成功） */
+  successfulProvider: string[];
+  /** 计划优先搜索的网站（≠ 实际搜索到的网站） */
+  preferredDomains: string[];
+  /** 实际获得结果的域名 */
+  searchedDomains: string[];
+  trace: SearchTraceEntry[];
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -105,8 +263,16 @@ export interface ChatMessage {
   images?: string[];
   isStreaming?: boolean;
   toolStatus?: string;
+  /** Live, in-bubble execution phase; removed from view when the turn completes. */
+  executionPhase?: 'thinking' | 'tool' | 'summarizing' | 'composing';
+  executionToolName?: string;
   tokenUsage?: TokenUsage;
-  contextRemain?: { prompt_tokens: number; max_context: number; remain_token: number; warning: boolean };
+  contextRemain?: {
+    prompt_tokens: number;
+    max_context: number;
+    remain_token: number;
+    warning: boolean;
+  };
   modelQuotaInfo?: ModelQuotaInfo;
   file?: GeneratedFile;
   files?: GeneratedFile[];
@@ -117,6 +283,10 @@ export interface ChatMessage {
   previewSnapshot?: PreviewProjectSnapshot;
   /** True when the list is reconstructed from the persisted project snapshot (legacy messages). */
   previewChangesRestored?: boolean;
+  /** 本次回答真实使用的联网搜索来源（持久化，刷新后不重新搜索） */
+  searchSources?: SearchSource[];
+  /** 本次联网搜索的 Search Trace（attempted / successful providers） */
+  searchTrace?: SearchTrace;
 }
 
 export interface SSEEvent {
@@ -146,7 +316,12 @@ export interface ChatBoxProps {
   handleImageSelect: (files: FileList | File[]) => void;
   removePendingImage: (index: number) => void;
   onPreviewFile?: (file: GeneratedFile) => void;
-  onPreviewProject?: (file?: GeneratedFile, intent?: 'preview' | 'source', sourcePath?: string, snapshot?: PreviewProjectSnapshot) => void;
+  onPreviewProject?: (
+    file?: GeneratedFile,
+    intent?: 'preview' | 'source',
+    sourcePath?: string,
+    snapshot?: PreviewProjectSnapshot,
+  ) => void;
   onPreviewAttachment?: (attachment: UploadedAttachment) => void;
   onArchiveSelect?: (file: File, signal?: AbortSignal) => Promise<void>;
   onFolderSelect?: (files: FileList | File[], signal?: AbortSignal) => Promise<void>;
@@ -176,6 +351,29 @@ export interface InputAreaProps {
   onClearPendingUpload?: () => void;
 }
 
-export interface MessageListProps { messages: ChatMessage[]; onPreviewFile?: (file: GeneratedFile) => void; onPreviewProject?: (file?: GeneratedFile, intent?: 'preview' | 'source', sourcePath?: string, snapshot?: PreviewProjectSnapshot) => void; onPreviewAttachment?: (attachment: UploadedAttachment) => void; }
-export interface MessageBubbleProps { message: ChatMessage; uploadedAttachments?: UploadedAttachment[]; onPreviewFile?: (file: GeneratedFile) => void; onPreviewProject?: (file?: GeneratedFile, intent?: 'preview' | 'source', sourcePath?: string, snapshot?: PreviewProjectSnapshot) => void; onPreviewAttachment?: (attachment: UploadedAttachment) => void; }
-export interface WelcomeScreenProps { onPromptClick: (text: string) => void }
+export interface MessageListProps {
+  messages: ChatMessage[];
+  onPreviewFile?: (file: GeneratedFile) => void;
+  onPreviewProject?: (
+    file?: GeneratedFile,
+    intent?: 'preview' | 'source',
+    sourcePath?: string,
+    snapshot?: PreviewProjectSnapshot,
+  ) => void;
+  onPreviewAttachment?: (attachment: UploadedAttachment) => void;
+}
+export interface MessageBubbleProps {
+  message: ChatMessage;
+  uploadedAttachments?: UploadedAttachment[];
+  onPreviewFile?: (file: GeneratedFile) => void;
+  onPreviewProject?: (
+    file?: GeneratedFile,
+    intent?: 'preview' | 'source',
+    sourcePath?: string,
+    snapshot?: PreviewProjectSnapshot,
+  ) => void;
+  onPreviewAttachment?: (attachment: UploadedAttachment) => void;
+}
+export interface WelcomeScreenProps {
+  onPromptClick: (text: string) => void;
+}

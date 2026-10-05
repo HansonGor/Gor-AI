@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from docx import Document
 from openpyxl import load_workbook
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from storage import GENERATED_ROOT, ensure_storage_dirs
 
 router = APIRouter()
@@ -71,9 +72,24 @@ def _ppt_preview(filepath: Path) -> dict:
         if index > 100:
             break
         texts = []
-        for shape in slide.shapes:
-            if hasattr(shape, "text") and shape.text.strip():
-                texts.append(shape.text.strip())
+        def collect(shapes, depth=0):
+            # Motion groups remain native editable objects. Keep their text in
+            # the legacy Office preview without traversing unbounded input.
+            if depth > 10:
+                return
+            for shape in shapes:
+                if len(texts) >= 500:
+                    return
+                if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                    collect(shape.shapes, depth + 1)
+                elif getattr(shape, "has_table", False):
+                    for row in list(shape.table.rows)[:200]:
+                        if len(texts) >= 500:
+                            break
+                        texts.append(" | ".join(cell.text.strip() for cell in list(row.cells)[:30]))
+                elif hasattr(shape, "text") and shape.text.strip():
+                    texts.append(shape.text.strip())
+        collect(slide.shapes)
         slides.append({"number": index, "texts": texts})
     return {"kind": "ppt", "slides": slides}
 

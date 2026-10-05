@@ -15,9 +15,12 @@ export function createPresentationSnapshot(file: GeneratedFile, messageId: strin
     files: file.sourceFiles || { '/presentation.json': JSON.stringify(file.presentationSchema, null, 2) },
     presentationSchema: file.presentationSchema,
     presentationBackgrounds: file.presentationBackgrounds,
+    renderedSlides: file.renderedSlides,
     finalArtifact,
     storyOutline: file.storyOutline,
     visualQA: file.visualQA,
+    antiAIPatternReport: file.antiAIPatternReport,
+    designCritique: file.designCritique,
   };
 }
 
@@ -37,9 +40,12 @@ export function restorePresentationSnapshot(value: unknown, fallbackMessageId: s
     snapshotId: snapshot.snapshotId,
     presentationSchema: snapshot.presentationSchema,
     presentationBackgrounds: snapshot.presentationBackgrounds,
+    renderedSlides: snapshot.renderedSlides,
     finalArtifact: snapshot.finalArtifact,
     storyOutline: snapshot.storyOutline,
     visualQA: snapshot.visualQA,
+    antiAIPatternReport: snapshot.antiAIPatternReport,
+    designCritique: snapshot.designCritique,
   };
 }
 

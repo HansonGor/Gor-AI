@@ -1,110 +1,13 @@
-"""Per-chat, in-memory Preview Project editing. Never touches the local filesystem."""
+"""LangChain tool definitions and compatibility dispatch for Preview Projects."""
 
-import difflib
 import json
-import re
-from dataclasses import dataclass
+from typing import Any
 
 from langchain_core.tools import tool
+
+from project_api.preview_context import create_current_preview_project_api
+from project_api.types import ProjectAPIError
 from tools.scene_spec import apply_scene_command
-
-
-MAX_FILES = 40
-MAX_FILE_BYTES = 100_000
-MAX_TOTAL_BYTES = 500_000
-MAX_DIFF_CHARS = 20_000
-ALLOWED_EXTENSIONS = {".ts", ".tsx", ".js", ".jsx", ".css", ".json", ".html"}
-BLOCKED_SEGMENT = re.compile(r"(^\.|node_modules|dist|build|generated|secret|credential|private|token|password)", re.I)
-
-
-def normalize_virtual_path(path: str) -> str:
-    if not isinstance(path, str) or not path or "\\" in path or "\x00" in path:
-        raise ValueError("虚拟文件路径必须使用正斜杠。")
-    parts = path.lstrip("/").split("/")
-    if any(not part or part in {".", ".."} or BLOCKED_SEGMENT.search(part) for part in parts):
-        raise ValueError("虚拟文件路径包含受保护目录或路径穿越。")
-    normalized = "/" + "/".join(parts)
-    if not re.fullmatch(r"/(?:src/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.(?:ts|tsx|js|jsx|css|json|html)|index\.html|main\.js|style\.css)", normalized):
-        raise ValueError("虚拟文件路径仅允许安全的源码名称。")
-    extension = "." + parts[-1].rsplit(".", 1)[-1].lower() if "." in parts[-1] else ""
-    if extension not in ALLOWED_EXTENSIONS:
-        raise ValueError("不支持该虚拟文件类型。")
-    return normalized
-
-
-def _diff(path: str, before: str, after: str) -> str:
-    result = "".join(difflib.unified_diff(
-        before.splitlines(keepends=True), after.splitlines(keepends=True),
-        fromfile=f"a{path}", tofile=f"b{path}",
-    ))
-    return result[:MAX_DIFF_CHARS] + ("\n… diff 已截断" if len(result) > MAX_DIFF_CHARS else "")
-
-
-@dataclass
-class PreviewProjectWorkspace:
-    project_id: str
-    template: str
-    files: dict[str, str]
-
-    @classmethod
-    def from_request(cls, project: dict | None) -> "PreviewProjectWorkspace | None":
-        if project is None:
-            return None
-        if not isinstance(project, dict):
-            raise ValueError("Preview Project 格式无效。")
-        project_id = project.get("id")
-        template = project.get("template")
-        raw_files = project.get("files")
-        if not isinstance(project_id, str) or not 1 <= len(project_id) <= 100:
-            raise ValueError("Preview Project ID 无效。")
-        if template not in {"react", "html"} or not isinstance(raw_files, dict):
-            raise ValueError("Preview Project 模板或文件集无效。")
-        if len(raw_files) > MAX_FILES:
-            raise ValueError("Preview Project 文件数量超限。")
-        files: dict[str, str] = {}
-        for path, content in raw_files.items():
-            normalized = normalize_virtual_path(path)
-            if normalized != path or not isinstance(content, str) or len(content.encode("utf-8")) > MAX_FILE_BYTES:
-                raise ValueError("Preview Project 文件路径或内容无效。")
-            files[normalized] = content
-        if sum(len(value.encode("utf-8")) for value in files.values()) > MAX_TOTAL_BYTES:
-            raise ValueError("Preview Project 总大小超限。")
-        return cls(project_id=project_id, template=template, files=files)
-
-    def list_files(self) -> str:
-        return json.dumps({"success": True, "projectId": self.project_id, "template": self.template, "files": sorted(self.files)}, ensure_ascii=False)
-
-    def read_file(self, path: str) -> str:
-        try:
-            normalized = normalize_virtual_path(path)
-            if normalized not in self.files:
-                raise ValueError("虚拟文件不存在。")
-            return json.dumps({"success": True, "path": normalized, "content": self.files[normalized]}, ensure_ascii=False)
-        except ValueError as exc:
-            return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
-
-    def write_file(self, path: str, content: str) -> str:
-        try:
-            normalized = normalize_virtual_path(path)
-            if not isinstance(content, str) or len(content.encode("utf-8")) > MAX_FILE_BYTES:
-                raise ValueError("虚拟文件内容超过 100 KB 限制。")
-            if normalized not in self.files and len(self.files) >= MAX_FILES:
-                raise ValueError("虚拟文件数量超限。")
-            before = self.files.get(normalized, "")
-            total = sum(len(value.encode("utf-8")) for value in self.files.values()) - len(before.encode("utf-8")) + len(content.encode("utf-8"))
-            if total > MAX_TOTAL_BYTES:
-                raise ValueError("虚拟项目总大小超过 500 KB。")
-            self.files[normalized] = content
-            return json.dumps({
-                "success": True,
-                "projectId": self.project_id,
-                "path": normalized,
-                "content": content,
-                "diff": _diff(normalized, before, content),
-                "changed": before != content,
-            }, ensure_ascii=False)
-        except ValueError as exc:
-            return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
 
 
 @tool
@@ -114,48 +17,133 @@ def list_preview_files() -> str:
 
 
 @tool
-def read_preview_file(path: str) -> str:
-    """Read one Preview Project virtual file, such as /src/App.tsx. Never reads local disk."""
+def read_preview_file(path: str, start_line: int | None = None, end_line: int | None = None) -> str:
+    """Read Preview source only when search snippets are insufficient. Prefer a one-based line range around the match (about 30-60 lines); omit both range values only for a small file or when whole-file context is genuinely required. Returns totalLines and current revision; never reads local disk."""
     return '{"success":false,"error":"Preview Project context unavailable"}'
 
 
 @tool
+def search_preview_code(query: str, path: str | None = None, max_results: int = 20) -> str:
+    """Search literal text across the current Preview Project source files. Returns only matching paths, line ranges, and short snippets (maximum 50 results); optionally limit to one path."""
+    return '[]'
+
+
+@tool
 def write_preview_file(path: str, content: str) -> str:
-    """Create or replace one Preview Project virtual source file. Content must be the complete file. Never writes local disk."""
+    """Create a new Preview source file or replace one during a full restructure. For small edits to existing files use patch_preview_file. Never writes local disk."""
     return '{"success":false,"error":"Preview Project context unavailable"}'
 
 
-PREVIEW_TOOLS = [list_preview_files, read_preview_file, write_preview_file]
+@tool
+def patch_preview_file(path: str, old_text: str, new_text: str, expected_revision: int | None = None) -> str:
+    """Replace one exact, unique text fragment in an existing Preview source file. Use a sufficient unique search snippet directly when possible; otherwise use a recent local read. Always pass the latest revision from list/read/patch."""
+    return '{"success":false,"error":"Preview Project context unavailable"}'
+
+
+@tool
+def batch_patch_preview_files(expected_revision: int, patches: list[dict]) -> str:
+    """Atomically apply multiple exact old_text → new_text patches across existing Preview text files. Pass the latest project revision. Each old_text must uniquely match the same current revision. Returns only concise per-file diffs and increments revision once."""
+    return '{"success":false,"error":"Preview Project context unavailable"}'
+
+
+PREVIEW_TOOLS = [list_preview_files, search_preview_code, read_preview_file, write_preview_file, patch_preview_file, batch_patch_preview_files]
 PREVIEW_TOOL_NAMES = {item.name for item in PREVIEW_TOOLS} | {"set_3d_scene"}
 
 
-def execute_preview_tool(workspace: PreviewProjectWorkspace | None, name: str, args: dict) -> str:
+def _preview_tool_response(result: object, operation: str) -> str:
+    if isinstance(result, list):
+        return json.dumps(result, ensure_ascii=False)
+    if not isinstance(result, dict):
+        return json.dumps({"success": False, "error": "Project API 返回格式无效。"}, ensure_ascii=False)
+    payload = dict(result)
+    if "version" in payload:
+        payload["revision"] = payload.pop("version")
+    code = payload.get("code")
+    if code == "VERSION_CONFLICT":
+        payload["code"] = "PATCH_REVISION_CONFLICT"
+    elif code == "PATCH_OVERLAP_CONFLICT":
+        payload["code"] = "PATCH_OVERLAPPING"
+    elif code in {"INVALID_PATH", "FILE_NOT_FOUND"}:
+        payload.pop("code", None)
+    elif code == "UNSUPPORTED_OPERATION":
+        message = str(payload.get("error") or "")
+        if operation in {"patch", "batch_patch"}:
+            payload["code"] = "PATCH_SIZE_LIMIT" if "超过" in message else "PATCH_INVALID"
+        else:
+            payload.pop("code", None)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+async def execute_preview_tool(workspace: Any | None, name: str, args: dict) -> str:
     if workspace is None:
         return '{"success":false,"error":"请求中没有 Preview Project 快照。"}'
-    if name == "list_preview_files":
-        return workspace.list_files()
-    if name == "read_preview_file":
-        return workspace.read_file(args.get("path", ""))
-    if name == "write_preview_file":
-        return workspace.write_file(args.get("path", ""), args.get("content", ""))
-    if name == "set_3d_scene":
-        try:
-            current = None
-            serialized = workspace.files.get("/src/scene.json")
-            if serialized:
+    current = create_current_preview_project_api(workspace)
+    if current is None:
+        return '{"success":false,"error":"当前 Preview Project 无法解析。"}'
+    project_api, project_ref = current
+    try:
+        if name == "list_preview_files":
+            result = await project_api.list_files(project_ref)
+            if isinstance(result, dict) and result.get("success"):
+                result = {**result, "template": workspace.template}
+            return _preview_tool_response(result, "list")
+        if name == "search_preview_code":
+            result = await project_api.search_code(
+                project_ref, args.get("query", ""), args.get("path"), args.get("max_results", 20)
+            )
+            return _preview_tool_response(result, "search")
+        if name == "read_preview_file":
+            result = await project_api.read_file(
+                project_ref, args.get("path", ""), args.get("start_line"), args.get("end_line")
+            )
+            return _preview_tool_response(result, "read")
+        if name == "write_preview_file":
+            result = await project_api.write_file(
+                project_ref, args.get("path", ""), args.get("content", "")
+            )
+            return _preview_tool_response(result, "write")
+        if name == "patch_preview_file":
+            result = await project_api.patch_file(
+                project_ref,
+                args.get("path", ""),
+                args.get("old_text", ""),
+                args.get("new_text", ""),
+                args.get("expected_revision"),
+            )
+            return _preview_tool_response(result, "patch")
+        if name == "batch_patch_preview_files":
+            result = await project_api.apply_patches(
+                project_ref, args.get("patches", []), args.get("expected_revision")
+            )
+            return _preview_tool_response(result, "batch_patch")
+        if name == "set_3d_scene":
+            current_result = await project_api.read_file(project_ref, "/src/scene.json")
+            current_scene = None
+            if current_result.get("success"):
                 try:
-                    current = json.loads(serialized)
+                    current_scene = json.loads(current_result.get("content", ""))
                 except json.JSONDecodeError:
                     raise ValueError("当前 /src/scene.json 无法解析；请重新创建场景。")
-            scene = apply_scene_command(current, args)
-            result = workspace.write_file(
+            elif current_result.get("code") != "FILE_NOT_FOUND":
+                return _preview_tool_response(current_result, "read")
+            scene = apply_scene_command(current_scene, args)
+            version = await project_api.get_version(project_ref)
+            result = await project_api.write_file(
+                project_ref,
                 "/src/scene.json",
                 json.dumps(scene, ensure_ascii=False, separators=(",", ":")),
+                version,
             )
-            parsed = json.loads(result)
-            if parsed.get("success"):
-                return json.dumps({"success": True, "sceneSpec": scene}, ensure_ascii=False)
-            return result
-        except (ValueError, TypeError) as exc:
-            return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
-    return '{"success":false,"error":"未知 Preview Project 工具。"}'
+            if result.get("success"):
+                return json.dumps({
+                    "success": True,
+                    "sceneSpec": scene,
+                    "changed": result.get("changed", False),
+                    "revision": result.get("version", version),
+                }, ensure_ascii=False)
+            return _preview_tool_response(result, "write")
+        return '{"success":false,"error":"未知 Preview Project 工具。"}'
+    except ProjectAPIError as exc:
+        return json.dumps({"success": False, "code": exc.code, "error": exc.message}, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)

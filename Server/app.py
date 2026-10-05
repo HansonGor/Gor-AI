@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import config
 from db.supabase_chat import init_db
+from tools.index import TOOLS
 from routes.chat import router as chat_router
 from routes.chat_routes import router as chat_session_router
 from routes.download import router as download_router
@@ -15,6 +16,7 @@ from routes.video import router as video_router
 from routes.weather import router as weather_router
 from routes.music import router as music_router
 from routes.judge import router as judge_router
+from routes.vscode import router as vscode_router
 
 
 @asynccontextmanager
@@ -22,7 +24,7 @@ async def lifespan(app: FastAPI):
     """应用生命周期：启动时初始化数据库"""
     print("\n🚀 通用聊天 Agent 服务启动中...")
     print(f"   模型: {config.Ark.MODEL_ID}")
-    print(f"   工具: get_weather, web_search, create_word, create_excel, create_ppt, create_pdf, generate_xiaoyunque_video, vector_search")
+    print(f"   工具: {', '.join(tool.name for tool in TOOLS)}")
 
     # 初始化数据库
     try:
@@ -67,3 +69,4 @@ app.include_router(chat_session_router, prefix="/api/chat") # 会话管理: /ses
 app.include_router(weather_router, prefix="/api")            # GET /api/weather?lat=xx&lng=xx
 app.include_router(music_router, prefix="/api")              # GET /api/music/random
 app.include_router(judge_router, prefix="/api")              # POST /api/judge/execute
+app.include_router(vscode_router)                              # WebSocket /ws/vscode

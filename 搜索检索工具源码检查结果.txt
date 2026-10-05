@@ -1,0 +1,116 @@
+================================================================================
+Gor 项目「搜索/检索类工具」源码检查结果
+================================================================================
+检查日期：2026-10-01
+检查方式：只读检查 Server 实际源码（tools/*.py、tools/index.py 注册表、
+          agent/prompts.py、models/model.py、config.py、.env）
+说明：以下内容以实际源码和工具注册为准，未参考 project.md 推测。
+
+--------------------------------------------------------------------------------
+一、总览：项目内全部"搜索/检索类"能力
+--------------------------------------------------------------------------------
+
+工具名             源码文件                             Provider/API                         搜索范围               domain/site 限定                      调用时机                            状态
+web_search         Server/tools/web_search.py:231      豆包搜索→Tavily→Brave（降级链）       全网网页               ❌ 无结构化参数                        时事/最新/实时资讯；通用中文查询      ✅ 可用
+web_search_overseas Server/tools/web_search.py:258     Serper (Google)                        Google 全网           ✅ query 内 site: 透传               海外/英文/中英混合；配合 GitHub 查    ✅ 可用
+web_search_deep    Server/tools/web_search.py:277      Exa 语义搜索                          全网（语义）          ⚠️ query 内 site: 透传；            深度技术调研、博客、论文              ⬜ key 未配
+                                                                                                                   includeDomains 未暴露
+search_github_code Server/tools/web_search.py:295      GitHub Code Search API                GitHub 公开仓库代码   ✅ query 内 repo:/language:/          开源代码/片段/demo/"别人怎么写        ✅ 可用
+                                                                                                                   filename:/stars:                     的"（最高优先级）
+vector_search      Server/tools/vector_search.py:85    阿里云百炼 Embedding + Supabase       私有知识库（非网页）  不适用                              用户问上传文档/私有资料              ⚠️ 依赖 DB 连通
+                                                       pgvector
+search_project_files Server/tools/project_files.py    本地文件系统（glob/关键词）           Web 工作区源码       不适用                              仅 workspaceEdit:true 显式授权时      🔒 默认不开放
+
+注册链路：
+- tools/index.py:24 的 TOOLS 列表注册 5 个搜索/检索工具（get_weather 外的
+  web_search / web_search_overseas / web_search_deep / search_github_code /
+  vector_search）
+- models/model.py:36 通过 bind_tools(TOOLS) 绑定给模型
+- agent/agent.py:352 execute_tool 按名称匹配执行，搜索工具无额外白名单
+- WORKSPACE_TOOLS = TOOLS + 4 个真实文件工具；搜索工具在两条路径都可用，
+  只有文件工具受 workspaceEdit 限制
+
+--------------------------------------------------------------------------------
+二、重点展开：web_search 内部真实 Provider 链
+--------------------------------------------------------------------------------
+
+源码 web_search.py:231-255，实际降级逻辑：
+
+  _search_doubao() ──空列表──▶ _search_tavily() ──空列表──▶ _search_brave()
+
+① 豆包搜索（火山引擎 feedcoopapi）  web_search.py:26
+   请求：POST https://open.feedcoopapi.com/search_api/web_search
+   Header：Authorization: Bearer <key>
+   Body：{ Query: query[:100], SearchType: "web", Count: 5,
+           Filter: { NeedUrl: true }, QueryControl: { QueryRewrite: false } }
+   取 Result.WebResults[] 的 Title/Url/Summary（Summary 截 500 字喂给 LLM）
+   局限：Query 截断 100 字符；官方文档注明不支持多词搜索；
+         Filter.Sites/BlockHosts（豆包本身支持）代码未暴露
+
+② Tavily  web_search.py:65
+   请求：TavilyClient(api_key).search(search_depth="basic", max_results=5,
+          include_answer=True)
+   取 answer 摘要 + results[]（content 截 400）
+   局限：include_domains/exclude_domains 参数未传
+
+③ Brave  web_search.py:112
+   请求：GET https://api.search.brave.com/res/v1/web/search
+   Header：X-Subscription-Token；search_lang=zh-hans
+   取 web.results[] 的 title/url/description
+   局限：key 未配置（.env 无 BRAVE_API_KEY），实际链条只走到 Tavily
+
+【全链关键局限】
+- 降级条件是"返回空列表"才切下一个源：任何一个源抛异常（网络错、401、
+  限流）会直接进 except 返回"搜索失败"，不会自动降级
+- 无分页、无结果缓存、TIMEOUT=15s 硬编码、单次最多 5~6 条
+
+--------------------------------------------------------------------------------
+三、当前 .env 实际配置状态
+--------------------------------------------------------------------------------
+
+Key                         状态
+DOUBAO_SEARCH_API_KEY       ✅ 已配
+TAVILY_API_KEY              ✅ 已配
+SERPER_API_KEY              ✅ 已配
+GITHUB_TOKEN                ✅ 已配
+BRAVE_API_KEY               ⬜ 未配（web_search 第 3 级跳空）
+EXA_API_KEY                 ⬜ 未配（web_search_deep 直接报"未配置"）
+
+--------------------------------------------------------------------------------
+四、各工具主要局限（源码层面）
+--------------------------------------------------------------------------------
+
+1. web_search
+   - 异常不降级（只有空结果才降级）
+   - 无 site/domain 结构化参数（豆包 Filter.Sites、Tavily include_domains
+     均未暴露，只能靠 query 里写 site: 语法，但豆包对 site: 支持有限）
+   - 豆包 Query 截断 100 字符、官方文档注明不支持多词搜索
+
+2. web_search_overseas
+   - hl 固定 zh-cn，英文内容可能偏中文偏好
+   - 只取 organic 列表，不使用 news/knowledge_graph/scholar 等分区
+
+3. web_search_deep
+   - Exa 的 includeDomains/excludeDomains、numResults 未暴露（硬编码 5）
+   - 当前 EXA_API_KEY 未配置，实际调用返回"搜索失败：EXA_API_KEY 未配置"
+
+4. search_github_code
+   - 只返回文件元数据（repo/path/stars），不含文件内容，要看代码需二次 fetch
+   - Code Search API 认证后限速 30 次/分
+   - 只索引公开仓库的默认分支，私有内容不可搜
+
+5. vector_search
+   - top_k=3、阈值 distance<=0.75 硬编码（L2 距离阈值较严格，可能过滤掉
+     部分相关片段）
+   - 单次查询一次 embedding 调用
+   - 依赖 Supabase 连通（历史存在 DNS 解析失败）
+   - 分块逻辑由调用方负责，工具本身不做分块
+
+--------------------------------------------------------------------------------
+五、附注
+--------------------------------------------------------------------------------
+
+- config.py 中存在 Pexels.API_KEY 配置组，但 tools/index.py 未注册任何
+  Pexels 搜索工具（create_presentation 内部可能用到，与检索类无关）
+- 本文件为检查快照，后续代码变更后需重新核对
+================================================================================

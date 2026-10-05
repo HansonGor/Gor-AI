@@ -8,11 +8,58 @@ import { importPreviewArchive, importPreviewDirectory } from '../src/preview/cor
 import { createReactTemplate } from '../src/preview/templates/reactTemplate.ts';
 import { createMessagePreviewSnapshot } from '../src/preview/core/projectSnapshot.ts';
 import { fileExtension, generatedFileExtension, haveSamePreviewArtifactFiles, isSamePreviewArtifact, previewArtifactName, previewArtifactTooltip, previewSnapshotExtension } from '../src/preview/core/artifactFormat.ts';
-import { hasCurrentProjectSource, hasPreviewFiles } from '../src/preview/core/previewFilePresence.ts';
+import { hasCurrentProjectSource, hasPreviewFiles, isPreviewableGeneratedFile, isPreviewableUploadedAttachment } from '../src/preview/core/previewFilePresence.ts';
 import { getSnapshotBackedHtmlArtifactUrls } from '../src/preview/core/snapshotArtifactDedup.ts';
 import { canonicalizePresentationFiles, createPresentationSnapshot, isPresentationSnapshotFile, restorePresentationSnapshot } from '../src/preview/core/presentationSnapshot.ts';
 import { createUploadSummaryRequest } from '../src/utils/uploadSummary.ts';
 import { createSceneProjectFiles, exportSceneGlb, isSceneRendererProject, validateSceneSpec } from '../src/modeling/sceneSpec.ts';
+import { motionFrames, transitionFrames, segmentCues, playMotion } from '../src/preview/core/presentationMotion.ts';
+import { usePreviewProjectStore } from '../src/stores/previewProjectStore.ts';
+import type { PresentationMotionCue, PresentationSchema } from '../src/types.ts';
+
+test('motion player consumes snapshot clocks and cancels all animations without touching layout scale', () => {
+  const cue: PresentationMotionCue = { target: 'headline', effect: 'rise', trigger: 'withPrevious', start: .08, delay: .08, duration: .42, order: 1, clickIndex: 0, direction: 'up', distance: 'short' };
+  const clicks = { ...cue, target: 'card-0', trigger: 'onClick' as const, start: 0, delay: 0, order: 2, clickIndex: 1 };
+  assert.deepEqual(segmentCues([cue, clicks], 0), [cue]);
+  assert.deepEqual(segmentCues([cue, clicks], 1), [clicks]);
+  assert.equal(motionFrames(cue, '#aabbcc')[0].transform, 'translateY(18px)');
+  assert.equal(motionFrames({ ...cue, direction: 'left' }, '#aabbcc', { width: 960, height: 720 })[0].transform, 'translateX(24px)');
+  for (const effect of ['appear', 'fade', 'rise', 'wipe', 'fly', 'zoom', 'grow', 'pulse', 'colorEmphasis', 'fadeOut'] as const) assert.ok(motionFrames({ ...cue, effect }, '#aabbcc').length);
+  assert.equal(transitionFrames({ effect: 'none', duration: .4, direction: 'left' }).length, 0);
+  const calls: Array<{ target: string; options: KeyframeAnimationOptions }> = [];
+  let canceled = 0;
+  const node = (target: string) => ({ dataset: { motionTarget: target }, animate: (_frames: Keyframe[], options: KeyframeAnimationOptions) => { calls.push({ target, options }); return { cancel: () => canceled++ }; } });
+  const root = { ...node('frame'), querySelectorAll: () => [node('headline'), node('card-0')] } as unknown as HTMLElement;
+  const cancel = playMotion(root, [cue, clicks], 0, '#aabbcc', { effect: 'fade', duration: .4, direction: 'left' });
+  assert.equal(calls.find(call => call.target === 'headline')?.options.delay, 80);
+  assert.equal(calls.find(call => call.target === 'headline')?.options.duration, 420);
+  const next = playMotion(root, [cue, clicks], 1, '#aabbcc');
+  next(); cancel();
+  assert.equal(canceled, calls.length);
+  const previous = calls.length;
+  playMotion(root, [cue, clicks], 0, '#aabbcc', undefined, true)();
+  assert.equal(calls.length, previous);
+});
+
+test('PPT A/B motion snapshots remain isolated through refresh, clear/restore and same-name IDs', () => {
+  const make = (id: string, effect: 'fade' | 'wipe') => {
+    const schema: PresentationSchema = { version: '1.0', title: '同名演示', theme: 'technology', aspectRatio: '16:9', motionLanguage: { style: 'professional', energy: 'medium', playback: 'automatic', maxAnimatedGroupsPerSlide: 5 }, slides: [{ id: 's', type: 'cover', title: id, animationTimeline: [{ target: 'headline', effect, trigger: 'withPrevious', start: .08, duration: .42, delay: .08, order: 1, clickIndex: 0, direction: 'up', distance: 'short' }] }] };
+    return { fileType: 'ppt', displayName: '同名演示.pptx', downloadUrl: `/api/download/${id}.pptx`, artifactId: id, projectId: `p-${id}`, snapshotId: `s-${id}`, previewRenderer: 'presentation', presentationSchema: schema, sourceFiles: { '/presentation.json': JSON.stringify(schema) } };
+  };
+  const a = make('a', 'fade'), b = make('b', 'wipe');
+  const snapA = createPresentationSnapshot(a, 'message-a')!, snapB = createPresentationSnapshot(b, 'message-b')!;
+  const restoredA = restorePresentationSnapshot(JSON.parse(JSON.stringify(snapA)), 'message-a')!;
+  assert.deepEqual(restoredA.presentationSchema, a.presentationSchema);
+  assert.notEqual(snapA.id, snapB.id);
+  assert.notEqual(restoredA.files['/presentation.json'], snapB.files['/presentation.json']);
+  assert.equal(restoredA.finalArtifact?.downloadUrl, a.downloadUrl);
+  const remaining = [snapA, snapB].filter(snapshot => snapshot.id !== snapA.id);
+  assert.equal(remaining[0].artifactId, b.artifactId);
+  remaining.push(restoredA);
+  assert.equal(remaining.length, 2);
+  assert.equal(canonicalizePresentationFiles([a, b], snapB).length, 1);
+  assert.deepEqual(JSON.parse(restoredA.files['/presentation.json']).slides[0].animationTimeline, a.presentationSchema.slides[0].animationTimeline);
+});
 
 function directoryFile(path: string, content: string | Uint8Array): File {
   const bytes = typeof content === 'string' ? strToU8(content) : content;
@@ -37,7 +84,9 @@ test('preview download ZIP preserves virtual paths and Unicode source content', 
 test('presentation artifacts restore per-message schema snapshots and deduplicate the file-tree entry', () => {
   const file = {
     fileType: 'ppt', displayName: '季度复盘.pptx', downloadUrl: '/api/download/artifact.pptx',
-    artifactId: 'artifact-1', projectId: 'project-1', snapshotId: 'snapshot-1', previewRenderer: 'presentation',
+      artifactId: 'artifact-1', projectId: 'project-1', snapshotId: 'snapshot-1', previewRenderer: 'presentation',
+      renderedSlides: [{ slideId: 'cover', index: 0, url: '/api/download/render-1.png?inline=true', thumbnailUrl: '/api/download/render-1.png?inline=true' }],
+      antiAIPatternReport: { scores: { repeatedLayoutScore: 0 } },
     presentationSchema: { version: '1.0', title: '季度复盘', theme: 'modern-dark', aspectRatio: '16:9', slides: [{ id: 'cover', type: 'cover', title: '季度复盘' }] },
     sourceFiles: { '/presentation.json': '{"title":"季度复盘"}' },
   } as const;
@@ -47,8 +96,10 @@ test('presentation artifacts restore per-message schema snapshots and deduplicat
   assert.equal(isPresentationSnapshotFile(file, snapshot ? [snapshot] : []), true);
   const restored = restorePresentationSnapshot(JSON.parse(JSON.stringify(snapshot)), 'message-fallback');
   assert.equal(restored?.messageId, 'message-1');
-  assert.equal(restored?.artifactId, 'artifact-1');
-  assert.equal(restored?.files['/presentation.json'], file.sourceFiles['/presentation.json']);
+    assert.equal(restored?.artifactId, 'artifact-1');
+    assert.equal(restored?.files['/presentation.json'], file.sourceFiles['/presentation.json']);
+    assert.deepEqual(restored?.renderedSlides, file.renderedSlides);
+    assert.deepEqual(restored?.antiAIPatternReport, file.antiAIPatternReport);
   assert.equal(isPresentationSnapshotFile({ ...file, artifactId: 'other' }, snapshot ? [snapshot] : []), false);
   assert.deepEqual(canonicalizePresentationFiles([
     file,
@@ -196,13 +247,19 @@ test('preview dist ZIP contains a self-contained HTML with the successful JS/CSS
 });
 
 test('import recognizes source ZIPs and strips a single enclosing project directory', async () => {
-  const sourceZip = createPreviewArchive(createReactTemplate());
+  const sourceZip = createPreviewArchive({
+    ...createReactTemplate(),
+    '/src/theme.less': '.chat { color: violet; }',
+    '/src/Panel.vue': '<template><p>Hello</p></template>',
+  });
   const imported = await importPreviewArchive(sourceZip, 'weather-source.zip');
   assert.equal(imported.kind, 'source');
   if (imported.kind !== 'source') return;
   assert.equal(imported.template, 'react');
   assert.equal(imported.files['/index.html'] !== undefined, true);
   assert.match(imported.files['/src/main.tsx'] ?? '', /createRoot/);
+  assert.equal(imported.files['/src/theme.less'], '.chat { color: violet; }');
+  assert.equal(imported.files['/src/Panel.vue'], '<template><p>Hello</p></template>');
 });
 
 test('import recognizes static dist ZIPs as preview-only content', async () => {
@@ -249,10 +306,10 @@ import { build } from 'esbuild-wasm';
 import { getPreviewEntryPoint } from '../src/preview/core/entryPoint.ts';
 import { PreviewRuntimeController } from '../src/preview/runtime/runtimeController.ts';
 import { buildFileTree } from '../src/preview/core/fileTree.ts';
-import { normalizePreviewPath, resolvePreviewPath, validatePreviewPath } from '../src/preview/core/pathUtils.ts';
+import { isEditablePreviewTextPath, normalizePreviewPath, resolvePreviewPath, validatePreviewPath } from '../src/preview/core/pathUtils.ts';
 import { deleteFile, fileExists, listFiles, readFile, writeFile } from '../src/preview/core/virtualFs.ts';
 import { createHtmlTemplate } from '../src/preview/templates/htmlTemplate.ts';
-import { usePreviewProjectStore } from '../src/stores/previewProjectStore.ts';
+import { PreviewRevisionAdvancedError, readSessionPreviewProjectFiles } from '../src/api/previewProject.ts';
 import { listAllowedDependencies, resolveAllowedDependency } from '../src/preview/runtime/compiler/dependencyResolver.ts';
 import { normalizeDiagnostics } from '../src/preview/runtime/compiler/diagnostics.ts';
 import { createVirtualFsPlugin, loaderForPath, resolveVirtualModule } from '../src/preview/runtime/compiler/virtualFsPlugin.ts';
@@ -368,6 +425,35 @@ test('a per-message project snapshot stays isolated when the shared project reus
   assert.match(firstTurnSnapshot.files['/src/App.tsx'], /First project/);
 });
 
+test('generic text changes keep one project revision and immutable message snapshots', () => {
+  const store = usePreviewProjectStore.getState();
+  store.createProject('react');
+  const initial = usePreviewProjectStore.getState().project;
+  assert.equal(initial.revision, 0);
+  assert.equal(isEditablePreviewTextPath('/src/styles.less'), true);
+  assert.equal(isEditablePreviewTextPath('/src/Panel.vue'), true);
+  assert.equal(isEditablePreviewTextPath('/src/Example.astro'), true);
+  assert.equal(isEditablePreviewTextPath('/src/logo.png'), false);
+  assert.equal(isEditablePreviewTextPath('/src/model.glb'), false);
+  assert.equal(usePreviewProjectStore.getState().applyAiFileChange({
+    projectId: initial.id, path: '/src/App.tsx', content: 'export default function App() { return <main>First</main>; }', revision: 1,
+  }), true);
+  const first = createMessagePreviewSnapshot(usePreviewProjectStore.getState().project, 'first-turn', ['/src/App.tsx']);
+  assert.equal(usePreviewProjectStore.getState().applyAiFileChange({
+    projectId: initial.id, path: '/src/styles.less', content: '.chat { color: violet; }', revision: 2,
+  }), true);
+  const second = createMessagePreviewSnapshot(usePreviewProjectStore.getState().project, 'second-turn', ['/src/App.tsx', '/src/styles.less']);
+  assert.equal(second.id, first.id);
+  assert.equal(second.revision, 2);
+  assert.equal(first.revision, 1);
+  assert.equal(first.files['/src/styles.less'], undefined);
+  assert.equal(second.files['/src/styles.less'], '.chat { color: violet; }');
+  assert.equal(usePreviewProjectStore.getState().applyAiFileChange({
+    projectId: initial.id, path: '/src/App.tsx', content: 'stale overwrite', revision: 1,
+  }), false);
+  assert.match(usePreviewProjectStore.getState().project.files['/src/App.tsx'], /First/);
+});
+
 test('message snapshots separate a React app from stale 3D scene files in the shared Virtual FS', () => {
   const scene = validateSceneSpec({
     version: 1,
@@ -465,6 +551,15 @@ test('Preview Worker is considered empty only after every visible artifact sourc
   assert.equal(hasPreviewFiles({ ...empty, hasImportedDist: true }), true);
 });
 
+test('Preview Worker entry eligibility only counts files the worker can render', () => {
+  assert.equal(isPreviewableGeneratedFile({ fileType: 'html', displayName: 'demo.html', downloadUrl: '/demo.html' }), true);
+  assert.equal(isPreviewableGeneratedFile({ fileType: 'pdf', displayName: 'report.pdf', downloadUrl: '/report.pdf' }), true);
+  assert.equal(isPreviewableGeneratedFile({ fileType: 'file', displayName: 'notes.txt', downloadUrl: '/notes.txt' }), false);
+  assert.equal(isPreviewableUploadedAttachment({ kind: 'archive', name: 'source.zip', storageId: 'archive-id' }), true);
+  assert.equal(isPreviewableUploadedAttachment({ kind: 'folder', name: 'source', previewStorageId: 'folder-id' }), true);
+  assert.equal(isPreviewableUploadedAttachment({ kind: 'file', name: 'notes.pdf', storageId: 'file-id' }), false);
+});
+
 test('an empty virtual file tree is not treated as a current source just because its project was persisted', () => {
   assert.equal(hasCurrentProjectSource(0, false, true, 0), false);
   assert.equal(hasCurrentProjectSource(0, true, false, 0), false);
@@ -532,6 +627,102 @@ test('AI virtual file changes stay in memory and request a single Build & Run', 
   usePreviewProjectStore.getState().createProject('react');
   assert.equal(usePreviewProjectStore.getState().buildRunRevision, 0);
   assert.doesNotMatch(usePreviewProjectStore.getState().readFile('/src/App.tsx') ?? '', /Virtual only/);
+});
+
+test('batched server sync applies one revision atomically and ignores a slower stale response', () => {
+  const store = usePreviewProjectStore.getState();
+  const template = createReactTemplate();
+  store.importProject('react', template, 'Sync Race', 'preview-sync-race', 10, 4);
+  let notifications = 0;
+  const unsubscribe = usePreviewProjectStore.subscribe(() => notifications++);
+  try {
+    const applied = usePreviewProjectStore.getState().applyAiProjectCommit({
+      projectId: 'preview-sync-race',
+      contentRevision: 12,
+      serverRevision: 6,
+      changedFiles: [
+        { path: '/src/App.tsx', content: 'export default function App() { return <h1>Revision 12</h1>; }' },
+        { path: '/src/style.css', content: 'body { color: purple; }' },
+        { path: '/index.html', content: '<div id="latest-root"></div>' },
+      ],
+    });
+    assert.equal(applied, true);
+    assert.equal(notifications, 1);
+    assert.equal(usePreviewProjectStore.getState().project.revision, 12);
+    assert.equal(usePreviewProjectStore.getState().project.serverRevision, 6);
+    assert.match(usePreviewProjectStore.getState().readFile('/src/App.tsx') ?? '', /Revision 12/);
+    assert.equal(usePreviewProjectStore.getState().readFile('/src/style.css'), 'body { color: purple; }');
+    assert.equal(usePreviewProjectStore.getState().readFile('/index.html'), '<div id="latest-root"></div>');
+
+    const staleApplied = usePreviewProjectStore.getState().applyAiProjectCommit({
+      projectId: 'preview-sync-race',
+      contentRevision: 11,
+      serverRevision: 5,
+      changedFiles: [{ path: '/src/App.tsx', content: 'stale revision 11' }],
+    });
+    assert.equal(staleApplied, false);
+    assert.equal(notifications, 1);
+    assert.equal(usePreviewProjectStore.getState().project.revision, 12);
+    assert.match(usePreviewProjectStore.getState().readFile('/src/App.tsx') ?? '', /Revision 12/);
+  } finally {
+    unsubscribe();
+  }
+});
+
+test('changed Preview files are fetched in one revision-pinned batch request', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls++;
+    assert.equal(String(input), '/api/chat/session/session-1/preview-project/files/read');
+    assert.equal(init?.method, 'POST');
+    const request = JSON.parse(String(init?.body));
+    assert.deepEqual(request, {
+      projectId: 'preview-sync-race',
+      paths: ['/src/App.tsx', '/src/style.css', '/index.html'],
+      expectedRevision: 12,
+    });
+    return new Response(JSON.stringify({
+      success: true,
+      projectId: 'preview-sync-race',
+      revision: 12,
+      serverRevision: 6,
+      files: [
+        { path: '/src/App.tsx', content: 'export default "current";' },
+        { path: '/src/style.css', content: 'body { color: purple; }' },
+        { path: '/index.html', content: '<div id="root"></div>' },
+      ],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }) as typeof fetch;
+  try {
+    const result = await readSessionPreviewProjectFiles(
+      'session-1', 'preview-sync-race', ['/src/App.tsx', '/src/style.css', '/index.html'], 12,
+    );
+    assert.equal(calls, 1);
+    assert.equal(result.revision, 12);
+    assert.equal(result.files.length, 3);
+    assert.ok(result.payloadBytes > 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('revision advanced sync response forces latest-project recovery instead of stale file application', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    success: false,
+    code: 'PREVIEW_REVISION_ADVANCED',
+    requestedRevision: 11,
+    currentRevision: 12,
+  }), { status: 409, headers: { 'Content-Type': 'application/json' } })) as typeof fetch;
+  try {
+    await assert.rejects(
+      readSessionPreviewProjectFiles('session-1', 'preview-sync-race', ['/src/App.tsx'], 11),
+      (error: unknown) => error instanceof PreviewRevisionAdvancedError && error.currentRevision === 12,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('resolves safe relative paths without allowing virtual-root escape', () => {
@@ -677,6 +868,28 @@ test('worker protocol messages and build results are structured-cloneable', () =
   assert.doesNotThrow(() => structuredClone(fromWorker));
   assert.equal(isWorkerToMainMessage(structuredClone(fromWorker)), true);
   assert.equal(isWorkerToMainMessage({ type: 'UNKNOWN' }), false);
+});
+
+test('a committed Preview source revision requests exactly one automatic build', () => {
+  const store = usePreviewProjectStore.getState();
+  store.createProject('react');
+  const project = usePreviewProjectStore.getState().project;
+  const changedApp = `${project.files['/src/App.tsx']}\n// committed edit\n`;
+  assert.equal(usePreviewProjectStore.getState().applyAiProjectCommit({
+    projectId: project.id,
+    changedFiles: [{ path: '/src/App.tsx', content: changedApp }],
+    contentRevision: 1,
+    serverRevision: 1,
+  }), true);
+  assert.equal(usePreviewProjectStore.getState().buildRunRevision, 1);
+
+  assert.equal(usePreviewProjectStore.getState().applyAiProjectCommit({
+    projectId: project.id,
+    changedFiles: [{ path: '/src/App.tsx', content: changedApp }],
+    contentRevision: 2,
+    serverRevision: 2,
+  }), true);
+  assert.equal(usePreviewProjectStore.getState().buildRunRevision, 1);
 });
 
 test('runtime protocol requires matching metadata and remains structured-cloneable', () => {

@@ -81,3 +81,242 @@
     }
   }
 }
+
+.gor-sidebar {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  gap: 0;
+  overflow: hidden;
+  padding: 14px 0 16px 12px;
+  color: #f4f5fb;
+}
+
+.gor-icon-rail {
+  display: flex;
+  width: 0;
+  flex: 0 0 0;
+  flex-direction: column;
+  align-items: center;
+}
+
+.gor-brand {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  left: 0;
+  display: flex;
+  width: 100%;
+  height: 84px;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+  color: #fff;
+  text-decoration: none;
+}
+
+.gor-brand-mark {
+  position: relative;
+  display: block;
+  width: 180px;
+  height: 70px;
+  transform: translateY(-3px);
+}
+
+.gor-brand-mark::after {
+  position: absolute;
+  inset: 0;
+  background: rgba(105, 84, 240, 0.48);
+  content: '';
+  pointer-events: none;
+  -webkit-mask: url('/images/gor-header-logo.png?v=7') center / contain no-repeat;
+  mask: url('/images/gor-header-logo.png?v=7') center / contain no-repeat;
+}
+
+.gor-brand-logo {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  mix-blend-mode: normal;
+  filter: drop-shadow(0 0 7px rgba(116, 91, 255, 0.2));
+}
+
+.gor-rail-navigation {
+  display: none;
+  width: 100%;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 100px;
+}
+
+.gor-rail-item {
+  position: relative;
+  display: grid;
+  width: 50px;
+  height: 50px;
+  flex: 0 0 50px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 15px;
+  color: rgba(249, 250, 255, 0.94);
+  text-decoration: none;
+
+  svg { width: 25px; height: 25px; stroke-width: 2.1; }
+
+  &.is-current {
+    border-color: rgba(167, 137, 255, 0.44);
+    background: linear-gradient(145deg, #7a31ff, #4f18e8);
+    box-shadow: 0 6px 22px rgba(92, 40, 255, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  }
+}
+
+.conversation-panel {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  margin: 86px 0 18px;
+  padding: 16px 18px 14px;
+  overflow: hidden;
+  border: 1px solid rgba(217, 225, 255, 0.13);
+  border-radius: 25px;
+  background: var(--gor-glass-bg-strong, rgba(21, 34, 59, 0.72));
+  box-shadow: var(--gor-glass-shadow, 0 18px 58px rgba(2, 8, 24, 0.32));
+  backdrop-filter: blur(24px) saturate(125%);
+  -webkit-backdrop-filter: blur(24px) saturate(125%);
+}
+
+.conversation-panel-top { display: flex; flex: 0 0 auto; flex-direction: column; gap: 16px; }
+
+.new-chat-btn {
+  display: flex;
+  width: 100%;
+  height: 54px;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 17px;
+  background: linear-gradient(105deg, #7b32ff, #4c19f0);
+  color: #fff;
+  font-size: 17px;
+  font-weight: 600;
+  box-shadow: 0 9px 25px rgba(91, 45, 246, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.19);
+
+  svg { width: 21px; height: 21px; }
+  &:hover { background: linear-gradient(105deg, #8a49ff, #5d2bfa); }
+}
+
+.session-search {
+  display: flex;
+  height: 48px;
+  min-width: 0;
+  align-items: center;
+  gap: 11px;
+  padding: 0 13px;
+  border: 1px solid rgba(225, 231, 255, 0.08);
+  border-radius: 16px;
+  background: rgba(220, 227, 255, 0.09);
+  color: rgba(246, 247, 255, 0.88);
+
+  > svg { width: 19px; height: 19px; flex: 0 0 auto; }
+  input { width: 0; min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: #fff; font: inherit; font-size: 14px; }
+  input::placeholder { color: rgba(224, 230, 250, 0.54); }
+  kbd { flex: 0 0 auto; color: rgba(238, 239, 255, 0.87); font-size: 12px; font-weight: 700; }
+}
+
+.sidebar-sessions {
+  min-height: 0;
+  flex: 1;
+  overflow-x: hidden;
+  overflow-y: auto;
+  margin-top: 21px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(203, 199, 255, 0.28) transparent;
+
+  &::-webkit-scrollbar { width: 4px; }
+  &::-webkit-scrollbar-thumb { border-radius: 4px; background: rgba(203, 199, 255, 0.25); }
+}
+
+.session-group { margin-bottom: 23px; }
+.session-group h2 { margin: 0 0 8px; color: rgba(250, 250, 255, 0.91); font-size: 13px; font-weight: 600; }
+
+.session-item {
+  position: relative;
+  display: flex;
+  min-height: 53px;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 2px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 15px;
+  color: rgba(250, 250, 255, 0.9);
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+
+  &:hover { background: rgba(221, 229, 255, 0.085); }
+  &:focus-visible { outline: 2px solid rgba(174, 142, 255, 0.85); outline-offset: 1px; }
+  &.active {
+    border-color: rgba(175, 119, 255, 0.24);
+    background: linear-gradient(105deg, rgba(124, 46, 255, 0.72), rgba(147, 63, 214, 0.32));
+    box-shadow: inset 3px 0 #a64cff, 0 6px 22px rgba(75, 29, 168, 0.16);
+  }
+}
+
+.session-item-icon { width: 19px; height: 19px; flex: 0 0 19px; align-self: flex-start; color: rgba(243, 245, 255, 0.9); }
+.session-info { min-width: 0; flex: 1; }
+.session-title { overflow: hidden; color: inherit; font-size: 13px; font-weight: 500; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.session-meta { display: flex; align-items: center; justify-content: flex-end; gap: 9px; margin-top: 2px; }
+.session-time { color: rgba(203, 201, 255, 0.83); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.session-count { display: none; }
+.session-delete-btn { display: none; width: 24px; height: 24px; padding: 0; color: rgba(255, 255, 255, 0.66); }
+.session-delete-btn svg { width: 14px; height: 14px; }
+.session-item:hover .session-delete-btn, .session-delete-btn:focus-visible { display: grid; }
+.empty-sessions { padding: 20px 4px; color: rgba(232, 235, 250, 0.58); font-size: 13px; }
+
+// Touch layouts have no reliable hover state, so keep the delete affordance
+// visible and reserve its space instead of hiding the only way to reach it.
+@media (max-width: 1023px) {
+  .session-item { padding-right: 42px; }
+  .session-delete-btn {
+    position: absolute;
+    top: 50%;
+    right: 8px;
+    display: grid;
+    width: 28px;
+    height: 28px;
+    transform: translateY(-50%);
+    border-radius: 9px;
+    color: rgba(235, 232, 255, 0.68);
+  }
+  .session-delete-btn:hover,
+  .session-delete-btn:focus-visible { background: rgba(255, 105, 126, 0.15); color: #ff9aaa; }
+}
+
+.conversation-account {
+  display: flex;
+  min-height: 67px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 13px;
+  border-top: 1px solid rgba(231, 235, 255, 0.12);
+}
+
+.conversation-account-avatar { width: 42px; height: 42px; flex: 0 0 42px; border: 1px solid rgba(255, 255, 255, 0.45); }
+.conversation-account-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }
+.conversation-account-copy strong { overflow: hidden; color: #fff; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-account-copy small { width: max-content; padding: 2px 8px; border-radius: 999px; background: #6147f6; color: #fff; font-size: 10px; line-height: 1.2; }
+.conversation-settings { display: grid; width: 34px; height: 34px; flex: 0 0 34px; place-items: center; border: 0; border-radius: 10px; background: transparent; color: #fff; }
+.conversation-settings svg { width: 21px; height: 21px; }
+
+.theme-light .conversation-panel { border-color: rgba(255, 255, 255, 0.32); background: rgba(38, 50, 73, 0.66); }
+.theme-light .session-search { background: rgba(255, 255, 255, 0.18); }

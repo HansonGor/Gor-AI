@@ -111,42 +111,6 @@ def create_excel(sheet_name: str, headers: list, rows: list) -> str:
 
 
 @tool
-def create_ppt(slides: list) -> str:
-    """
-    生成 PPT 演示文稿（.pptx）。
-
-    Args:
-        slides: 幻灯片数组，每页包含 {"title": "标题", "content": "内容"}
-
-    Returns:
-        JSON 字符串，包含 success、fileType、displayName、downloadUrl
-    """
-    try:
-        from pptx import Presentation
-
-        prs = Presentation()
-
-        for slide_data in slides:
-            slide_layout = prs.slide_layouts[1]  # 标题和内容布局
-            slide = prs.slides.add_slide(slide_layout)
-            slide.shapes.title.text = slide_data.get("title", "")
-            slide.placeholders[1].text = slide_data.get("content", "")
-
-        filename = _gen_filename("ppt")
-        filepath = os.path.join(GENERATED_DIR, filename)
-        prs.save(filepath)
-
-        return json.dumps({
-            "success": True,
-            "fileType": "ppt",
-            "displayName": "演示文稿.pptx",
-            "downloadUrl": _build_download_url(filename),
-        }, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
-
-
-@tool
 def create_pdf(title: str, sections: list, table: list = None) -> str:
     """
     生成 PDF 文档。

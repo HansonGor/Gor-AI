@@ -1,7 +1,7 @@
 // SSE 聊天 API 封装
 import { parseSSEStream } from '../utils/sse';
 import config from '../config';
-import type { Session, TokenUsage, ModelQuotaInfo, ProjectChange, UploadedAttachment } from '../types';
+import type { Session, TokenUsage, ModelQuotaInfo, ProjectChange, UploadedAttachment, SearchSource, SearchTrace } from '../types';
 import type { PreviewProject } from '../preview/core/types.ts';
 import type { GeneratedFile } from '../types';
 
@@ -12,7 +12,12 @@ interface SendChatMessageParams {
   attachments?: UploadedAttachment[];
   analysisContext?: string;
   analysisContextMode?: 'summary' | 'reference';
-  previewProject?: PreviewProject;
+  previewProjectId?: string;
+  previewServerRevision?: number;
+  previewContentRevision?: number;
+  previewProjectBootstrap?: PreviewProject;
+  previewProjectOrigin?: 'generated' | 'uploaded-source';
+  previewProjectUploadName?: string | null;
   assistantMessageId?: string;
 }
 
@@ -27,7 +32,16 @@ interface SendChatMessageCallbacks {
   onContextRemain?: (contextInfo: any) => void;
   onModelQuotaInfo?: (quotaInfo: ModelQuotaInfo) => void;
   onProjectFileChanged?: (change: ProjectChange) => void;
-  onPreviewFileChanged?: (change: { projectId: string; path: string; content: string; diff: string }) => void;
+  onPreviewFileChanged?: (change: { projectId: string; path: string; content: string; diff: string; revision?: number }) => void;
+  onPreviewProjectPersisted?: (change: { projectId: string; contentRevision: number; serverRevision: number }) => void;
+  onPreviewProjectCommitted?: (change: {
+    projectId: string;
+    contentRevision: number;
+    serverRevision: number;
+    changedFiles: Array<{ path: string; diff: string; hash?: string }>;
+  }) => void | number | Promise<void | number>;
+  onPreviewProjectConflict?: (message: string) => void;
+  onSearchSources?: (sources: SearchSource[], searchTrace?: SearchTrace) => void;
   onDone?: () => void;
   onError?: (error: Error) => void;
 }
@@ -35,11 +49,11 @@ interface SendChatMessageCallbacks {
 /**
  * 创建新会话
  */
-export async function createSession(userId = 'default'): Promise<Session> {
+export async function createSession(userId = 'default', sessionId?: string): Promise<Session> {
   const response = await fetch('/api/chat/session/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userId }),
+    body: JSON.stringify({ userId, ...(sessionId ? { sessionId } : {}) }),
   });
   const data = await response.json();
   if (!data.success) {
@@ -148,7 +162,9 @@ export async function sendChatMessage(
   callbacks: SendChatMessageCallbacks = {},
   signal?: AbortSignal
 ): Promise<void> {
-  const { onToken, onToolStart, onToolEnd, onFileReady, onVideoReady, onToolProgress, onTokenUsage, onContextRemain, onModelQuotaInfo, onProjectFileChanged, onPreviewFileChanged, onDone, onError } = callbacks;
+  const { onToken, onToolStart, onToolEnd, onFileReady, onVideoReady, onToolProgress, onTokenUsage, onContextRemain, onModelQuotaInfo, onProjectFileChanged, onPreviewFileChanged, onSearchSources, onDone, onError } = callbacks;
+  let previewCommitPayloadBytes = 0;
+  let previewSyncFetchBytes = 0;
 
   // 兼容旧版调用方式：sendChatMessage(messages, callbacks, signal)
   let sessionId: string | undefined;
@@ -157,7 +173,12 @@ export async function sendChatMessage(
   let attachments: UploadedAttachment[] | undefined;
   let analysisContext: string | undefined;
   let analysisContextMode: 'summary' | 'reference' | undefined;
-  let previewProject: PreviewProject | undefined;
+  let previewProjectId: string | undefined;
+  let previewServerRevision: number | undefined;
+  let previewContentRevision: number | undefined;
+  let previewProjectBootstrap: PreviewProject | undefined;
+  let previewProjectOrigin: 'generated' | 'uploaded-source' | undefined;
+  let previewProjectUploadName: string | null | undefined;
   let assistantMessageId: string | undefined;
   if (Array.isArray(params)) {
     messages = params;
@@ -168,7 +189,12 @@ export async function sendChatMessage(
     attachments = params.attachments;
     analysisContext = params.analysisContext;
     analysisContextMode = params.analysisContextMode;
-    previewProject = params.previewProject;
+    previewProjectId = params.previewProjectId;
+    previewServerRevision = params.previewServerRevision;
+    previewContentRevision = params.previewContentRevision;
+    previewProjectBootstrap = params.previewProjectBootstrap;
+    previewProjectOrigin = params.previewProjectOrigin;
+    previewProjectUploadName = params.previewProjectUploadName;
     assistantMessageId = params.assistantMessageId;
   }
 
@@ -179,7 +205,11 @@ export async function sendChatMessage(
         'Content-Type': 'application/json',
         Accept: 'text/event-stream',
       },
-      body: JSON.stringify({ sessionId, message, messages, attachments, analysisContext, analysisContextMode, previewProject, assistantMessageId }),
+      body: JSON.stringify({
+        sessionId, message, messages, attachments, analysisContext, analysisContextMode,
+        previewProjectId, previewServerRevision, previewContentRevision,
+        previewProjectBootstrap, previewProjectOrigin, previewProjectUploadName, assistantMessageId,
+      }),
       signal,
     });
 
@@ -216,6 +246,9 @@ export async function sendChatMessage(
             editableSource: event.editableSource,
             presentationSchema: event.presentationSchema,
             presentationBackgrounds: event.presentationBackgrounds,
+            renderedSlides: event.renderedSlides,
+            antiAIPatternReport: event.antiAIPatternReport,
+            designCritique: event.designCritique,
             sourceFiles: event.sourceFiles,
             storyOutline: event.storyOutline,
             visualQA: event.visualQA,
@@ -228,8 +261,42 @@ export async function sendChatMessage(
           break;
         case 'preview_file_changed':
           if (typeof event.projectId === 'string' && typeof event.path === 'string' && typeof event.content === 'string' && typeof event.diff === 'string') {
-            onPreviewFileChanged?.({ projectId: event.projectId, path: event.path, content: event.content, diff: event.diff });
+            onPreviewFileChanged?.({ projectId: event.projectId, path: event.path, content: event.content, diff: event.diff, revision: event.revision });
           }
+          break;
+        case 'preview_project_persisted':
+          if (typeof event.projectId === 'string' && Number.isSafeInteger(event.contentRevision) && Number.isSafeInteger(event.serverRevision)) {
+            callbacks.onPreviewProjectPersisted?.({
+              projectId: event.projectId,
+              contentRevision: event.contentRevision,
+              serverRevision: event.serverRevision,
+            });
+          }
+          break;
+        case 'preview_project_committed':
+          if (
+            typeof event.projectId === 'string'
+            && Number.isSafeInteger(event.contentRevision)
+            && Number.isSafeInteger(event.serverRevision)
+            && Array.isArray(event.changedFiles)
+          ) {
+            previewCommitPayloadBytes += new TextEncoder().encode(JSON.stringify(event)).byteLength;
+            const syncBytes = await callbacks.onPreviewProjectCommitted?.({
+              projectId: event.projectId,
+              contentRevision: event.contentRevision,
+              serverRevision: event.serverRevision,
+              changedFiles: event.changedFiles.filter((item: any) =>
+                item && typeof item.path === 'string' && typeof item.diff === 'string'
+                  && (item.hash === undefined || typeof item.hash === 'string'),
+              ),
+            });
+            if (typeof syncBytes === 'number' && Number.isFinite(syncBytes) && syncBytes > 0) {
+              previewSyncFetchBytes += syncBytes;
+            }
+          }
+          break;
+        case 'preview_project_conflict':
+          callbacks.onPreviewProjectConflict?.(event.message || 'Preview 项目版本冲突，请刷新后重试。');
           break;
         case 'video_ready':
           onVideoReady?.({
@@ -245,6 +312,23 @@ export async function sendChatMessage(
             prompt_tokens: event.prompt_tokens || 0,
             completion_tokens: event.completion_tokens || 0,
             total_tokens: event.total_tokens || 0,
+            llm_call_count: event.llm_call_count || 0,
+            last_prompt_tokens: event.last_prompt_tokens || 0,
+            calls: Array.isArray(event.calls) ? event.calls : [],
+            execution_llm_calls: event.execution_llm_calls || 0,
+            final_response_llm_calls: event.final_response_llm_calls || 0,
+            preview_tool_calls: event.preview_tool_calls || 0,
+            search_calls: event.search_calls || 0,
+            search_queries: Array.isArray(event.search_queries) ? event.search_queries : [],
+            read_calls: event.read_calls || 0,
+            range_read_chars: event.range_read_chars || 0,
+            full_preview_file_chars: event.full_preview_file_chars || 0,
+            read_reason: Array.isArray(event.read_reason) ? event.read_reason : [],
+            patch_calls: event.patch_calls || 0,
+            batch_patch_calls: event.batch_patch_calls || 0,
+            patch_operations: event.patch_operations || 0,
+            preview_commit_payload_bytes: event.preview_commit_payload_bytes || previewCommitPayloadBytes,
+            preview_sync_fetch_bytes: previewSyncFetchBytes,
           });
           break;
         case 'context_remain':
@@ -262,6 +346,11 @@ export async function sendChatMessage(
             cost_total: event.cost_total || 0,
             new_remain: event.new_remain || 0,
           });
+          break;
+        case 'search_sources':
+          if (Array.isArray(event.sources)) {
+            onSearchSources?.(event.sources as SearchSource[], event.searchTrace as SearchTrace | undefined);
+          }
           break;
         case 'done':
           onDone?.();

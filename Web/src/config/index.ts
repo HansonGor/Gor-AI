@@ -56,8 +56,8 @@ export const MODEL_CONFIG = {
 
 // ========== 用户配置 ==========
 export const USER_CONFIG = {
-  // 用户头像（网络链接）
-  AVATAR_URL: 'https://github.com/HansonGor.png',
+  // 默认用户头像
+  AVATAR_URL: `${import.meta.env.BASE_URL}images/gor-avatar.png?v=4`,
 };
 
 // ========== 视频配置 ==========

@@ -3,7 +3,16 @@ import * as AlertDialogPrimitive from '@radix-ui/react-alert-dialog';
 import { cn } from '@/lib/utils';
 import { buttonVariants } from './button';
 
-const AlertDialog = AlertDialogPrimitive.Root;
+type AlertDialogRootProps = React.ComponentProps<typeof AlertDialogPrimitive.Root>;
+const AlertDialogOpenChangeContext = React.createContext<
+  AlertDialogRootProps['onOpenChange']
+>(undefined);
+
+const AlertDialog = ({ onOpenChange, ...props }: AlertDialogRootProps) => (
+  <AlertDialogOpenChangeContext.Provider value={onOpenChange}>
+    <AlertDialogPrimitive.Root {...props} onOpenChange={onOpenChange} />
+  </AlertDialogOpenChangeContext.Provider>
+);
 const AlertDialogTrigger = AlertDialogPrimitive.Trigger;
 const AlertDialogPortal = AlertDialogPrimitive.Portal;
 
@@ -21,20 +30,29 @@ AlertDialogOverlay.displayName = AlertDialogPrimitive.Overlay.displayName;
 
 const AlertDialogContent = React.forwardRef<
   React.ElementRef<typeof AlertDialogPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Content>
->(({ className, ...props }, ref) => (
-  <AlertDialogPortal>
-    <AlertDialogOverlay />
-    <AlertDialogPrimitive.Content
-      ref={ref}
-      className={cn(
-        'fixed left-1/2 top-1/2 z-[101] grid w-[calc(100%-32px)] max-w-md -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl border bg-background p-6 text-foreground shadow-xl',
-        className,
-      )}
-      {...props}
-    />
-  </AlertDialogPortal>
-));
+  React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Content> & { overlayClassName?: string }
+>(({ className, overlayClassName, ...props }, ref) => {
+  const onOpenChange = React.useContext(AlertDialogOpenChangeContext);
+
+  return (
+    <AlertDialogPortal>
+      <AlertDialogOverlay
+        className={overlayClassName}
+        onClick={(event) => {
+          if (event.target === event.currentTarget) onOpenChange?.(false);
+        }}
+      />
+      <AlertDialogPrimitive.Content
+        ref={ref}
+        className={cn(
+          'fixed left-1/2 top-1/2 z-[101] grid w-[calc(100%-32px)] max-w-md -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl border bg-background p-6 text-foreground shadow-xl',
+          className,
+        )}
+        {...props}
+      />
+    </AlertDialogPortal>
+  );
+});
 AlertDialogContent.displayName = AlertDialogPrimitive.Content.displayName;
 
 const AlertDialogHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
@@ -62,6 +80,7 @@ const AlertDialogDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <AlertDialogPrimitive.Description
     ref={ref}
+    data-slot="alert-dialog-description"
     className={cn('text-sm leading-6 text-muted-foreground', className)}
     {...props}
   />

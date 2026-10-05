@@ -59,6 +59,7 @@ export default function PreviewProject({
         name: projectSnapshot.name,
         template: projectSnapshot.template === 'html' ? 'html' : 'react',
         files,
+        revision: projectSnapshot.revision,
       },
       selectedFilePath,
     });
@@ -69,12 +70,13 @@ export default function PreviewProject({
     name: projectSnapshot.name,
     template: projectSnapshot.template === 'html' ? 'html' : 'react',
     files: projectSnapshot.files,
+    revision: projectSnapshot.revision,
   } : globalStore.project;
   const selectedFilePath = isIsolated
     ? isolatedState?.selectedFilePath ?? (project.files['/src/scene.json'] !== undefined ? '/src/scene.json' : Object.keys(project.files)[0] ?? null)
     : globalStore.selectedFilePath;
   const runtimeProjectId = isIsolated ? `${project.id}:${isolatedKey}` : project.id;
-  const compiler = usePreviewCompiler(runtimeProjectId, project.files);
+  const compiler = usePreviewCompiler(runtimeProjectId, project.files, project.revision ?? 0);
   const runtime = usePreviewRuntime(runtimeProjectId);
   const selectProjectFile = useCallback((path: string | null) => {
     if (!isIsolated) {
@@ -92,7 +94,7 @@ export default function PreviewProject({
     try {
       const files = writeVirtualFile(project.files, path, content);
       setIsolatedState((current) => current ? {
-        project: { ...current.project, files },
+        project: { ...current.project, files, revision: (current.project.revision ?? 0) + 1 },
         selectedFilePath: path,
       } : current);
     } catch {
@@ -109,7 +111,7 @@ export default function PreviewProject({
       ? selectedFilePath
       : Object.keys(files)[0] ?? null;
     setIsolatedState((current) => current ? {
-      project: { ...current.project, files },
+      project: { ...current.project, files, revision: (current.project.revision ?? 0) + 1 },
       selectedFilePath: selected,
     } : current);
   }, [isIsolated, globalStore.deleteFile, project.files, selectedFilePath]);
@@ -187,15 +189,22 @@ export default function PreviewProject({
   }, [downloadDist, onDownloadDistReady]);
 
   useEffect(() => {
-    if (buildRunRevision === 0 || buildRunRevision === lastAutoRunRef.current) return;
+    if (
+      buildRunRevision === 0 ||
+      buildRunRevision === lastAutoRunRef.current ||
+      compiler.state.status === 'initializing' ||
+      compiler.state.status === 'building'
+    ) return;
     lastAutoRunRef.current = buildRunRevision;
+    if (lastRunFilesRef.current === project.files) return;
     buildAndRun();
-  }, [buildRunRevision, buildAndRun]);
+  }, [buildRunRevision, buildAndRun, compiler.state.status, project.files]);
 
   useEffect(() => {
     if (
       view === 'preview' &&
-      lastViewRef.current !== 'preview' &&
+      lastViewRef.current === 'code' &&
+      buildRunRevision === 0 &&
       lastRunFilesRef.current !== project.files
     ) {
       buildAndRun();
@@ -206,12 +215,14 @@ export default function PreviewProject({
   useEffect(() => {
     if (
       view === 'preview' &&
+      buildRunRevision === 0 &&
       compiler.state.status === 'ready' &&
-      runtime.state.status === 'idle'
+      runtime.state.status === 'idle' &&
+      lastRunFilesRef.current !== project.files
     ) {
       buildAndRun();
     }
-  }, [view, compiler.state.status, runtime.state.status, buildAndRun]);
+  }, [view, buildRunRevision, compiler.state.status, runtime.state.status, project.files, buildAndRun]);
 
   const createFile = useCallback((path: string): string | null => {
     if (Object.keys(project.files).length >= 40) return '项目文件数量已达上限（40 个）。';
@@ -288,7 +299,7 @@ export default function PreviewProject({
         />
       </div>
       <AlertDialog open={pendingDelete !== null} onOpenChange={(open) => { if (!open) setPendingDelete(null); }}>
-        <AlertDialogContent className="w-[min(440px,calc(100%-32px))] max-w-none gap-0 rounded-2xl border border-white/10 bg-[#191923] p-5 text-[#f4f3f8] shadow-[0_28px_90px_rgba(0,0,0,0.5)] sm:p-6">
+        <AlertDialogContent overlayClassName="chat-theme-dialog-overlay" className="chat-theme-dialog w-[min(440px,calc(100%-32px))] max-w-none gap-0 rounded-2xl border border-white/10 p-5 text-[#f4f3f8] shadow-[0_28px_90px_rgba(0,0,0,0.5)] sm:p-6">
           <AlertDialogHeader className="gap-[10px]">
             <AlertDialogTitle className="flex items-center gap-3 text-base tracking-tight">
               <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-500/10 text-red-300"><Trash2 size={18} aria-hidden="true" /></span>

@@ -5,14 +5,10 @@
 from langchain_core.tools import tool
 
 from tools.weather import get_weather
-from tools.web_search import (
-    web_search,
-    web_search_overseas,
-    web_search_deep,
-    search_github_code,
-)
-from tools.document import create_word, create_excel, create_ppt, create_pdf
-from tools.presentation import create_presentation
+from tools.web_search import web_search
+from tools.document import create_word, create_excel, create_pdf
+from tools.presentation import create_ppt
+from tools.image_search import search_images
 from tools.video import generate_xiaoyunque_video
 from tools.vector_search import vector_search
 from tools.code_execution import execute_python
@@ -24,13 +20,10 @@ from tools.scene_spec import set_3d_scene
 TOOLS = [
     get_weather,
     web_search,
-    web_search_overseas,
-    web_search_deep,
-    search_github_code,
+    search_images,
     create_word,
     create_excel,
     create_ppt,
-    create_presentation,
     create_pdf,
     generate_xiaoyunque_video,
     vector_search,

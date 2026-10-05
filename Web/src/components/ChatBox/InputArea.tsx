@@ -1,6 +1,6 @@
 ﻿// 输入区域
 import { useRef, useEffect, useState } from 'react';
-import { Upload, Send, Square, X, FileArchive, FolderUp, Files } from 'lucide-react';
+import { Upload, Send, Square, X, FileArchive, FolderUp, Files, Plus, Info } from 'lucide-react';
 import { CHAT_CONFIG } from '../../config';
 import type { InputAreaProps } from '../../types';
 import { Button } from '../ui/button';
@@ -157,7 +157,7 @@ export default function InputArea({
         </div>
       )}
 
-      <div className="input-wrapper flex items-end gap-[0.12rem] rounded-2xl border border-white/10 bg-white/[0.08] px-[0.2rem] py-[0.15rem] transition-all focus-within:border-[#667eea]/40 focus-within:bg-white/[0.12] focus-within:shadow-md focus-within:shadow-purple-500/10 lg:px-5 lg:py-3.5">
+      <div className="input-wrapper chat-composer-panel">
         <div ref={importPopoverRef} className="relative z-20 flex shrink-0 self-center">
           <Button
             type="button"
@@ -170,19 +170,18 @@ export default function InputArea({
             aria-expanded={importDialogOpen}
             aria-haspopup="dialog"
           >
-            <Upload size={20} />
+            <Plus size={22} />
           </Button>
           {importDialogOpen && (
             <section
-              className="chat-import-popover absolute bottom-full left-0 mb-3 w-[min(680px,calc(100vw-24px))] overflow-hidden rounded-[24px] border border-border/80 bg-popover/95 p-4 text-popover-foreground shadow-[0_24px_80px_rgba(0,0,0,0.32)] backdrop-blur-2xl sm:p-5"
+              className="chat-import-popover absolute bottom-full left-0 mb-3 w-[min(520px,calc(100vw-24px))] overflow-hidden rounded-[24px] border border-border/80 bg-popover/95 p-3.5 text-popover-foreground shadow-[0_24px_80px_rgba(0,0,0,0.32)] backdrop-blur-2xl sm:p-4"
               role="dialog"
               aria-label="选择导入方式"
             >
-              <div className="mb-4 flex items-center justify-between gap-3 border-b border-border/70 px-1 pb-4">
+              <div className="chat-import-dialog-header mb-3 flex items-center justify-between gap-3 px-1 pb-1">
                 <div className="flex min-w-0 items-center gap-3">
-                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/10"><Upload size={20} /></span>
+                  <span className="chat-import-dialog-mark flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/10"><Upload size={20} /></span>
                   <div className="min-w-0">
-                    <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-primary/80">IMPORT</div>
                     <h2 className="text-base font-semibold tracking-tight">导入文件</h2>
                     <p className="mt-0.5 text-xs text-muted-foreground">选择单个文件，或导入完整项目文件夹。</p>
                   </div>
@@ -192,26 +191,26 @@ export default function InputArea({
                 </Button>
               </div>
 
-              <div className="flex flex-col gap-3">
-                <div className="chat-import-option group flex min-h-[92px] flex-wrap items-center gap-3 rounded-2xl border border-border/80 bg-card/80 p-3 transition-all duration-200 hover:border-primary/35 hover:bg-accent/35 sm:gap-4 sm:px-4">
-                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary transition-transform duration-200 group-hover:scale-105"><FileArchive size={20} /></span>
-                  <div className="min-w-0 flex-1 basis-[240px]">
+              <div className="chat-import-options flex flex-col gap-2">
+                <div className="chat-import-option group flex min-h-[88px] items-center gap-3 rounded-2xl border border-border/80 bg-card/80 p-3 transition-all duration-200 hover:border-primary/35 hover:bg-accent/35 sm:gap-3.5 sm:px-3.5">
+                  <span className="chat-import-option-icon flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary transition-transform duration-200 group-hover:scale-105"><FileArchive size={20} /></span>
+                  <div className="chat-import-option-copy min-w-0 flex-1">
                     <h3 className="text-sm font-semibold">ZIP 或文件</h3>
-                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">ZIP 包请单独选择；也支持图片、HTML、JS、TS、CSS、JSON、SVG、Markdown、TXT。</p>
+                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">ZIP 包请单独选择；也支持图片、HTML、JS、TS、CSS、JSON、SVG、Markdown、TXT。</p>
                   </div>
-                  <Button type="button" className="chat-import-file-button min-h-11 w-full rounded-xl px-5 shadow-sm shadow-primary/15 sm:w-auto" onClick={triggerFileInput}><Files size={16} />选择文件</Button>
+                  <Button type="button" className="chat-import-file-button min-h-10 w-auto shrink-0 rounded-full px-4 shadow-sm shadow-primary/15" onClick={triggerFileInput}><Files size={15} />选择文件</Button>
                 </div>
-                <div className="chat-import-option group flex min-h-[92px] flex-wrap items-center gap-3 rounded-2xl border border-border/80 bg-card/80 p-3 transition-all duration-200 hover:border-primary/35 hover:bg-accent/35 sm:gap-4 sm:px-4">
-                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary transition-transform duration-200 group-hover:scale-105"><FolderUp size={20} /></span>
-                  <div className="min-w-0 flex-1 basis-[240px]">
+                <div className="chat-import-option group flex min-h-[88px] items-center gap-3 rounded-2xl border border-border/80 bg-card/80 p-3 transition-all duration-200 hover:border-primary/35 hover:bg-accent/35 sm:gap-3.5 sm:px-3.5">
+                  <span className="chat-import-option-icon flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary transition-transform duration-200 group-hover:scale-105"><FolderUp size={20} /></span>
+                  <div className="chat-import-option-copy min-w-0 flex-1">
                     <h3 className="text-sm font-semibold">项目文件夹</h3>
                     <p className="mt-1 text-xs leading-relaxed text-muted-foreground">保留完整目录结构，自动识别源码项目或 dist 预览目录。</p>
                   </div>
-                  <Button type="button" variant="outline" className="chat-import-folder-button min-h-11 w-full rounded-xl border-border/80 bg-background/60 px-5 transition-colors hover:border-primary/40 hover:bg-accent sm:w-auto" onClick={triggerFolderInput}><FolderUp size={16} />选择文件夹</Button>
+                  <Button type="button" variant="outline" className="chat-import-folder-button min-h-10 w-auto shrink-0 rounded-full border-border/80 bg-background/60 px-4 transition-colors hover:border-primary/40 hover:bg-accent" onClick={triggerFolderInput}><FolderUp size={15} />选择文件夹</Button>
                 </div>
               </div>
-              <div className="mt-4 flex items-center gap-2 px-1 text-[11px] text-muted-foreground/80">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/80" />
+              <div className="chat-import-footnote mt-3 flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground/80">
+                <Info size={13} aria-hidden="true" />
                 上传的图片及可读取文本会发送给模型，用于生成简短概述。
               </div>
             </section>
@@ -279,7 +278,7 @@ export default function InputArea({
           ref={textareaRef}
           className="chat-input min-h-0 min-w-0 flex-1 resize-none overflow-hidden border-0 bg-transparent pb-[0.12rem] pl-[0.08rem] pr-0 pt-[0.12rem] text-[0.28rem] leading-[1.6] text-[#f5f5f7] shadow-none outline-none ring-0 placeholder:text-white/40 focus-visible:ring-0 disabled:opacity-50"
           style={{ maxHeight: `${INPUT_MAX_HEIGHT}px` }}
-          placeholder="输入消息，Enter 发送，Shift + Enter 换行"
+          placeholder="一问一念，皆自此起…"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -287,7 +286,8 @@ export default function InputArea({
           rows={1}
           disabled={isLoading}
         />
-        {isLoading ? (
+        <div className="chat-composer-actions">
+          {isLoading ? (
           <Button
             type="button"
             variant="secondary"
@@ -312,7 +312,8 @@ export default function InputArea({
           >
             <Send size={19} />
           </Button>
-        )}
+          )}
+        </div>
       </div>
       {(hasPendingUploadSummary || (archiveStatus && archiveStatus !== '导入完成')) && (
         <div className="chat-archive-status" role="status" aria-live="polite" title={archiveName || importedUploadName || undefined}>

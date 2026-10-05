@@ -14,6 +14,7 @@ export type SessionPreviewContent =
       name: string;
       template: PreviewTemplate;
       files: PreviewFiles;
+      revision?: number;
     }
   | {
       kind: 'dist';

@@ -1,6 +1,6 @@
 // 聊天状态管理 Hook（组合入口）
 // 整合 useSession（会话管理）、useMessage（消息发送）、图片处理
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFeedback } from '../components/ui/feedback';
 import { useSession } from './useSession';
 import { useMessage } from './useMessage';
@@ -12,6 +12,8 @@ import type { UploadedAttachment } from '../types';
 
 export function useChat() {
   const { notify } = useFeedback();
+  const [isSessionCacheLoading, setIsSessionCacheLoading] = useState(true);
+  const sessionCacheRequestRef = useRef(0);
   const {
     sessions,
     sessionId,
@@ -21,6 +23,8 @@ export function useChat() {
     initSession,
     selectSession: selectSessionBase,
     createNewSession: createNewSessionBase,
+    waitForSessionCreation,
+    isSessionActive,
     deleteSessionById: deleteSessionByIdBase,
   } = useSession();
 
@@ -50,16 +54,28 @@ export function useChat() {
     clearInput,
   } = useMessage(sessionId);
 
+  const loadSessionCache = useCallback(async (sid: string) => {
+    const requestId = ++sessionCacheRequestRef.current;
+    setIsSessionCacheLoading(true);
+    try {
+      const history = await loadHistory(sid);
+      if (requestId === sessionCacheRequestRef.current) setMessagesList(history);
+    } finally {
+      if (requestId === sessionCacheRequestRef.current) setIsSessionCacheLoading(false);
+    }
+  }, [loadHistory, setMessagesList]);
+
   /**
    * 页面初始化
    */
   const initApp = useCallback(async () => {
     const sid = await initSession();
     if (sid) {
-      const history = await loadHistory(sid);
-      setMessagesList(history);
+      await loadSessionCache(sid);
+    } else {
+      setIsSessionCacheLoading(false);
     }
-  }, [initSession, loadHistory, setMessagesList]);
+  }, [initSession, loadSessionCache]);
 
   /**
    * 切换会话
@@ -70,24 +86,31 @@ export function useChat() {
       if (success) {
         usePreviewProjectStore.getState().createProject('react');
         setMessagesList([]);
-        const history = await loadHistory(sid);
-        setMessagesList(history);
+        await loadSessionCache(sid);
       }
     },
-    [selectSessionBase, isLoading, loadHistory, setMessagesList],
+    [selectSessionBase, isLoading, loadSessionCache, setMessagesList],
   );
 
   /**
    * 创建新会话
    */
   const createNewSession = useCallback(async () => {
+    const previousSessionId = sessionId;
     const sid = await createNewSessionBase(isLoading);
     if (sid) {
+      sessionCacheRequestRef.current += 1;
+      setIsSessionCacheLoading(false);
       usePreviewProjectStore.getState().createProject('react');
       setMessagesList([]);
       clearInput();
+      void waitForSessionCreation(sid).then((created) => {
+        if (!created && previousSessionId && isSessionActive(previousSessionId)) {
+          void loadSessionCache(previousSessionId);
+        }
+      });
     }
-  }, [createNewSessionBase, isLoading, setMessagesList, clearInput]);
+  }, [createNewSessionBase, isLoading, sessionId, setMessagesList, clearInput, waitForSessionCreation, isSessionActive, loadSessionCache]);
 
   /**
    * 删除会话
@@ -101,11 +124,10 @@ export function useChat() {
       if (newSid && newSid !== sessionId) {
         usePreviewProjectStore.getState().createProject('react');
         setMessagesList([]);
-        const history = await loadHistory(newSid);
-        setMessagesList(history);
+        await loadSessionCache(newSid);
       }
     },
-    [deleteSessionByIdBase, sessionId, loadHistory, setMessagesList],
+    [deleteSessionByIdBase, sessionId, loadSessionCache, setMessagesList],
   );
 
   /**
@@ -146,6 +168,7 @@ export function useChat() {
 
   const handleSummarizeImages = useCallback(async (files: File[]) => {
     if (!sessionId) throw new Error('会话尚未准备好，请稍后重试。');
+    if (!(await waitForSessionCreation(sessionId))) throw new Error('新会话创建失败，请重试。');
     const compressed = await compressImages(files);
     if (compressed.length === 0) throw new Error('没有可供概述的图片。');
     const displayText = '';
@@ -160,7 +183,7 @@ export function useChat() {
       prompt,
       storedAttachments,
     );
-  }, [queueUploadSummary, sessionId]);
+  }, [queueUploadSummary, sessionId, waitForSessionCreation]);
 
   /**
    * 发送消息（包装 base 方法，添加 Toast 错误提示）
@@ -171,11 +194,12 @@ export function useChat() {
         notify('会话未初始化，请刷新页面');
         return;
       }
+      if (!(await waitForSessionCreation(sessionId))) return;
       await handleSendBase(presetText);
       // 刷新会话列表（标题可能已更新）
       await fetchSessions();
     },
-    [sessionId, handleSendBase, fetchSessions, notify],
+    [sessionId, waitForSessionCreation, handleSendBase, fetchSessions, notify],
   );
 
   // 组件卸载时清理
@@ -190,6 +214,7 @@ export function useChat() {
     sessions,
     sessionId,
     isSessionReady,
+    isSessionCacheLoading,
     // 消息状态
     messages,
     input,
@@ -209,6 +234,7 @@ export function useChat() {
     createNewSession,
     deleteSessionById,
     fetchSessions,
+    waitForSessionCreation,
     // 消息方法
     handleSend,
     queueUploadSummary,

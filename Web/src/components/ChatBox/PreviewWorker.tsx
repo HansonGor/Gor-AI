@@ -6,6 +6,8 @@ import {
   FileSpreadsheet,
   FileText,
   Globe2,
+  Maximize2,
+  Minimize2,
   PanelLeftClose,
   PanelLeftOpen,
   Presentation,
@@ -123,6 +125,9 @@ export default function PreviewWorker({
     );
   });
   const [previewSidebarCollapsed, setPreviewSidebarCollapsed] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanding, setIsExpanding] = useState(false);
+  const [isCollapsing, setIsCollapsing] = useState(false);
   const [downloadError, setDownloadError] = useState('');
   const [pendingDeleteArtifactKey, setPendingDeleteArtifactKey] = useState<string | null>(null);
   const [selectedGeneratedFile, setSelectedGeneratedFile] = useState<GeneratedFile | null>(activeFile);
@@ -184,14 +189,12 @@ export default function PreviewWorker({
   const snapshotIsScene = Boolean(activeProjectSnapshot && isSceneRendererProject(activeProjectSnapshot.files));
   const currentProjectIsScene = isSceneProject;
   const downloadLabel = target === 'generated' && selectedGeneratedFile
-    ? mode === 'preview' ? `下载 ${selectedGeneratedFile.displayName}` : `下载 ${projectFileName} 源码（ZIP）`
+    ? mode === 'preview' ? `下载 ${selectedGeneratedFile.displayName}` : selectedGeneratedFile.previewRenderer === 'presentation' ? `下载 ${selectedGeneratedFile.displayName.replace(/\.pptx$/i, '')} 源码（JSON）` : `下载 ${projectFileName} 源码（ZIP）`
     : showImportedDist
       ? `下载 ${importedDist.name}.zip`
-    : target === 'generated' && mode === 'code' && selectedGeneratedFile?.previewRenderer === 'presentation'
-      ? `下载 ${selectedGeneratedFile.displayName} 源码（JSON）`
     : target === 'project-snapshot' && activeProjectSnapshot
         ? mode === 'code'
-          ? `下载 ${activeProjectSnapshot.name} 源码（ZIP）`
+          ? `下载 ${activeProjectSnapshot.name} 源码（${activeProjectSnapshot.template === 'presentation' ? 'JSON' : 'ZIP'}）`
           : snapshotIsScene
             ? `下载 ${activeProjectSnapshot.name}.glb`
             : activeProjectSnapshot.template === 'presentation'
@@ -391,7 +394,18 @@ export default function PreviewWorker({
     onModeChange('preview');
   };
   return (
-    <section className="preview-worker" aria-label="Preview Worker 文件预览">
+    <section
+      className={`preview-worker ${isExpanded ? 'is-expanded' : ''} ${isCollapsing ? 'is-collapsing' : ''}`}
+      aria-label="Preview Worker 文件预览"
+      onAnimationEnd={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.animationName === 'preview-worker-tile-open') setIsExpanding(false);
+        if (event.animationName === 'preview-worker-tile-close') {
+          setIsExpanded(false);
+          setIsCollapsing(false);
+        }
+      }}
+    >
       <div className="preview-worker-tabsbar">
         <Tabs
           value={mode}
@@ -424,6 +438,25 @@ export default function PreviewWorker({
             title={downloadLabel}
           >
             <Download size={18} />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="preview-worker-expand"
+            onClick={() => {
+              if (isExpanded) setIsCollapsing(true);
+              else {
+                setIsExpanding(true);
+                setIsExpanded(true);
+              }
+            }}
+            disabled={isExpanding || isCollapsing}
+            aria-label={isExpanded ? '退出完整视图' : '进入完整视图'}
+            aria-pressed={isExpanded}
+            title={isExpanded ? '退出完整视图' : '覆盖聊天区查看'}
+          >
+            {isExpanded ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
           </Button>
           {currentArtifactCanDelete && (
             <Button
@@ -546,7 +579,7 @@ export default function PreviewWorker({
           ) : target === 'project-snapshot' && activeProjectSnapshot ? (
             <div className="preview-worker-project">
               {activeProjectSnapshot.template === 'presentation' && activeProjectSnapshot.presentationSchema
-                ? <PresentationPreview schema={activeProjectSnapshot.presentationSchema} backgrounds={activeProjectSnapshot.presentationBackgrounds} />
+                ? <PresentationPreview schema={activeProjectSnapshot.presentationSchema} backgrounds={activeProjectSnapshot.presentationBackgrounds} renderedSlides={activeProjectSnapshot.renderedSlides} />
                 : <PreviewProject
                 key={`snapshot:${activeProjectSnapshot.messageId}`}
                 view="preview"
@@ -574,7 +607,7 @@ export default function PreviewWorker({
                 </div>
               )}
               {selectedGeneratedFile.previewRenderer === 'presentation' && selectedGeneratedFile.presentationSchema
-                ? <PresentationPreview schema={selectedGeneratedFile.presentationSchema} backgrounds={selectedGeneratedFile.presentationBackgrounds} />
+                ? <PresentationPreview schema={selectedGeneratedFile.presentationSchema} backgrounds={selectedGeneratedFile.presentationBackgrounds} renderedSlides={selectedGeneratedFile.renderedSlides} />
                 : <FilePreview file={selectedGeneratedFile} />}
             </div>
           ) : showImportedDist && importedDist ? (
@@ -613,7 +646,7 @@ export default function PreviewWorker({
           if (!open) setPendingDeleteArtifactKey(null);
         }}
       >
-        <AlertDialogContent className="w-[min(440px,calc(100%-32px))] max-w-none gap-0 rounded-2xl border border-white/10 bg-[#191923] p-5 text-[#f4f3f8] shadow-[0_28px_90px_rgba(0,0,0,0.5)] sm:p-6">
+        <AlertDialogContent overlayClassName="chat-theme-dialog-overlay" className="chat-theme-dialog w-[min(440px,calc(100%-32px))] max-w-none gap-0 rounded-2xl border border-white/10 p-5 text-[#f4f3f8] shadow-[0_28px_90px_rgba(0,0,0,0.5)] sm:p-6">
           <AlertDialogHeader className="gap-[10px]">
             <AlertDialogTitle className="flex items-center gap-3 text-base tracking-tight">
               <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-500/10 text-red-300">

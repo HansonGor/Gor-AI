@@ -42,6 +42,7 @@ export function createMessagePreviewSnapshot(
         template: 'html',
         outputExtension: '.glb',
         files: createSceneProjectFiles(scene),
+        revision: project.revision,
       };
     } catch {
       // Keep invalid scene data visible for diagnosis; never silently substitute another project.
@@ -69,6 +70,7 @@ export function createMessagePreviewSnapshot(
       template: 'react',
       outputExtension: '.html',
       files,
+      revision: project.revision,
     };
   }
 
@@ -79,5 +81,6 @@ export function createMessagePreviewSnapshot(
     template: project.template as PreviewTemplate,
     outputExtension: '.html',
     files,
+    revision: project.revision,
   };
 }

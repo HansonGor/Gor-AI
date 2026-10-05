@@ -1,6 +1,6 @@
 // 会话管理 Hook
 // 负责会话的创建、查询、切换、删除等操作
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { useFeedback } from '../components/ui/feedback';
 import {
   createSession,
@@ -8,28 +8,45 @@ import {
   getSessions,
   deleteSession as deleteSessionApi,
 } from '../api/chat';
-import { getSessionPreviewProject } from '../api/previewProject';
 import { CHAT_CONFIG } from '../config';
 import { isToday } from '../utils/date';
 import type { Session, ChatMessage } from '../types';
 import { createMessagePreviewSnapshot } from '../preview/core/projectSnapshot';
 import { restorePresentationSnapshot } from '../preview/core/presentationSnapshot';
 
-const { DEFAULT_USER_ID } = CHAT_CONFIG;
+function getSessionUserId(): string {
+  // The web app keeps its existing account namespace. The VS Code Webview uses
+  // a separate user_id so both clients can share the API/database without
+  // mixing their session lists.
+  return document.documentElement.dataset.gorClientMode === 'vscode'
+    ? `${CHAT_CONFIG.DEFAULT_USER_ID}:vscode`
+    : CHAT_CONFIG.DEFAULT_USER_ID;
+}
 
 export function useSession() {
   const { notify } = useFeedback();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isSessionReady, setIsSessionReady] = useState(false);
+  const activeSessionIdRef = useRef<string | null>(null);
+  const pendingSessionCreatesRef = useRef(new Map<string, Promise<Session>>());
+
+  const commitSessionId = useCallback((sid: string | null) => {
+    activeSessionIdRef.current = sid;
+    setSessionId(sid);
+  }, []);
 
   /**
    * 更新浏览器 URL 的 sessionId（放入 hash 路由 query：/path#/chat?sessionId=xxx）
    */
   const updateUrlSessionId = useCallback((sid: string) => {
-    const base = window.location.pathname;
-    const hashPath = window.location.hash.split('?')[0] || '#/chat';
-    window.history.replaceState(null, '', `${base}${hashPath}?sessionId=${sid}`);
+    // Use the live document URL explicitly. A VS Code Webview's <base> points to
+    // its packaged resource origin, so a root-relative history URL would become
+    // cross-origin even though only the hash route is meant to change.
+    const currentUrl = new URL(window.location.href);
+    const hashPath = currentUrl.hash.split('?')[0] || '#/chat';
+    currentUrl.hash = `${hashPath.slice(1)}?sessionId=${encodeURIComponent(sid)}`;
+    window.history.replaceState(null, '', currentUrl.href);
   }, []);
 
   /**
@@ -37,7 +54,7 @@ export function useSession() {
    */
   const fetchSessions = useCallback(async (): Promise<Session[]> => {
     try {
-      const list = await getSessions(DEFAULT_USER_ID);
+      const list = await getSessions(getSessionUserId());
       setSessions(list);
       return list;
     } catch (err) {
@@ -46,15 +63,25 @@ export function useSession() {
     }
   }, []);
 
+  const waitForSessionCreation = useCallback(async (sid: string): Promise<boolean> => {
+    const pending = pendingSessionCreatesRef.current.get(sid);
+    if (!pending) return true;
+    try {
+      await pending;
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const isSessionActive = useCallback((sid: string): boolean => activeSessionIdRef.current === sid, []);
+
   /**
    * 加载指定会话的历史消息
    */
   const loadHistory = useCallback(async (sid: string): Promise<ChatMessage[]> => {
     try {
-      const [history, previewSnapshot] = await Promise.all([
-        getSessionMessages(sid),
-        getSessionPreviewProject(sid).catch(() => null),
-      ]);
+      const history = await getSessionMessages(sid);
       if (history && history.length > 0) {
         const restored: ChatMessage[] = history.map((m) => ({
           id: m.id || Date.now().toString(),
@@ -77,6 +104,7 @@ export function useSession() {
               name: String(snapshot.name || 'Preview Project'),
               template: snapshot.template === 'html' ? 'html' : 'react',
               files: snapshot.files as Record<string, string>,
+              revision: typeof snapshot.revision === 'number' ? snapshot.revision : 0,
             }, messageId, changes.flatMap((change) => typeof change.path === 'string' ? [change.path] : []));
           })(),
           isStreaming: false,
@@ -88,27 +116,10 @@ export function useSession() {
                   total_tokens: m.total_tokens || 0,
                 }
               : undefined,
+          // 联网搜索来源（历史消息直接从持久化数据还原，不重新搜索）
+          searchSources: m.search_sources || m.searchSources || undefined,
+          searchTrace: m.search_trace || m.searchTrace || undefined,
         }));
-        // Older assistant turns predate preview-change persistence. When the session has
-        // a saved generated project, reconstruct its file list on the latest assistant turn.
-        if (previewSnapshot?.origin === 'generated') {
-          const latestAssistant = [...restored].reverse().find((message) => message.role === 'assistant');
-          if (latestAssistant && !latestAssistant.previewSnapshot) {
-            latestAssistant.previewSnapshot = createMessagePreviewSnapshot(
-              previewSnapshot.project,
-              latestAssistant.id,
-              Object.keys(previewSnapshot.project.files),
-            );
-          }
-          if (latestAssistant && !latestAssistant.previewChanges?.length) {
-            latestAssistant.previewChanges = Object.keys(previewSnapshot.project.files).map((path) => ({
-              projectId: previewSnapshot.project.id,
-              path,
-              diff: '',
-            }));
-            latestAssistant.previewChangesRestored = true;
-          }
-        }
         return restored;
       }
       return [];
@@ -138,7 +149,7 @@ export function useSession() {
       // 3. 处理 sessionId
       if (sid && sessionList.some((s) => s.id === sid)) {
         // 场景1：URL 携带 sessionId 且存在于列表中
-        setSessionId(sid);
+        commitSessionId(sid);
       } else {
         // 场景2：URL 无 sessionId 或不存在
         // 检查今天是否已经有会话（每天只创建一个新会话）
@@ -148,14 +159,14 @@ export function useSession() {
           // 今天已有会话，使用今天最新的会话
           sid = todaySessions[0].id;
           updateUrlSessionId(sid);
-          setSessionId(sid);
+          commitSessionId(sid);
           console.log('[Session] 复用今天的会话:', sid);
         } else {
           // 今天没有会话，创建新会话
-          const newSession = await createSession(DEFAULT_USER_ID);
+          const newSession = await createSession(getSessionUserId());
           sid = newSession.id;
           updateUrlSessionId(sid);
-          setSessionId(sid);
+          commitSessionId(sid);
           // 刷新会话列表，追加新会话
           await fetchSessions();
           console.log('[Session] 创建今天的新会话:', sid);
@@ -170,7 +181,7 @@ export function useSession() {
       setIsSessionReady(true);
       return null;
     }
-  }, [fetchSessions, updateUrlSessionId, notify]);
+  }, [fetchSessions, updateUrlSessionId, notify, commitSessionId]);
 
   /**
    * 切换会话
@@ -183,11 +194,11 @@ export function useSession() {
         return false;
       }
 
-      setSessionId(sid);
+      commitSessionId(sid);
       updateUrlSessionId(sid);
       return true;
     },
-    [sessionId, updateUrlSessionId, notify],
+    [sessionId, updateUrlSessionId, notify, commitSessionId],
   );
 
   /**
@@ -200,21 +211,43 @@ export function useSession() {
         return null;
       }
 
-      try {
-        const newSession = await createSession(DEFAULT_USER_ID);
-        const sid = newSession.id;
-        updateUrlSessionId(sid);
-        setSessionId(sid);
-        // 刷新会话列表
-        await fetchSessions();
-        return sid;
-      } catch (err) {
-        console.error('[Session] 创建会话失败:', err);
-        notify('创建会话失败');
-        return null;
-      }
+      const sid = crypto.randomUUID();
+      const previousSessionId = sessionId;
+      const optimisticSession: Session = {
+        id: sid,
+        title: '新对话',
+        updated_at: new Date().toISOString(),
+        message_count: 0,
+      };
+
+      // Switch locally first so the new-chat screen opens on the click, then
+      // persist the same ID in the background to keep subsequent sends safe.
+      commitSessionId(sid);
+      updateUrlSessionId(sid);
+      setSessions((current) => [optimisticSession, ...current.filter((item) => item.id !== sid)]);
+
+      const pending = createSession(getSessionUserId(), sid);
+      pendingSessionCreatesRef.current.set(sid, pending);
+      void pending.then(
+        (createdSession) => {
+          pendingSessionCreatesRef.current.delete(sid);
+          setSessions((current) => [createdSession, ...current.filter((item) => item.id !== sid)]);
+          void fetchSessions();
+        },
+        (err) => {
+          pendingSessionCreatesRef.current.delete(sid);
+          setSessions((current) => current.filter((item) => item.id !== sid));
+          if (activeSessionIdRef.current === sid) {
+            commitSessionId(previousSessionId);
+            if (previousSessionId) updateUrlSessionId(previousSessionId);
+          }
+          console.error('[Session] 创建会话失败:', err);
+          notify('创建会话失败');
+        },
+      );
+      return sid;
     },
-    [updateUrlSessionId, fetchSessions, notify],
+    [sessionId, updateUrlSessionId, fetchSessions, notify, commitSessionId],
   );
 
   /**
@@ -236,11 +269,11 @@ export function useSession() {
             newSid = remainingSessions[0].id;
           } else {
             // 没有其他会话，创建新会话
-            const newSession = await createSession(DEFAULT_USER_ID);
+            const newSession = await createSession(getSessionUserId());
             newSid = newSession.id;
             await fetchSessions();
           }
-          setSessionId(newSid);
+          commitSessionId(newSid);
           updateUrlSessionId(newSid);
           notify('会话已删除', 'success');
           return newSid;
@@ -254,7 +287,7 @@ export function useSession() {
         return null;
       }
     },
-    [sessionId, fetchSessions, updateUrlSessionId, notify],
+    [sessionId, fetchSessions, updateUrlSessionId, notify, commitSessionId],
   );
 
   return {
@@ -268,6 +301,8 @@ export function useSession() {
     initSession,
     selectSession,
     createNewSession,
+    waitForSessionCreation,
+    isSessionActive,
     deleteSessionById,
     updateUrlSessionId,
   };

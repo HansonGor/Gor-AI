@@ -12,16 +12,20 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from agent.agent import run_agent
-from tools.preview_project import PreviewProjectWorkspace
+from services.preview.workspace import PreviewProjectWorkspace
 from agent.token_callback import TokenCountCallback
 from config import config
 from db.model_quota import deduct_model_quota, get_model_display_name
 from db.supabase_chat import (
     get_session_attachment,
+    get_session_preview_project,
+    create_session_preview_project,
+    update_session_preview_project_if_revision,
     auto_generate_session_title,
     load_messages,
     save_message,
 )
+from services.context_engine import context_engine, estimate_tokens
 
 router = APIRouter()
 
@@ -33,7 +37,14 @@ class ChatRequest(BaseModel):
     analysisContext: str | None = Field(default=None, max_length=16000)
     analysisContextMode: str | None = None
     attachments: list = Field(default_factory=list)
+    # previewProject is retained for older clients as a one-time bootstrap fallback.
     previewProject: dict | None = None
+    previewProjectId: str | None = None
+    previewServerRevision: int | None = None
+    previewContentRevision: int | None = None
+    previewProjectBootstrap: dict | None = None
+    previewProjectOrigin: str = "generated"
+    previewProjectUploadName: str | None = None
     workspaceEdit: bool = False
     assistantMessageId: str | None = Field(default=None, max_length=80)
 
@@ -76,15 +87,107 @@ async def chat(request: Request, body: ChatRequest):
                 yield send_event({"type": "done"})
                 return
 
-            # Browser Virtual FS is sent as a bounded snapshot for this request only.
-            # Real workspace edits require an explicit, separate opt-in.
+            # The session table is canonical. The browser sends only its project ID
+            # and row revision after the initial bootstrap; full source is sent only
+            # for first-time registration (or an unsaved local edit flush).
+            preview_project_row_revision = None
+            preview_project_origin = "generated"
             try:
-                preview_workspace = PreviewProjectWorkspace.from_request(body.previewProject)
+                saved_project = await get_session_preview_project(session_id)
+                bootstrap = body.previewProjectBootstrap or body.previewProject
+
+                if body.previewProjectId:
+                    if not saved_project:
+                        raise ValueError("PREVIEW_PROJECT_NOT_FOUND")
+                    saved_project_data = saved_project.get("project") or {}
+                    if saved_project_data.get("id") != body.previewProjectId:
+                        raise ValueError("PREVIEW_PROJECT_ID_CONFLICT")
+                    if body.previewServerRevision is None or body.previewServerRevision != saved_project.get("revision"):
+                        raise ValueError("PREVIEW_PROJECT_REVISION_CONFLICT")
+                    canonical_project = saved_project_data
+                    if (
+                        body.previewContentRevision is not None
+                        and body.previewContentRevision != canonical_project.get("revision", 0)
+                    ):
+                        raise ValueError("PREVIEW_PROJECT_REVISION_CONFLICT")
+                    preview_project_row_revision = saved_project["revision"]
+                    preview_project_origin = saved_project.get("origin", "generated")
+                elif isinstance(bootstrap, dict):
+                    bootstrap_workspace = PreviewProjectWorkspace.from_request(bootstrap)
+                    if bootstrap_workspace is None:
+                        raise ValueError("Preview Project 格式无效。")
+                    if saved_project:
+                        # An old client may still send the complete project. Never
+                        # trust it to overwrite newer server state; only accept a
+                        # matching explicit reference to the existing canonical row.
+                        saved_project_data = saved_project.get("project") or {}
+                        if saved_project_data.get("id") != bootstrap_workspace.project_id:
+                            raise ValueError("PREVIEW_PROJECT_REVISION_CONFLICT")
+                        if body.previewProjectBootstrap is not None and (
+                            saved_project_data.get("revision", 0) != bootstrap_workspace.revision
+                            or saved_project_data.get("files") != bootstrap_workspace.files
+                        ):
+                            raise ValueError("PREVIEW_PROJECT_REVISION_CONFLICT")
+                        canonical_project = saved_project_data
+                        if body.previewServerRevision is not None and body.previewServerRevision != saved_project.get("revision"):
+                            raise ValueError("PREVIEW_PROJECT_REVISION_CONFLICT")
+                        preview_project_row_revision = saved_project["revision"]
+                        preview_project_origin = saved_project.get("origin", "generated")
+                    else:
+                        project_name = bootstrap.get("name", "Preview Project")
+                        if not isinstance(project_name, str) or not project_name.strip() or len(project_name) > 80:
+                            raise ValueError("项目名称无效。")
+                        if body.previewProjectUploadName is not None and (
+                            not body.previewProjectUploadName.strip() or len(body.previewProjectUploadName) > 255
+                        ):
+                            raise ValueError("上传名称无效。")
+                        if body.previewProjectOrigin == "uploaded-source" and not body.previewProjectUploadName:
+                            raise ValueError("源码项目需要上传文件名。")
+                        canonical_project = {
+                            "id": bootstrap_workspace.project_id,
+                            "name": project_name.strip(),
+                            "template": bootstrap_workspace.template,
+                            "files": bootstrap_workspace.files,
+                            "revision": bootstrap_workspace.revision,
+                        }
+                        if body.previewProjectOrigin not in {"generated", "uploaded-source"}:
+                            raise ValueError("Preview Project 来源无效。")
+                        created = await create_session_preview_project(
+                            session_id,
+                            canonical_project,
+                            body.previewProjectOrigin,
+                            body.previewProjectUploadName,
+                        )
+                        if not created:
+                            raise ValueError("PREVIEW_PROJECT_REVISION_CONFLICT")
+                        preview_project_row_revision = created["revision"]
+                        preview_project_origin = body.previewProjectOrigin
+                        yield send_event({
+                            "type": "preview_project_persisted",
+                            "projectId": bootstrap_workspace.project_id,
+                            "serverRevision": preview_project_row_revision,
+                            "contentRevision": bootstrap_workspace.revision,
+                        })
+                else:
+                    canonical_project = None
+
+                preview_workspace = PreviewProjectWorkspace.from_request(canonical_project)
             except ValueError as exc:
-                yield send_event({"type": "error", "message": str(exc)})
+                error_code = str(exc)
+                error_messages = {
+                    "PREVIEW_PROJECT_NOT_FOUND": "Preview 项目已不存在，请刷新页面后重试。",
+                    "PREVIEW_PROJECT_ID_CONFLICT": "当前 Preview 项目与服务器保存的项目不一致，请刷新页面后重试。",
+                    "PREVIEW_PROJECT_REVISION_CONFLICT": "Preview 项目已在其他位置更新，请刷新页面获取最新版本后重试。",
+                }
+                yield send_event({"type": "error", "code": error_code, "message": error_messages.get(error_code, error_code)})
                 yield send_event({"type": "done"})
                 return
-            print(f"[SSE] Preview Project snapshot: {preview_workspace.project_id if preview_workspace else 'none'}")
+            except Exception as preview_db_err:
+                print(f"[Preview] canonical project load failed: {preview_db_err}")
+                yield send_event({"type": "error", "message": "读取服务器 Preview 项目失败，请稍后重试。"})
+                yield send_event({"type": "done"})
+                return
+            print(f"[SSE] Preview Project: {preview_workspace.project_id if preview_workspace else 'none'} (server revision={preview_project_row_revision})")
 
             # 1. 保存用户消息到数据库（包含图片信息）
             user_images = None
@@ -123,8 +226,9 @@ async def chat(request: Request, body: ChatRequest):
                             item["previewStorageId"] = preview_record["id"]
                     user_attachments.append(item)
 
+            saved_current_id = None
             try:
-                await save_message(
+                saved_current_id = await save_message(
                     session_id,
                     "user",
                     user_content,
@@ -136,34 +240,44 @@ async def chat(request: Request, body: ChatRequest):
                 print(f"[SSE] 保存用户消息失败: {db_err}")
                 # 不中断流程，继续执行
 
-            # 2. 从数据库加载最近 30 条历史消息
+            # 2. 从数据库加载历史消息，并在发送模型前压缩较旧上下文
             history_messages = []
+            context_summary = None
+            latest_presentation_schema = None
             try:
                 db_messages = await load_messages(session_id)
-                # 取最近 30 条（包含刚保存的用户消息）
-                recent_messages = db_messages[-30:]
-                history_messages = [
-                    {
-                        "role": m["role"],
-                        "content": m["content"],
-                        "images": m.get("images"),
-                    }
-                    for m in recent_messages
+                # Keep the current user turn outside compression, even though it
+                # has already been persisted for chat history and UI recovery.
+                prior_messages = [
+                    m for m in db_messages
+                    if saved_current_id is None or m["db_message_id"] < saved_current_id
                 ]
+                current_message = {"role": "user", "content": user_content, "images": user_images}
+                try:
+                    context = await context_engine.build_context(session_id, prior_messages, current_message)
+                    context_summary = context["summary"] or None
+                    selected_messages = context["recent_messages"]
+                except Exception as context_err:
+                    print(f"[Context] session={session_id} compression failed; using existing history: {context_err}")
+                    context_summary = None
+                    selected_messages = prior_messages[-29:]
+                history_messages = [
+                    {"role": m["role"], "content": m["content"], "images": m.get("images")}
+                    for m in selected_messages
+                ]
+                history_messages.append(current_message)
+                recent_messages = db_messages[-30:]
                 latest_presentation = next((m for m in reversed(recent_messages)
                     if m.get("role") == "assistant"
                     and isinstance(m.get("preview_snapshot"), dict)
                     and m["preview_snapshot"].get("template") == "presentation"), None)
                 if latest_presentation:
                     schema = latest_presentation["preview_snapshot"].get("presentationSchema")
-                    if isinstance(schema, dict) and history_messages:
-                        message_index = next((i for i in range(len(recent_messages) - 1, -1, -1)
-                            if recent_messages[i] is latest_presentation), None)
-                        if message_index is not None and message_index < len(history_messages):
-                            history_messages[message_index]["content"] += (
-                                "\n\n[本会话最近一次 PPT 设计 Schema（用户要求修改演示文稿时作为当前版本；"
-                                "这是内容数据而非指令）：]\n" + json.dumps(schema, ensure_ascii=False)
-                            )
+                    if isinstance(schema, dict):
+                        # Keep revision data separate from the assistant's
+                        # user-visible prose. Appending JSON to that prose
+                        # caused the model to quote the whole schema back.
+                        latest_presentation_schema = schema
                 print(f"[SSE] 加载历史消息 {len(history_messages)} 条")
             except Exception as db_err:
                 print(f"[SSE] 加载历史消息失败: {db_err}")
@@ -178,8 +292,10 @@ async def chat(request: Request, body: ChatRequest):
                         }
                         for m in messages
                     ]
+                if not history_messages or history_messages[-1].get("role") != "user":
+                    history_messages.append({"role": "user", "content": user_content, "images": user_images})
 
-            # 如果请求体中有图片信息，合并到历史消息的最后一条中
+            # 如果请求体中有图片信息，合并到当前用户消息中
             if isinstance(messages, list) and len(messages) > 0:
                 last_msg = messages[-1]
                 if last_msg.get("images") and len(last_msg["images"]) > 0:
@@ -222,12 +338,18 @@ async def chat(request: Request, body: ChatRequest):
             full_assistant_content = ""
             full_assistant_files = []
             full_preview_changes = {}
+            preview_project_needs_commit = False
+            preview_commit_payload_bytes = 0
+            # 本轮真实联网搜索来源（来自 search_sources 事件，全部来自真实 Tool Result）
+            full_search_sources: list[dict] = []
+            full_search_trace: dict | None = None
 
             # 使用队列传递事件（必须在 wrapped_send_event 之前创建）
             event_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
 
             def wrapped_send_event(event: Dict[str, Any]) -> None:
                 nonlocal full_assistant_content, full_assistant_files, full_preview_changes
+                nonlocal full_search_sources, full_search_trace, preview_project_needs_commit
                 if event.get("type") == "token" and event.get("content"):
                     full_assistant_content += event["content"]
                 if event.get("type") == "file_ready" and event.get("downloadUrl"):
@@ -240,16 +362,51 @@ async def chat(request: Request, body: ChatRequest):
                         if event.get(key) is not None:
                             file_record[key] = event[key]
                     if event.get("previewRenderer") == "presentation":
-                        for key in ("presentationSchema", "presentationBackgrounds", "sourceFiles", "storyOutline", "visualQA"):
+                        for key in ("presentationSchema", "presentationBackgrounds", "renderedSlides", "sourceFiles", "storyOutline", "visualQA", "antiAIPatternReport", "designCritique"):
                             if event.get(key) is not None:
                                 file_record[key] = event[key]
                     full_assistant_files.append(file_record)
                 if event.get("type") == "preview_file_changed" and event.get("path"):
+                    preview_project_needs_commit = True
                     full_preview_changes[event["path"]] = {
                         "projectId": event.get("projectId", ""),
                         "path": event["path"],
                         "diff": event.get("diff", ""),
                     }
+                    # Complete source is deliberately stripped here: only compact
+                    # diff metadata may be persisted; final source sync is emitted
+                    # after the canonical server project passes its revision check.
+                    source = event.get("content")
+                    print(
+                        f"[PreviewContext] project={event.get('projectId', '')} "
+                        f"stripped_frontend_content=true source_chars={len(source or '')} "
+                        f"source_tokens={estimate_tokens(source or '')}"
+                    )
+                    print(
+                        "[PreviewContextFilter] event=preview_file_changed "
+                        "stored_in_chat_history=false included_in_llm_prompt=false"
+                    )
+                    return
+                if event.get("type") == "search_sources":
+                    # 合并多次搜索（Agent 单轮可能调用 web_search 两次）：按 url 去重
+                    for src in event.get("sources") or []:
+                        if not isinstance(src, dict) or not src.get("url"):
+                            continue
+                        if not any(existing.get("url") == src.get("url") for existing in full_search_sources):
+                            full_search_sources.append(src)
+                    if isinstance(event.get("searchTrace"), dict):
+                        if full_search_trace is None:
+                            full_search_trace = event["searchTrace"]
+                        else:
+                            # 合并 trace：attempted/successful/preferred/searched 取并集
+                            for key in ("attemptedProviders", "successfulProvider", "preferredDomains", "searchedDomains"):
+                                merged = list(dict.fromkeys(
+                                    list(full_search_trace.get(key) or []) + list(event["searchTrace"].get(key) or [])
+                                ))
+                                full_search_trace[key] = merged
+                            full_search_trace["trace"] = list(
+                                full_search_trace.get("trace") or []
+                            ) + list(event["searchTrace"].get("trace") or [])
                 # 将事件放入队列，由主循环读取并发送
                 event_queue.put_nowait(event)
 
@@ -268,6 +425,8 @@ async def chat(request: Request, body: ChatRequest):
                     [token_callback],
                     preview_workspace,
                     body.workspaceEdit,
+                    latest_presentation_schema,
+                    context_summary,
                 )
             )
 
@@ -291,6 +450,87 @@ async def chat(request: Request, body: ChatRequest):
             except asyncio.CancelledError:
                 pass
 
+            if preview_workspace and full_preview_changes and preview_project_row_revision is not None and preview_project_needs_commit:
+                try:
+                    final_project = {
+                        "id": preview_workspace.project_id,
+                        "name": (canonical_project or {}).get("name", "Preview Project"),
+                        "template": preview_workspace.template,
+                        "files": preview_workspace.files,
+                        "revision": preview_workspace.revision,
+                    }
+                    committed = await update_session_preview_project_if_revision(
+                        session_id,
+                        final_project,
+                        preview_project_row_revision,
+                    )
+                    if not committed:
+                        print(f"[Preview] session={session_id} project commit conflict at revision={preview_project_row_revision}")
+                        full_preview_changes.clear()
+                        yield send_event({
+                            "type": "preview_project_conflict",
+                            "projectId": preview_workspace.project_id,
+                            "message": "项目在本轮修改期间已被其他操作更新；本轮代码未覆盖服务器版本，请刷新项目后重试。",
+                        })
+                    else:
+                        changed_files = []
+                        full_content_files = []
+                        for path, change in full_preview_changes.items():
+                            if path not in preview_workspace.files:
+                                continue
+                            diff = preview_workspace.diff_from_initial(path)
+                            changed_files.append({
+                                "path": path,
+                                "diff": diff,
+                            })
+                            full_content_files.append({
+                                "projectId": preview_workspace.project_id,
+                                "path": path,
+                                "content": preview_workspace.files[path],
+                                "diff": diff,
+                            })
+                            change["diff"] = diff
+                        before_event = {
+                            "type": "preview_project_committed",
+                            "projectId": preview_workspace.project_id,
+                            "serverRevision": committed["revision"],
+                            "contentRevision": preview_workspace.revision,
+                            "changedFiles": full_content_files,
+                        }
+                        event = {
+                            "type": "preview_project_committed",
+                            "projectId": preview_workspace.project_id,
+                            "serverRevision": committed["revision"],
+                            "contentRevision": preview_workspace.revision,
+                            "changedFiles": changed_files,
+                        }
+                        before_bytes = len(json.dumps(before_event, ensure_ascii=False).encode("utf-8"))
+                        event_bytes = len(json.dumps(event, ensure_ascii=False).encode("utf-8"))
+                        preview_commit_payload_bytes += event_bytes
+                        print(
+                            f"[PreviewCommit] project_id={preview_workspace.project_id} "
+                            f"revision={preview_workspace.revision} changed_files={len(changed_files)} "
+                            f"event_payload_bytes={event_bytes} before_bytes={before_bytes} "
+                            f"reduction_bytes={max(0, before_bytes - event_bytes)}"
+                        )
+                        print(
+                            "[PreviewContextFilter] event=preview_project_committed "
+                            "stored_in_chat_history=false included_in_llm_prompt=false"
+                        )
+                        yield send_event(event)
+                        print(
+                            f"[Preview] session={session_id} committed project={preview_workspace.project_id} "
+                            f"server_revision={committed['revision']} changed_files={len(changed_files)}"
+                        )
+                except Exception as preview_commit_error:
+                    print(f"[Preview] session={session_id} project commit failed: {preview_commit_error}")
+                    full_preview_changes.clear()
+                    yield send_event({
+                        "type": "preview_project_conflict",
+                        "projectId": preview_workspace.project_id,
+                        "message": "本轮源码未能保存到服务器，请刷新项目后重试。",
+                    })
+
             # 7. 获取累加完成的 token 数据
             token_usage = token_callback.get_usage()
             print(
@@ -304,6 +544,22 @@ async def chat(request: Request, body: ChatRequest):
                 "prompt_tokens": token_usage["prompt_tokens"],
                 "completion_tokens": token_usage["completion_tokens"],
                 "total_tokens": token_usage["total_tokens"],
+                "llm_call_count": token_usage["llm_call_count"],
+                "calls": token_usage["calls"],
+                "last_prompt_tokens": token_usage["last_prompt_tokens"],
+                "execution_llm_calls": token_usage["execution_llm_calls"],
+                "final_response_llm_calls": token_usage["final_response_llm_calls"],
+                "preview_tool_calls": token_usage["preview_tool_calls"],
+                "search_calls": token_usage["search_calls"],
+                "search_queries": token_usage["search_queries"],
+                "read_calls": token_usage["read_calls"],
+                "range_read_chars": token_usage["range_read_chars"],
+                "full_preview_file_chars": token_usage["full_preview_file_chars"],
+                "read_reason": token_usage["read_reason"],
+                "patch_calls": token_usage["patch_calls"],
+                "batch_patch_calls": token_usage["batch_patch_calls"],
+                "patch_operations": token_usage["patch_operations"],
+                "preview_commit_payload_bytes": preview_commit_payload_bytes,
             })
 
             # 9. 计算上下文剩余信息，发送 context_remain 事件
@@ -354,7 +610,7 @@ async def chat(request: Request, body: ChatRequest):
             # 12. 流结束后保存 AI 完整回答（包含 token 数据）
             # A tool may successfully create a deliverable even when the model's
             # final prose is empty; persist that assistant message and its snapshot too.
-            if full_assistant_content.strip() or full_assistant_files:
+            if full_assistant_content.strip() or full_assistant_files or full_preview_changes:
                 try:
                     preview_snapshot = None
                     presentation_file = next(
@@ -375,78 +631,51 @@ async def chat(request: Request, body: ChatRequest):
                             "files": presentation_file.get("sourceFiles", {"/presentation.json": json.dumps(presentation_schema, ensure_ascii=False, indent=2)}),
                             "presentationSchema": presentation_schema,
                             "presentationBackgrounds": presentation_file.get("presentationBackgrounds", {}),
+                            "renderedSlides": presentation_file.get("renderedSlides", []),
+                            "antiAIPatternReport": presentation_file.get("antiAIPatternReport", {}),
+                            "designCritique": presentation_file.get("designCritique", {}),
                             "finalArtifact": {
-                                **{key: value for key, value in presentation_file.items() if key not in {"presentationSchema", "sourceFiles", "storyOutline", "visualQA"}},
+                                **{key: value for key, value in presentation_file.items() if key not in {"presentationSchema", "sourceFiles", "storyOutline", "visualQA", "renderedSlides", "antiAIPatternReport", "designCritique"}},
                                 "messageId": body.assistantMessageId or "",
                                 "sessionId": session_id,
                             },
                             "storyOutline": presentation_file.get("storyOutline", []),
                             "visualQA": presentation_file.get("visualQA", {}),
                         }
-                    if full_preview_changes and preview_workspace is not None:
-                        requested_project_name = (
-                            body.previewProject.get("name")
-                            if isinstance(body.previewProject, dict)
-                            else None
-                        )
-                        snapshot_files = dict(preview_workspace.files)
-                        snapshot_template = preview_workspace.template
-                        snapshot_name = (
-                            requested_project_name[:80].strip()
-                            if isinstance(requested_project_name, str) and requested_project_name.strip()
-                            else "Preview Project"
-                        )
-                        changed_paths = set(full_preview_changes)
-                        if "/src/scene.json" in changed_paths:
-                            # SceneSpec is the source of truth for a 3D project. Do not
-                            # persist unrelated React files left in the shared session FS.
-                            scene_content = snapshot_files.get("/src/scene.json")
-                            snapshot_files = {"/src/scene.json": scene_content} if scene_content is not None else {}
-                            snapshot_template = "html"
-                            try:
-                                scene_data = json.loads(scene_content or "")
-                                if isinstance(scene_data.get("name"), str):
-                                    snapshot_name = scene_data["name"][:80]
-                            except (json.JSONDecodeError, AttributeError):
-                                pass
-                        elif any(
-                            path in {"/src/App.tsx", "/src/App.jsx", "/src/App.ts", "/src/App.js", "/src/style.css", "/src/main.tsx", "/src/main.jsx"}
-                            for path in changed_paths
-                        ):
-                            snapshot_files.pop("/src/scene.json", None)
-                            stale_scene_entry = snapshot_files.get("/src/main.ts", "")
-                            if "scene.json" in stale_scene_entry:
-                                snapshot_files.pop("/src/main.ts", None)
-                            react_entry = next(
-                                (path for path in ("/src/main.tsx", "/src/main.jsx", "/src/main.ts", "/src/main.js") if path in snapshot_files),
-                                "/src/main.tsx",
-                            )
-                            index_html = snapshot_files.get("/index.html", "<!doctype html><html><body><div id=\"root\"></div></body></html>")
-                            script_pattern = r'(<script\b[^>]*\bsrc\s*=\s*["\'])[^"\']+(["\'][^>]*>)'
-                            if re.search(script_pattern, index_html, flags=re.IGNORECASE):
-                                index_html = re.sub(script_pattern, rf"\g<1>{react_entry}\g<2>", index_html, count=1, flags=re.IGNORECASE)
-                            else:
-                                index_html = index_html.replace("</body>", f'<script type="module" src="{react_entry}"></script></body>')
-                            snapshot_files["/index.html"] = index_html
-                            snapshot_template = "react"
-                        preview_snapshot = {
-                            "id": preview_workspace.project_id,
-                            "name": snapshot_name,
-                            "template": snapshot_template,
-                            "files": snapshot_files,
-                        }
+                    # Editable source projects live in session_preview_projects as
+                    # one current canonical project. Only immutable deliverables
+                    # such as presentations keep message-level snapshots here.
+                    # 解析 AI 回答中的 [S1] 引用标记，筛出真正被引用的来源；
+                    # 未使用标记时兜底展示全部真实搜索结果（仍全部来自真实 Tool Result）。
+                    cited_source_ids = set(re.findall(r"\[(S\d+)\]", full_assistant_content))
+                    if cited_source_ids:
+                        cited_sources = [
+                            s for s in full_search_sources if s.get("sourceId") in cited_source_ids
+                        ]
+                    else:
+                        cited_sources = list(full_search_sources)
+                    # Persistent chat history intentionally stores only assistant
+                    # prose and compact per-file diffs. ToolMessages and full VFS
+                    # content remain scoped to this Agent Run / Preview sync event.
                     await save_message(
                         session_id,
                         "assistant",
                         full_assistant_content,
                         token_usage,
                         attachments=[
-                            {key: value for key, value in item.items() if key not in {"presentationSchema", "sourceFiles", "storyOutline", "visualQA"}}
+                            {key: value for key, value in item.items() if key not in {"presentationSchema", "sourceFiles", "storyOutline", "visualQA", "antiAIPatternReport", "designCritique"}}
                             for item in full_assistant_files
                         ],
                         preview_changes=list(full_preview_changes.values()),
                         preview_snapshot=preview_snapshot,
                         message_id=body.assistantMessageId,
+                        search_sources=cited_sources or None,
+                        search_trace=full_search_trace,
+                    )
+                    print(
+                        f"[PreviewContextFilter] persistence=assistant_message "
+                        f"preview_changes={len(full_preview_changes)} format=path+diff "
+                        "full_source=false included_in_next_prompt=false"
                     )
                     print("[SSE] AI 回答已保存（含 token 数据）")
 

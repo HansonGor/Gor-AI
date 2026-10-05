@@ -1,9 +1,10 @@
 // 侧边栏 - 会话列表（移动端，Tailwind）
-import { useState } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
-import { formatRelativeTime } from '../../utils/date';
+import { useMemo, useState } from 'react';
+import { Archive, FileImage, FolderOpen, MessageSquareMore, Plus, Search, Settings, Star, Trash2 } from 'lucide-react';
 import type { SidebarProps } from '../../types';
 import { Button } from '../ui/button';
+import AppAvatar from '../AppAvatar';
+import GorBrandLogo from '../GorBrandLogo';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,6 +17,26 @@ import {
 } from '../ui/alert-dialog';
 import './Sidebar.less';
 
+function sessionGroup(updatedAt?: string): '今天' | '昨天' | '更早' {
+  if (!updatedAt) return '更早';
+  const date = new Date(updatedAt);
+  if (Number.isNaN(date.getTime())) return '更早';
+  const today = new Date();
+  if (date.toDateString() === today.toDateString()) return '今天';
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  return date.toDateString() === yesterday.toDateString() ? '昨天' : '更早';
+}
+
+function sessionClock(updatedAt?: string): string {
+  if (!updatedAt) return '';
+  const date = new Date(updatedAt);
+  if (Number.isNaN(date.getTime())) return '';
+  if (sessionGroup(updatedAt) === '今天') {
+    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  }
+  return `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
 export default function Sidebar({
   sessions,
   activeSessionId,
@@ -25,80 +46,100 @@ export default function Sidebar({
   theme = 'dark',
 }: SidebarProps) {
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
-  return (
-    <aside className="sidebar flex h-full w-[5.6rem] shrink-0 flex-col overflow-hidden border-r border-white/10 bg-[#0b0b14]">
-      {/* 新建会话按钮 */}
-      <div className="sidebar-header border-b border-white/10 p-[0.24rem]">
-        <Button
-          type="button"
-          className="new-chat-btn flex w-full cursor-pointer items-center justify-center gap-[0.12rem] rounded-[0.24rem] border-none bg-gradient-to-br from-[#667eea] to-[#8b5cf6] px-[0.24rem] py-[0.16rem] text-[0.26rem] font-medium text-white transition-all hover:opacity-90 hover:translate-y-[-0.02rem] active:translate-y-0"
-          onClick={onCreateSession}
-        >
-          <Plus className="new-chat-icon" aria-hidden="true" />
-          <span>新建对话</span>
-        </Button>
-      </div>
+  const [query, setQuery] = useState('');
+  const groupedSessions = useMemo(() => {
+    const filtered = sessions.filter((session) => (session.title || '').toLowerCase().includes(query.trim().toLowerCase()));
+    return (['今天', '昨天', '更早'] as const)
+      .map((label) => ({ label, items: filtered.filter((session) => sessionGroup(session.updated_at) === label) }))
+      .filter((group) => group.items.length > 0);
+  }, [sessions, query]);
 
-      {/* 会话列表 */}
-      <div className="sidebar-sessions flex-1 overflow-y-auto p-[0.16rem]">
-        {sessions.length === 0 ? (
-          <div className="empty-sessions p-[0.4rem] text-center text-[0.22rem] text-white/30">
-            暂无对话
-          </div>
-        ) : (
-          sessions.map((session) => {
+  return (
+    <aside className="gor-sidebar">
+      <nav className="gor-icon-rail" aria-label="主导航">
+        <div className="gor-brand">
+          <GorBrandLogo />
+        </div>
+        <div className="gor-rail-navigation">
+          <a className="gor-rail-item is-current" href="#/chat" aria-label="聊天" aria-current="page"><MessageSquareMore /></a>
+          <span className="gor-rail-item" role="img" aria-label="项目"><FolderOpen /></span>
+          <span className="gor-rail-item" role="img" aria-label="文件"><FileImage /></span>
+          <span className="gor-rail-item" role="img" aria-label="收藏"><Star /></span>
+          <span className="gor-rail-item" role="img" aria-label="归档"><Archive /></span>
+        </div>
+      </nav>
+
+      <section className="conversation-panel" aria-label="会话列表">
+        <div className="conversation-panel-top">
+          <Button type="button" className="new-chat-btn" onClick={onCreateSession}>
+            <Plus aria-hidden="true" /><span>新章</span>
+          </Button>
+          <label className="session-search">
+            <Search aria-hidden="true" />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索对话..." aria-label="搜索对话" />
+            <kbd>⌘K</kbd>
+          </label>
+        </div>
+
+        <div className="sidebar-sessions">
+          {groupedSessions.length === 0 ? (
+            <div className="empty-sessions">{query ? '没有匹配的对话' : '暂无对话'}</div>
+          ) : groupedSessions.map((group) => (
+            <section className="session-group" key={group.label}>
+              <h2>{group.label}</h2>
+              {group.items.map((session) => {
             const parsedMessageCount = Number(session.message_count);
             const messageCount = Number.isFinite(parsedMessageCount) ? parsedMessageCount : 0;
+            const sessionTitle = !session.title || session.title === '新对话' ? '新章' : session.title;
 
             return (
               <div
-              key={session.id}
-              className={`session-item group mb-[0.08rem] flex cursor-pointer items-center gap-[0.12rem] rounded-[0.16rem] px-[0.16rem] py-[0.16rem] transition-colors hover:bg-white/5 ${
-                activeSessionId === session.id
-                  ? 'active border-l-[0.04rem] border-[#667eea] bg-[#667eea]/15'
-                  : ''
-              }`}
-              onClick={() => onSelectSession(session.id)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') onSelectSession(session.id);
-              }}
-              role="button"
-              tabIndex={0}
-              aria-current={activeSessionId === session.id ? 'page' : undefined}
-              title={session.title}
-            >
-              <div className="session-info min-w-0 flex-1">
-                <div className="session-title truncate text-[0.28rem] leading-[1.3] text-white/60">
-                  {session.title || '新对话'}
-                </div>
-                <div className="session-meta mt-[0.05rem] flex items-center gap-[0.12rem]">
-                  <span className="session-time text-[0.2rem] text-white/30">
-                    {formatRelativeTime(session.updated_at || '')}
-                  </span>
-                  <span className="session-count rounded-[0.08rem] bg-white/5 px-[0.08rem] text-[0.2rem] text-white/30">
-                    {messageCount}条
-                  </span>
-                </div>
-              </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="session-delete-btn flex h-[0.4rem] w-[0.4rem] shrink-0 cursor-pointer items-center justify-center rounded-[0.08rem] text-[0.32rem] leading-none text-white/40 opacity-0 transition-all hover:bg-red-500/20 hover:text-red-400 group-hover:opacity-100"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setPendingDelete(session.id);
+                key={session.id}
+                className={`session-item group ${activeSessionId === session.id ? 'active' : ''}`}
+                onClick={() => onSelectSession(session.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') onSelectSession(session.id);
                 }}
-                title="删除对话"
-                aria-label={`删除对话 ${session.title || '新对话'}`}
+                role="button"
+                tabIndex={0}
+                aria-current={activeSessionId === session.id ? 'page' : undefined}
+                title={sessionTitle}
               >
-                <Trash2 aria-hidden="true" />
-              </Button>
+                <FileImage className="session-item-icon" aria-hidden="true" />
+                <div className="session-info">
+                  <div className="session-title">{sessionTitle}</div>
+                  <div className="session-meta">
+                    <span className="session-time">{sessionClock(session.updated_at)}</span>
+                    <span className="session-count">{messageCount}条</span>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="session-delete-btn"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setPendingDelete(session.id);
+                  }}
+                  title="删除对话"
+                  aria-label={`删除对话 ${sessionTitle}`}
+                >
+                  <Trash2 aria-hidden="true" />
+                </Button>
               </div>
             );
-          })
-        )}
-      </div>
+              })}
+            </section>
+          ))}
+        </div>
+
+        <footer className="conversation-account">
+          <AppAvatar className="conversation-account-avatar" editable />
+          <span className="conversation-account-copy"><strong>樺</strong><small>Plus</small></span>
+          <button type="button" className="conversation-settings" aria-label="设置" title="设置"><Settings /></button>
+        </footer>
+      </section>
       <AlertDialog
         open={pendingDelete !== null}
         onOpenChange={(open) => {
@@ -106,10 +147,11 @@ export default function Sidebar({
         }}
       >
         <AlertDialogContent
-          className={`session-delete-dialog w-[min(480px,calc(100%-32px))] max-w-none gap-0 rounded-[20px] p-5 shadow-[0_28px_90px_rgba(0,0,0,0.5)] sm:p-6 ${
+          overlayClassName="chat-theme-dialog-overlay"
+          className={`chat-theme-dialog session-delete-dialog w-[min(480px,calc(100%-32px))] max-w-none gap-0 rounded-[20px] p-5 shadow-[0_28px_90px_rgba(0,0,0,0.5)] sm:p-6 ${
             theme === 'dark'
-              ? 'border-white/10 bg-[#191923] text-[#f4f3f8]'
-              : 'border-slate-200 bg-white text-slate-900 shadow-[0_24px_70px_rgba(15,23,42,0.2)]'
+              ? 'border-white/10 text-[#f4f3f8]'
+              : 'border-slate-200 text-slate-900 shadow-[0_24px_70px_rgba(15,23,42,0.2)]'
           }`}
         >
           <AlertDialogHeader>

@@ -38,12 +38,14 @@ server_python/
 │   ├── __init__.py
 │   ├── index.py            # 工具汇总导出
 │   ├── weather.py          # 天气查询工具
-│   ├── web_search.py       # 联网搜索工具
+│   ├── web_search.py       # web_search 统一联网搜索入口及 Provider API
+│   ├── search_orchestrator.py # 按意图选择 Provider、域名优先、融合去重
+│   ├── image_search.py     # search_images 多源图片搜索及来源/许可元数据
 │   ├── document.py         # 文档生成工具（Word/Excel/PPT/PDF）
 │   ├── presentation.py     # Design Schema 校验、图片解析、PPTX 与预览快照生成
 │   ├── presentation_design.py # 页面结构、主题与内容布局规则
 │   ├── presentation_renderer.py # 可编辑 PPTX 页面渲染
-│   ├── pexels.py           # Pexels 搜图、下载与署名信息
+│   ├── pexels.py           # PPT 复用图片搜索、选图/下载与署名信息
 │   ├── video.py            # 小云雀视频生成工具
 │   └── vector_search.py    # RAG 向量检索工具
 ├── routes/
@@ -88,8 +90,17 @@ ARK_VISION_MODEL_ID=ep-20260829115423-lphgj
 # Tavily 搜索
 TAVILY_API_KEY=your-tavily-api-key
 
+# 可选网页搜索源：缺少密钥的 Provider 自动跳过
+DOUBAO_SEARCH_API_KEY=your-doubao-search-api-key
+SERPER_API_KEY=your-serper-api-key
+BRAVE_API_KEY=your-brave-api-key
+EXA_API_KEY=your-exa-api-key
+GITHUB_TOKEN=your-github-token
+
 # 可选：尽量为 PPT 每一页搜索并嵌入与内容相关的实景背景图
 PEXELS_API_KEY=your-pexels-api-key
+PIXABAY_API_KEY=your-pixabay-api-key
+UNSPLASH_ACCESS_KEY=your-unsplash-access-key
 
 # 小云雀视频生成
 XIAOYUNQUE_AK=your-xiaoyunque-ak
@@ -116,9 +127,9 @@ python main.py
 
 服务将在 `http://localhost:3001` 启动。
 
-设计型 PPT 会尽量为每页从 Pexels 获取与内容相关的背景照片，并在幻灯片中署名链接摄影师、照片页和 Pexels。若未配置 `PEXELS_API_KEY`、图片服务不可用或某页没有匹配照片，对应页面使用主题默认背景，PPT 仍会生成。照片会按比例裁切铺满页面，并叠加主题色遮罩来保证文字可读；模型应为每页提供具体、与页面主题匹配的英文 `imageQuery`。
+设计型 PPT 复用 `search_images` 的 Pexels、Pixabay、Unsplash、Openverse 和 Wikimedia Commons 多源搜索结果，不另设搜图 API；仅由 PPT 流程完成内容匹配、图片下载、画质筛选、按页嵌入和来源/作者/许可署名。没有配置某个来源的密钥时会跳过该来源，匿名来源仍可用；服务不可用或没有合适图片时，对应页面使用主题默认背景，PPT 仍会生成。模型应提供具体的英文 `imageQuery`；选图需兼顾主体、自然留白、裁切和文字对比度。照片按比例裁切，不默认覆盖整页主题色遮罩。
 
-生成的 PPT 页面图片也会随该条助手消息的 Preview 快照提供给 Preview Worker。预览按主题色叠加半透明遮罩并使用 `cover` 裁切背景，在可用画布内等比缩放幻灯片，不拉伸比例。修改背景透明度时必须写入 PPTX DrawingML alpha 通道；仅设置 `python-pptx` 的 `FillFormat.transparency` 不会可靠地序列化到文件，可能导致主题色完全盖住照片。无 API Key、请求失败或无匹配照片时，PPT 和预览都应回退到主题渐变底色，不能因此中断生成。
+生成的 PPT 页面图片也会随该条助手消息的 Preview 快照提供给 Preview Worker。预览使用 `cover` 裁切背景，在可用画布内等比缩放幻灯片，不拉伸比例。文字优先放在图片的自然留白区域，必要时只做局部可读性处理；无 API Key、请求失败或无匹配照片时，PPT 和预览都回退到主题底色，不能因此中断生成。
 
 ### 4. 健康检查
 
@@ -186,10 +197,11 @@ GET /api/download/:filename
 
 ### 2. Agent 工具调用
 - `get_weather`: 天气查询（wttr.in）
-- `web_search`: 联网搜索（Tavily）
+- `web_search`: 统一入口按意图分类并发搜索。普通咨询/用户体验、官方事实、技术文档、新闻、视觉灵感使用 Tavily、Brave、Serper、豆包；代码示例额外优先 GitHub Code Search；深度调研在通用 Provider 外优先 Exa。常用优先域包括官方/政府与文旅站、旅游/点评/知乎/小红书、技术官方文档、新闻媒体、论文索引，以及 PPT/设计参考站（小红书仅搜公开索引页，没有专用 API）。结果规范化、去重、融合并标注来源；意图优先站点结果偏少时可对稀疏 Provider 扩大范围。显式 `site:` 是硬限制，结果 URL 会统一过滤且不站外回退。Tavily 当前由编排器传入 `include_domains`，豆包使用 `Filter.Sites`，Serper/Brave 使用 `site:`，Exa 使用 `includeDomains`；GitHub Code Search 无原生域名参数，结果受统一过滤。适配器虽含部分排除站点参数，当前没有面向 `web_search` 的排除域名选项。
+- `search_images`: 并行搜索可用的 Pexels、Pixabay、Unsplash、Openverse、Wikimedia Commons 图片候选，也可指定单一来源；支持横图/竖图/方图筛选，每个来源最多 6 个候选，返回图片地址、来源页、作者及可用许可元数据。Pexels/Pixabay/Unsplash 需各自配置 API Key，Openverse/Wikimedia Commons 可匿名查询。PPT 复用这一个 Provider 搜索实现，选中后再下载、嵌入并署名。Pixabay 候选图链仅短期使用，Unsplash 触发 API 下载记录，Openverse/Wikimedia 遵守单张素材的许可要求。
 - `create_word`: 生成 Word 文档
 - `create_excel`: 生成 Excel 表格
-- `create_ppt`: 生成 PPT 演示文稿
+- `create_ppt`: 生成 PPT 演示文稿（Presentation Design Engine）
 - `create_pdf`: 生成 PDF 文档
 - `generate_xiaoyunque_video`: 小云雀 AI 视频生成
 - `vector_search`: RAG 知识库向量检索

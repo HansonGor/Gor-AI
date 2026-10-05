@@ -41,7 +41,7 @@ export function FeedbackProvider({ children }: { children: React.ReactNode }) {
       {notice && (
         <div
           role="status"
-          className="fixed left-1/2 top-5 z-[120] flex max-w-[calc(100%-32px)] -translate-x-1/2 items-center gap-2 rounded-lg border border-white/10 bg-[#20202b]/95 px-4 py-3 text-sm text-white shadow-xl backdrop-blur-xl"
+          className="chat-theme-toast fixed left-1/2 top-5 z-[120] flex max-w-[calc(100%-32px)] -translate-x-1/2 items-center gap-2 rounded-lg border border-white/10 px-4 py-3 text-sm text-white shadow-xl backdrop-blur-xl"
         >
           {notice.tone === 'success' ? (
             <CheckCircle2 className="h-4 w-4 text-emerald-400" />
@@ -66,10 +66,12 @@ export function FeedbackProvider({ children }: { children: React.ReactNode }) {
           if (!open) setAlertContent(null);
         }}
       >
-        <AlertDialogContent>
+        <AlertDialogContent overlayClassName="chat-theme-dialog-overlay" className="chat-theme-dialog">
           <AlertDialogHeader>
             <AlertDialogTitle>{alertContent?.title}</AlertDialogTitle>
-            <AlertDialogDescription>{alertContent?.description}</AlertDialogDescription>
+            <AlertDialogDescription className="text-[#dce5ff]/70">
+              {alertContent?.description}
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogAction onClick={() => setAlertContent(null)}>我知道了</AlertDialogAction>

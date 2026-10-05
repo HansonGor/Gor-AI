@@ -2,11 +2,12 @@
 大模型初始化模块
 职责：初始化 LangChain ChatOpenAI 实例，绑定工具
 """
-from langchain_openai import ChatOpenAI
-from langchain_core.tools import tool
+from functools import lru_cache
 
+from langchain_openai import ChatOpenAI
 from config import config
-from tools.index import TOOLS, WORKSPACE_TOOLS
+from tools.index import WORKSPACE_TOOLS
+from tools.preview_project import batch_patch_preview_files
 
 
 def get_llm():
@@ -32,6 +33,22 @@ def get_streaming_llm():
     )
 
 
-# 绑定工具的大模型实例
-model_with_tools = get_llm().bind_tools(TOOLS)
-model_with_workspace_tools = get_llm().bind_tools(WORKSPACE_TOOLS)
+# No-tool default plus cached, per-turn tool bindings.
+model_without_tools = get_llm()
+# Literal Preview edits already have exact source snippets and a current revision
+# from the programmatic preflight. Keep this model's tool surface intentionally
+# narrow so it cannot start a redundant search/read or invoke unrelated tools.
+model_with_simple_preview_edit = get_llm().bind_tools([batch_patch_preview_files])
+
+
+@lru_cache(maxsize=32)
+def get_model_for_tools(tool_names: tuple[str, ...]):
+    """Return a cached model bound only to the tools selected for this turn."""
+    if not tool_names:
+        return model_without_tools
+
+    available = {item.name: item for item in WORKSPACE_TOOLS}
+    selected = [available[name] for name in tool_names if name in available]
+    if not selected:
+        return model_without_tools
+    return get_llm().bind_tools(selected)

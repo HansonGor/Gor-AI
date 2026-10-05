@@ -1,11 +1,10 @@
 import { Unzip, UnzipInflate, UnzipPassThrough, zipSync } from 'fflate';
 import type { PreviewFiles, PreviewTemplate } from './types.ts';
-import { normalizePreviewPath } from './pathUtils.ts';
+import { isEditablePreviewTextPath, normalizePreviewPath } from './pathUtils.ts';
 
 const MAX_ARCHIVE_BYTES = 20 * 1024 * 1024;
 const MAX_EXTRACTED_BYTES = 40 * 1024 * 1024;
 const MAX_ARCHIVE_FILES = 200;
-const TEXT_EXTENSIONS = /\.(?:html?|[cm]?js|jsx|[cm]?ts|tsx|css|json|svg|txt|md|markdown|ya?ml)$/i;
 
 export interface ImportedDistArchive {
   kind: 'dist';
@@ -220,8 +219,14 @@ function classifyPreviewFiles(
   const entryPath = `/${stripProjectRoot(rawIndex, rawIndex)}`;
   const sourceFiles: PreviewFiles = Object.create(null);
   for (const [path, bytes] of Object.entries(files)) {
-    if (!TEXT_EXTENSIONS.test(path)) continue;
-    sourceFiles[path] = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+    if (!isEditablePreviewTextPath(path)) continue;
+    try {
+      const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      if (content.includes('\0')) continue;
+      sourceFiles[path] = content;
+    } catch {
+      // Unknown/binary file types remain in the archive, but never enter the text VFS.
+    }
   }
 
   const hasReactEntry = ['/src/main.tsx', '/src/main.ts', '/src/main.jsx', '/src/main.js']

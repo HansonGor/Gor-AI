@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { createTemplateFiles } from '../preview/templates/index.ts';
 import { deleteFile, listFiles, readFile, writeFile } from '../preview/core/virtualFs.ts';
-import { normalizePreviewPath } from '../preview/core/pathUtils.ts';
+import { isEditablePreviewTextPath, normalizePreviewPath } from '../preview/core/pathUtils.ts';
 import type { PreviewFiles, PreviewProject, PreviewTemplate } from '../preview/core/types.ts';
 import { createSceneProjectFiles, validateSceneSpec } from '../modeling/sceneSpec.ts';
 
@@ -13,6 +13,7 @@ function createProjectState(template: PreviewTemplate): PreviewProject {
     name: template === 'react' ? 'React Preview' : 'HTML Preview',
     template,
     files: createTemplateFiles(template),
+    revision: 0,
   };
 }
 
@@ -26,10 +27,33 @@ export interface PreviewProjectStoreState {
   writeFile: (path: string, content: string) => void;
   deleteFile: (path: string) => void;
   resetProject: () => void;
-  importProject: (template: PreviewTemplate, files: PreviewFiles, name?: string, projectId?: string) => void;
+  importProject: (
+    template: PreviewTemplate,
+    files: PreviewFiles,
+    name?: string,
+    projectId?: string,
+    revision?: number,
+    serverRevision?: number,
+    origin?: PreviewProject['origin'],
+    uploadName?: string | null,
+  ) => void;
   getFilePaths: () => string[];
-  applyAiFileChange: (change: { projectId: string; path: string; content: string }) => boolean;
-  applyAiSceneSpec: (change: { projectId: string; content: string }) => boolean;
+  applyAiFileChange: (change: { projectId: string; path: string; content: string; revision?: number }) => boolean;
+  applyAiSceneSpec: (change: { projectId: string; content: string; revision?: number }) => boolean;
+  applyAiProjectCommit: (change: {
+    projectId: string;
+    changedFiles: Array<{ path: string; content: string }>;
+    contentRevision: number;
+    serverRevision: number;
+  }) => boolean;
+  applyServerProjectRevision: (projectId: string, contentRevision: number, serverRevision: number) => void;
+  markServerSaved: (
+    projectId: string,
+    contentRevision: number,
+    serverRevision: number,
+    origin?: PreviewProject['origin'],
+    uploadName?: string | null,
+  ) => void;
   requestBuildAndRun: () => void;
 }
 
@@ -42,8 +66,16 @@ function emit(): void {
   listeners.forEach((listener) => listener());
 }
 
-function updateProject(project: PreviewProject, selectedFilePath: string | null): void {
-  state = { ...state, project, selectedFilePath, buildRunRevision: project.id === state.project.id ? state.buildRunRevision : 0 };
+function updateProject(project: PreviewProject, selectedFilePath: string | null, requestBuildAndRun = false): void {
+  const sameProject = project.id === state.project.id;
+  state = {
+    ...state,
+    project,
+    selectedFilePath,
+    buildRunRevision: sameProject
+      ? state.buildRunRevision + (requestBuildAndRun ? 1 : 0)
+      : 0,
+  };
   emit();
 }
 
@@ -62,7 +94,9 @@ const actions: Omit<PreviewProjectStoreState, 'project' | 'selectedFilePath' | '
   },
   writeFile(path, content) {
     const files = writeFile(state.project.files, path, content);
-    updateProject({ ...state.project, files }, normalizePreviewPath(path));
+    const normalizedPath = normalizePreviewPath(path);
+    const changed = state.project.files[normalizedPath] !== content;
+    updateProject({ ...state.project, files, revision: (state.project.revision ?? 0) + (changed ? 1 : 0) }, normalizedPath);
   },
   deleteFile(path) {
     const files = deleteFile(state.project.files, path);
@@ -70,13 +104,15 @@ const actions: Omit<PreviewProjectStoreState, 'project' | 'selectedFilePath' | '
     const selectedFilePath = state.selectedFilePath && readFile(files, state.selectedFilePath) !== undefined
       ? state.selectedFilePath
       : paths[0] ?? null;
-    updateProject({ ...state.project, files }, selectedFilePath);
+    const changed = readFile(state.project.files, path) !== undefined;
+    updateProject({ ...state.project, files, revision: (state.project.revision ?? 0) + (changed ? 1 : 0) }, selectedFilePath);
   },
   resetProject() {
     const files = createTemplateFiles(state.project.template);
-    updateProject({ ...state.project, files }, listFiles(files)[0] ?? null);
+    const changed = JSON.stringify(files) !== JSON.stringify(state.project.files);
+    updateProject({ ...state.project, files, revision: (state.project.revision ?? 0) + (changed ? 1 : 0) }, listFiles(files)[0] ?? null);
   },
-  importProject(template, files, name, projectId) {
+  importProject(template, files, name, projectId, revision, serverRevision, origin, uploadName) {
     const normalizedFiles: PreviewFiles = Object.create(null);
     for (const [path, content] of Object.entries(files)) {
       const normalizedPath = normalizePreviewPath(path);
@@ -92,6 +128,10 @@ const actions: Omit<PreviewProjectStoreState, 'project' | 'selectedFilePath' | '
       name: name?.trim().slice(0, 80) || (template === 'react' ? 'Imported React Project' : 'Imported HTML Project'),
       template,
       files: normalizedFiles,
+      revision: typeof revision === 'number' && Number.isSafeInteger(revision) && revision >= 0 ? revision : 0,
+      ...(typeof serverRevision === 'number' ? { serverRevision, persistedRevision: typeof revision === 'number' ? revision : 0 } : {}),
+      ...(origin ? { origin } : {}),
+      ...(uploadName !== undefined ? { uploadName } : {}),
     };
     updateProject(project, normalizedFiles['/src/scene.json'] !== undefined
       ? '/src/scene.json'
@@ -104,25 +144,82 @@ const actions: Omit<PreviewProjectStoreState, 'project' | 'selectedFilePath' | '
     if (change.projectId !== state.project.id || typeof change.content !== 'string' || new TextEncoder().encode(change.content).length > 100_000) return false;
     let path: string;
     try { path = normalizePreviewPath(change.path); } catch { return false; }
-    if (path !== change.path || !(/^\/src\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+\.(?:tsx?|jsx?|css|json|html)$/.test(path) || ['/index.html', '/main.js', '/style.css'].includes(path))) return false;
+    if (!isEditablePreviewTextPath(path)) return false;
+    const currentRevision = state.project.revision ?? 0;
+    if (change.revision !== undefined && change.revision !== currentRevision + 1) return false;
     if (!Object.prototype.hasOwnProperty.call(state.project.files, path) && Object.keys(state.project.files).length >= 40) return false;
     const files = writeFile(state.project.files, path, change.content);
     if (Object.values(files).reduce((total, value) => total + new TextEncoder().encode(value).length, 0) > 500_000) return false;
-    updateProject({ ...state.project, files }, path);
+    updateProject({ ...state.project, files, revision: change.revision ?? currentRevision + 1 }, path);
     return true;
   },
   applyAiSceneSpec(change) {
     if (change.projectId !== state.project.id || typeof change.content !== 'string' || new TextEncoder().encode(change.content).byteLength > 100_000) return false;
+    const currentRevision = state.project.revision ?? 0;
+    if (change.revision !== undefined && change.revision !== currentRevision + 1) return false;
     try {
       const scene = validateSceneSpec(JSON.parse(change.content));
       const files = { ...state.project.files, ...createSceneProjectFiles(scene) };
       if (Object.keys(files).length > 40 || Object.values(files).some((content) => new TextEncoder().encode(content).byteLength > 100_000)) return false;
       if (Object.values(files).reduce((total, content) => total + new TextEncoder().encode(content).byteLength, 0) > 500_000) return false;
-      updateProject({ ...state.project, name: scene.name, files }, '/src/scene.json');
+      updateProject({ ...state.project, name: scene.name, files, revision: change.revision ?? currentRevision + 1 }, '/src/scene.json');
       return true;
     } catch {
       return false;
     }
+  },
+  applyAiProjectCommit(change) {
+    if (change.projectId !== state.project.id || !Array.isArray(change.changedFiles)) return false;
+    const currentRevision = state.project.revision ?? 0;
+    if (!Number.isSafeInteger(change.contentRevision) || change.contentRevision < currentRevision) return false;
+    if (!Number.isSafeInteger(change.serverRevision) || change.serverRevision < (state.project.serverRevision ?? -1)) return false;
+    let files = state.project.files;
+    try {
+      for (const changed of change.changedFiles) {
+        if (typeof changed.path !== 'string' || typeof changed.content !== 'string') return false;
+        const path = normalizePreviewPath(changed.path);
+        if (!isEditablePreviewTextPath(path) || new TextEncoder().encode(changed.content).byteLength > 100_000) return false;
+        files = writeFile(files, path, changed.content);
+      }
+      if (Object.keys(files).length > 100 || Object.values(files).some((content) => new TextEncoder().encode(content).byteLength > 100_000)) return false;
+      if (Object.values(files).reduce((total, content) => total + new TextEncoder().encode(content).byteLength, 0) > 5_000_000) return false;
+    } catch {
+      return false;
+    }
+    const lastChangedPath = change.changedFiles.length > 0
+      ? change.changedFiles[change.changedFiles.length - 1].path
+      : state.selectedFilePath;
+    const sourceChanged = change.changedFiles.some((changed) => state.project.files[changed.path] !== changed.content);
+    updateProject({
+      ...state.project,
+      files,
+      revision: change.contentRevision,
+      persistedRevision: change.contentRevision,
+      serverRevision: change.serverRevision,
+    }, lastChangedPath, sourceChanged);
+    return true;
+  },
+  applyServerProjectRevision(projectId, contentRevision, serverRevision) {
+    if (projectId !== state.project.id) return;
+    if (serverRevision < (state.project.serverRevision ?? -1)) return;
+    if (contentRevision < (state.project.persistedRevision ?? -1)) return;
+    updateProject({
+      ...state.project,
+      serverRevision,
+      persistedRevision: contentRevision,
+    }, state.selectedFilePath);
+  },
+  markServerSaved(projectId, contentRevision, serverRevision, origin, uploadName) {
+    if (projectId !== state.project.id) return;
+    if (contentRevision < (state.project.persistedRevision ?? -1)) return;
+    if (serverRevision < (state.project.serverRevision ?? -1)) return;
+    updateProject({
+      ...state.project,
+      serverRevision,
+      persistedRevision: Math.max(state.project.persistedRevision ?? -1, contentRevision),
+      ...(origin ? { origin } : {}),
+      ...(uploadName !== undefined ? { uploadName } : {}),
+    }, state.selectedFilePath);
   },
   requestBuildAndRun() {
     state = { ...state, buildRunRevision: state.buildRunRevision + 1 };

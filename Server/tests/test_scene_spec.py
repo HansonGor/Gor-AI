@@ -1,10 +1,12 @@
 import unittest
+import asyncio
 import json
 
 from pydantic import ValidationError
 
 from tools.scene_spec import SceneSpec, apply_scene_command
-from tools.preview_project import PreviewProjectWorkspace, execute_preview_tool
+from services.preview.workspace import PreviewProjectWorkspace
+from tools.preview_project import execute_preview_tool
 
 
 def object_spec(object_id="body", **overrides):
@@ -64,11 +66,11 @@ class SceneSpecTests(unittest.TestCase):
 
     def test_scene_tool_stores_compact_spec_in_virtual_project_for_snapshotting(self):
         workspace = PreviewProjectWorkspace("preview-test", "react", {"/index.html": "<div />"})
-        result = execute_preview_tool(workspace, "set_3d_scene", {
+        result = asyncio.run(execute_preview_tool(workspace, "set_3d_scene", {
             "action": "create",
             "name": "Car",
             "objects": [object_spec()],
-        })
+        }))
         parsed = json.loads(result)
         self.assertTrue(parsed["success"])
         self.assertEqual(parsed["sceneSpec"]["name"], "Car")

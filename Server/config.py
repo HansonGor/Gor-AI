@@ -92,6 +92,11 @@ class Config:
         """Pexels photo search used for optional presentation imagery."""
         API_KEY = os.getenv("PEXELS_API_KEY", "")
 
+    class ImageSearch:
+        """Credentials for optional image-search providers."""
+        PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY", "")
+        UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY", "")
+
     # ================================================================
     # ================================================================
     # Jamendo 音乐 API 配置（随机流行歌曲播放）

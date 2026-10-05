@@ -1,14 +1,19 @@
 """
-联网搜索工具集
-==============
+联网搜索工具集（底层 Provider）
+================================
 按"国内中文 / 海外中文 / 通用 / 语义深度 / 代码专用"五类搜索源封装。
 每个源独立配置 API Key，缺哪个 key 哪个源就自动跳过并返回提示，不阻塞其他源。
 
-暴露给 LLM 的工具：
-- web_search(query)             通用联网搜索，默认 Tavily，必要时自动补充其他源
-- web_search_overseas(query)    面向海外视角的中文/英文资料，走 Serper(Google)
-- web_search_deep(query)        深度技术调研、技术博客、论文，走 Exa 语义搜索
-- search_github_code(query)    GitHub 开源代码/仓库/demo 检索
+对外暴露给 LLM 的只有一个统一入口：
+- web_search(query)  由 SearchOrchestrator 自动识别意图、选择优先来源并 fallback
+
+底层 Provider（保留，供 orchestrator 调用）：
+- _search_doubao    豆包搜索（feedcoopapi），支持 Filter.Sites / BlockHosts
+- _search_tavily    Tavily，支持 include_domains / exclude_domains
+- _search_serper    Serper(Google)，支持 query 内 site: 限定
+- _search_brave     Brave 独立索引
+- _search_exa       Exa 语义搜索（未来 includeDomains）
+- _search_github_code  GitHub Code Search
 """
 from __future__ import annotations
 
@@ -23,11 +28,22 @@ TIMEOUT = 15.0
 # ---------------------------------------------------------------------------
 # 各搜索源底层实现
 # ---------------------------------------------------------------------------
-def _search_doubao(query: str, max_results: int = 5) -> list[dict]:
-    """豆包搜索（火山引擎 feedcoopapi，国内中文首选）。"""
+def _search_doubao(query: str, max_results: int = 5,
+                   sites: list[str] | None = None,
+                   block_hosts: list[str] | None = None) -> list[dict]:
+    """豆包搜索（火山引擎 feedcoopapi，国内中文首选）。
+
+    sites:       限定只搜这些站点（Filter.Sites，多个用 | 分隔）
+    block_hosts: 屏蔽这些站点（Filter.BlockHosts）
+    """
     api_key = config.Search.DOUBAO_SEARCH_API_KEY
     if not api_key:
         return []
+    filter_args: dict = {"NeedUrl": True}
+    if sites:
+        filter_args["Sites"] = "|".join(sites)
+    if block_hosts:
+        filter_args["BlockHosts"] = "|".join(block_hosts)
     r = httpx.post(
         "https://open.feedcoopapi.com/search_api/web_search",
         headers={
@@ -38,7 +54,7 @@ def _search_doubao(query: str, max_results: int = 5) -> list[dict]:
             "Query": query[:100],
             "SearchType": "web",
             "Count": max_results,
-            "Filter": {"NeedUrl": True},
+            "Filter": filter_args,
             "QueryControl": {"QueryRewrite": False},
         },
         timeout=TIMEOUT,
@@ -62,16 +78,32 @@ def _search_doubao(query: str, max_results: int = 5) -> list[dict]:
     return out
 
 
-def _search_tavily(query: str, max_results: int = 5) -> list[dict]:
-    """Tavily 通用搜索。"""
+def _search_tavily(query: str, max_results: int = 5,
+                   include_domains: list[str] | None = None,
+                   exclude_domains: list[str] | None = None) -> list[dict]:
+    """Tavily 通用搜索。
+
+    include_domains: 只搜这些域名（如 ["developer.mozilla.org"]）
+    exclude_domains: 排除这些域名
+    """
     api_key = config.Search.TAVILY_API_KEY
     if not api_key:
         return []
     from tavily import TavilyClient
 
-    resp = TavilyClient(api_key=api_key).search(
-        query=query, search_depth="basic", max_results=max_results, include_answer=True
-    )
+    kwargs: dict = {
+        "query": query,
+        "search_depth": "basic",
+        "max_results": max_results,
+        # Keep results citable: answer-only items have no source URL and must
+        # not be surfaced as if they were a verifiable web page.
+        "include_answer": False,
+    }
+    if include_domains:
+        kwargs["include_domains"] = include_domains
+    if exclude_domains:
+        kwargs["exclude_domains"] = exclude_domains
+    resp = TavilyClient(api_key=api_key).search(**kwargs)
     items: list[dict] = []
     if resp.get("answer"):
         items.append({"title": "Tavily 摘要", "url": "", "content": resp["answer"], "source": "tavily"})
@@ -85,15 +117,23 @@ def _search_tavily(query: str, max_results: int = 5) -> list[dict]:
     return items
 
 
-def _search_serper(query: str, max_results: int = 5) -> list[dict]:
-    """Serper.dev (Google) 搜索。"""
+def _search_serper(query: str, max_results: int = 5,
+                   sites: list[str] | None = None) -> list[dict]:
+    """Serper.dev (Google) 搜索。
+
+    sites: 在 query 中拼 site: 限定（多个用 OR 组合）
+    """
     api_key = config.Search.SERPER_API_KEY
     if not api_key:
         return []
+    q = query
+    if sites:
+        site_q = " OR ".join(f"site:{s}" for s in sites)
+        q = f"({site_q}) {query}"
     r = httpx.post(
         "https://google.serper.dev/search",
         headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
-        json={"q": query, "num": max_results, "hl": "zh-cn"},
+        json={"q": q, "num": max_results, "hl": "zh-cn"},
         timeout=TIMEOUT,
     )
     r.raise_for_status()
@@ -109,15 +149,16 @@ def _search_serper(query: str, max_results: int = 5) -> list[dict]:
     return out
 
 
-def _search_brave(query: str, max_results: int = 5) -> list[dict]:
-    """Brave Search 独立索引。"""
+def _search_brave(query: str, max_results: int = 5,
+                  sites: list[str] | None = None) -> list[dict]:
+    """Brave Search 独立索引；site: 操作符用于站点限定。"""
     api_key = config.Search.BRAVE_API_KEY
     if not api_key:
         return []
     r = httpx.get(
         "https://api.search.brave.com/res/v1/web/search",
         headers={"X-Subscription-Token": api_key, "Accept": "application/json"},
-        params={"q": query, "count": max_results, "search_lang": "zh-hans"},
+        params={"q": _site_query(query, sites), "count": max_results, "search_lang": "zh-hans"},
         timeout=TIMEOUT,
     )
     r.raise_for_status()
@@ -133,8 +174,16 @@ def _search_brave(query: str, max_results: int = 5) -> list[dict]:
     return out
 
 
-def _search_exa(query: str, max_results: int = 5) -> list[dict]:
-    """Exa 语义搜索。"""
+def _site_query(query: str, sites: list[str] | None) -> str:
+    if not sites:
+        return query
+    site_query = " OR ".join(f"site:{site}" for site in sites)
+    return f"({site_query}) {query}"
+
+
+def _search_exa(query: str, max_results: int = 5,
+                sites: list[str] | None = None) -> list[dict]:
+    """Exa 语义搜索，includeDomains 提供原生域名约束。"""
     api_key = config.Search.EXA_API_KEY
     if not api_key:
         return []
@@ -146,6 +195,7 @@ def _search_exa(query: str, max_results: int = 5) -> list[dict]:
             "numResults": max_results,
             "contents": {"text": {"maxCharacters": 600}},
             "type": "auto",
+            **({"includeDomains": sites} if sites else {}),
         },
         timeout=TIMEOUT,
     )
@@ -191,124 +241,38 @@ def _search_github_code(query: str, max_results: int = 5) -> list[dict]:
     return out
 
 
-def _format(items: list[dict]) -> str:
-    if not items:
-        return ""
-    lines = []
-    for i, it in enumerate(items, 1):
-        title = it.get("title", "").strip()
-        url = it.get("url", "").strip()
-        content = it.get("content", "").strip().replace("\n", " ")
-        src = it.get("source", "")
-        head = f"{i}. {title}"
-        if src:
-            head += f"  [{src}]"
-        lines.append(head)
-        if content:
-            lines.append(f"   {content}")
-        if url:
-            lines.append(f"   来源：{url}")
-    return "\n".join(lines)
-
-
-def _missing_keys(hit: list[str]) -> str:
-    """根据实际命中的源反推哪些 key 没配，返回提示。"""
-    known = {
-        "tavily": ("TAVILY_API_KEY", _search_tavily),
-        "serper/google": ("SERPER_API_KEY", _search_serper),
-        "brave": ("BRAVE_API_KEY", _search_brave),
-        "exa": ("EXA_API_KEY", _search_exa),
-        "github": ("GITHUB_TOKEN", _search_github_code),
-    }
-    configured = {k for k, (_, fn) in known.items() if fn("__probe__", 1)}
-    missing = [env for k, (env, _) in known.items() if k not in configured and k in hit]
-    return missing
-
-
 # ---------------------------------------------------------------------------
-# 暴露给 LLM 的工具
+# 暴露给 LLM 的工具（统一入口）
 # ---------------------------------------------------------------------------
+_SEARCH_RESULT_MARKER = "__GOR_SEARCH_RESULT__"
+
+
 @tool
 def web_search(query: str) -> str:
     """
-    通用联网搜索，获取实时资讯、最新技术、社区讨论等。
-    搜索源优先级：豆包搜索（国内中文）→ Tavily → Brave。
-    适合：国内技术教程、最新新闻、产品文档、一般性事实查询。
+    统一联网搜索入口。系统会自动识别搜索意图（官方事实 official_fact /
+    用户真实体验 user_experience / 技术文档 technical_docs / 代码示例
+    code_example / 新闻 news / 深度调研 deep_research / 视觉灵感
+    visual_inspiration），选择优先来源（如官方站点、小红书、知乎、马蜂窝、
+    GitHub、MDN、Stack Overflow 等），优先来源结果不足时自动扩大到全网搜索。
+
+    适合：新闻资讯、官方信息（开放时间/政策/价格）、旅游攻略、美食推荐、
+    技术文档/教程、开源代码示例、深度技术调研、设计灵感等一切需要联网资料的场景。
+
+    返回结果每条带 [S1]、[S2] 等来源标记：回答中引用搜索结果时，在对应
+    事实后标注来源标记（如"广州陈家祠开放时间为 9:00-17:30[S2]"），
+    禁止编造 URL 或搜索结果中不存在的网站。
 
     Args:
-        query: 搜索关键词，例如"React 19 新特性"、"2026 年 AI 模型对比"
+        query: 搜索关键词或问题，例如"广州陈家祠开放时间"、"React Web Worker esbuild-wasm"
     """
-    try:
-        items = _search_doubao(query, max_results=5)
-        used = "doubao"
-        if not items:
-            items = _search_tavily(query, max_results=5)
-            used = "tavily"
-        if not items:
-            items = _search_brave(query, max_results=5)
-            used = "brave"
-        if not items:
-            return "搜索失败：DOUBAO/TAVILY/BRAVE API KEY 均未配置，请在 Server/.env 中至少配置一个。"
-        body = _format(items)
-        return f"【搜索源：{used}】\n{body}"
-    except Exception as e:
-        return f"搜索失败：{type(e).__name__}: {e}"
+    from tools.search_orchestrator import orchestrator, format_results
 
-
-@tool
-def web_search_overseas(query: str) -> str:
-    """
-    面向海外视角的中文/英文资料搜索（Google）。
-    适合：GitHub issue、国际技术社区、海外中文博客、英文官方文档、中英文混杂资料。
-    不适合：国内本土资讯（用 web_search）、代码片段（用 search_github_code）。
-
-    Args:
-        query: 中英文关键词，例如"LangGraph memory architecture site:github.com"
-    """
-    try:
-        items = _search_serper(query, max_results=6)
-        if not items:
-            return "搜索失败：SERPER_API_KEY 未配置，请在 Server/.env 中设置。"
-        return f"【搜索源：serper/google】\n{_format(items)}"
-    except Exception as e:
-        return f"搜索失败：{type(e).__name__}: {e}"
-
-
-@tool
-def web_search_deep(query: str) -> str:
-    """
-    深度技术调研搜索（语义向量）。
-    适合：技术博客、论文、深度解释文章、概念调研；不适合简单事实、简单代码示例。
-
-    Args:
-        query: 描述你要调研的主题或问题，例如"how does vector database indexing affect retrieval latency"
-    """
-    try:
-        items = _search_exa(query, max_results=5)
-        if not items:
-            return "搜索失败：EXA_API_KEY 未配置，请在 Server/.env 中设置。"
-        return f"【搜索源：exa】\n{_format(items)}"
-    except Exception as e:
-        return f"搜索失败：{type(e).__name__}: {e}"
-
-
-@tool
-def search_github_code(query: str) -> str:
-    """
-    在 GitHub 上搜索开源代码、仓库、demo 实现。
-    当需要参考开源示例、查找项目源码、确认某个库的用法时优先使用本工具。
-    不要用普通网页搜索替代。
-
-    Args:
-        query: GitHub 搜索语法，例如"useWebSocket react-native in:file language:TypeScript"
-    """
-    token = config.Search.GITHUB_TOKEN
-    if not token:
-        return "搜索失败：GITHUB_TOKEN 未配置，请在 Server/.env 中设置。"
-    try:
-        items = _search_github_code(query, max_results=6)
-        if not items:
-            return f"GitHub Code Search 未找到与「{query}」匹配的代码结果。请尝试放宽关键词、去掉 language/repo 限定符，或改用 web_search_overseas 搜索仓库介绍。"
-        return f"【搜索源：github code】\n{_format(items)}"
-    except Exception as e:
-        return f"GitHub Code Search 调用失败：{type(e).__name__}: {e}"
+    payload = orchestrator.run(query)
+    # Keep the result payload request-local. A module-level "last search" is
+    # racy when multiple chats search at the same time and can cross-link sources.
+    import json
+    return _SEARCH_RESULT_MARKER + json.dumps({
+        "text": format_results(payload),
+        "payload": payload,
+    }, ensure_ascii=False)

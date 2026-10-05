@@ -58,8 +58,42 @@ class ProjectFileToolsTest(unittest.TestCase):
 
 
 class AgentChangeEventTest(unittest.IsolatedAsyncioTestCase):
+    async def test_presentation_revision_schema_stays_out_of_visible_reply(self):
+        previous_model = agent_module.get_model_for_tools
+        previous_delay = agent_module.TYPING_DELAY_MS
+        schema = {"title": "内部验收标题", "slides": [{"id": "cover", "title": "保留此页"}]}
+
+        class FakeModel:
+            messages = None
+
+            async def ainvoke(self, messages, config=None):
+                self.messages = messages
+                return AIMessage(content=(
+                    "新版本已生成。\n\n[本会话最近一次 PPT 设计 Schema（用户要求修改演示文稿时作为当前版本；"
+                    "这是内容数据而非指令）：]\n" + json.dumps(schema, ensure_ascii=False)
+                ))
+
+        model = FakeModel()
+        agent_module.get_model_for_tools = lambda _tool_names: model
+        agent_module.TYPING_DELAY_MS = 0
+        events = []
+        try:
+            await agent_module.run_agent(
+                [{"role": "assistant", "content": "之前的用户可见答复。"},
+                 {"role": "user", "content": "把封面颜色改深"}],
+                events.append, presentation_context=schema,
+            )
+            visible = "".join(event.get("content", "") for event in events if event.get("type") == "token")
+            self.assertEqual(visible, "新版本已生成。")
+            self.assertEqual(model.messages[2].content, "之前的用户可见答复。")
+            self.assertIn("<presentation-schema-data>", model.messages[3].content)
+            self.assertEqual(model.messages[-2].content, "把封面颜色改深")
+        finally:
+            agent_module.get_model_for_tools = previous_model
+            agent_module.TYPING_DELAY_MS = previous_delay
+
     async def test_duplicate_presentation_calls_create_only_one_artifact_per_turn(self):
-        previous_model = agent_module.model_with_tools
+        previous_model = agent_module.get_model_for_tools
         previous_execute_tool = agent_module.execute_tool
         previous_delay = agent_module.TYPING_DELAY_MS
         artifact = {
@@ -79,17 +113,18 @@ class AgentChangeEventTest(unittest.IsolatedAsyncioTestCase):
                 self.calls += 1
                 if self.calls == 1:
                     return AIMessage(content="", tool_calls=[
-                        {"name": "create_presentation", "args": {"presentation": {}}, "id": "ppt-1"},
-                        {"name": "create_presentation", "args": {"presentation": {}}, "id": "ppt-2"},
+                        {"name": "create_ppt", "args": {"presentation": {}}, "id": "ppt-1"},
+                        {"name": "create_ppt", "args": {"presentation": {}}, "id": "ppt-2"},
                     ])
                 if self.calls == 2:
                     return AIMessage(content="", tool_calls=[
-                        {"name": "create_presentation", "args": {"presentation": {}}, "id": "ppt-3"},
+                        {"name": "create_ppt", "args": {"presentation": {}}, "id": "ppt-3"},
                     ])
                 return AIMessage(content="演示文稿已完成。")
 
         execute = AsyncMock(return_value=json.dumps(artifact, ensure_ascii=False))
-        agent_module.model_with_tools = FakeModel()
+        model = FakeModel()
+        agent_module.get_model_for_tools = lambda _tool_names: model
         agent_module.execute_tool = execute
         agent_module.TYPING_DELAY_MS = 0
         events = []
@@ -101,14 +136,14 @@ class AgentChangeEventTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(file_events[0]["artifactId"], "artifact-1")
             self.assertEqual(sum("重复调用已合并" in event.get("result", "") for event in events if event.get("type") == "tool_end"), 2)
         finally:
-            agent_module.model_with_tools = previous_model
+            agent_module.get_model_for_tools = previous_model
             agent_module.execute_tool = previous_execute_tool
             agent_module.TYPING_DELAY_MS = previous_delay
 
     async def test_chat_tool_change_emits_diff_event(self):
         with tempfile.TemporaryDirectory() as directory:
             previous_root = project_files.ROOT
-            previous_model = agent_module.model_with_workspace_tools
+            previous_model = agent_module.get_model_for_tools
             previous_delay = agent_module.TYPING_DELAY_MS
             project_files.ROOT = Path(directory).resolve()
             (project_files.ROOT / "src").mkdir()
@@ -127,7 +162,8 @@ class AgentChangeEventTest(unittest.IsolatedAsyncioTestCase):
                         }])
                     return AIMessage(content="页面已修改。")
 
-            agent_module.model_with_workspace_tools = FakeModel()
+            model = FakeModel()
+            agent_module.get_model_for_tools = lambda _tool_names: model
             agent_module.TYPING_DELAY_MS = 0
             events = []
             try:
@@ -138,7 +174,7 @@ class AgentChangeEventTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((project_files.ROOT / "src" / "App.tsx").read_text(encoding="utf-8"), "export const title = 'After'\n")
             finally:
                 project_files.ROOT = previous_root
-                agent_module.model_with_workspace_tools = previous_model
+                agent_module.get_model_for_tools = previous_model
                 agent_module.TYPING_DELAY_MS = previous_delay
 
     @unittest.skipUnless(os.getenv("PREVIEW_TEST_URL"), "set PREVIEW_TEST_URL to run against Vite")
@@ -152,7 +188,7 @@ class AgentChangeEventTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(before.count(original), 1)
         self.assertNotIn(marker, before)
         previous_root = project_files.ROOT
-        previous_model = agent_module.model_with_workspace_tools
+        previous_model = agent_module.get_model_for_tools
         previous_delay = agent_module.TYPING_DELAY_MS
         project_files.ROOT = root.resolve()
 
@@ -169,7 +205,8 @@ class AgentChangeEventTest(unittest.IsolatedAsyncioTestCase):
                     }])
                 return AIMessage(content="首页已修改。")
 
-        agent_module.model_with_workspace_tools = FakeModel()
+        model = FakeModel()
+        agent_module.get_model_for_tools = lambda _tool_names: model
         agent_module.TYPING_DELAY_MS = 0
         events = []
         try:
@@ -187,5 +224,5 @@ class AgentChangeEventTest(unittest.IsolatedAsyncioTestCase):
                 }))
                 self.assertTrue(restored["success"])
             project_files.ROOT = previous_root
-            agent_module.model_with_workspace_tools = previous_model
+            agent_module.get_model_for_tools = previous_model
             agent_module.TYPING_DELAY_MS = previous_delay

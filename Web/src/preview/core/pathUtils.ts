@@ -1,4 +1,23 @@
 const TRAVERSAL_SEGMENT = '..';
+const BINARY_PREVIEW_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.bmp', '.ico',
+  '.pdf', '.zip', '.rar', '.7z', '.tar', '.gz', '.glb', '.gltf', '.obj', '.fbx', '.stl', '.wasm',
+  '.ttf', '.otf', '.woff', '.woff2', '.eot', '.mp3', '.wav',
+  '.ogg', '.mp4', '.mov', '.webm', '.pptx', '.docx', '.xlsx',
+  '.exe', '.dll', '.so', '.dylib', '.bin', '.class', '.pyc',
+]);
+
+/** Preview source tools edit UTF-8 text, independent of its programming language. */
+export function isEditablePreviewTextPath(path: string): boolean {
+  try {
+    const normalized = normalizePreviewPath(path);
+    if (normalized !== path || !/^\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+$/.test(path)) return false;
+    if (path.slice(1).split('/').some((part) => /(^\.|node_modules|dist|build|generated|secret|credential|private|token|password)/i.test(part))) return false;
+    return !BINARY_PREVIEW_EXTENSIONS.has(path.slice(path.lastIndexOf('.')).toLowerCase());
+  } catch {
+    return false;
+  }
+}
 
 export function normalizePreviewPath(path: string): string {
   if (typeof path !== 'string' || path.includes('\0')) {

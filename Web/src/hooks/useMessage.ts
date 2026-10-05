@@ -13,9 +13,16 @@ import type {
   PreviewFileChange,
   GeneratedFile,
   UploadedAttachment,
+  SearchSource,
+  SearchTrace,
 } from '../types';
 import { usePreviewProjectStore } from '../stores/previewProjectStore.ts';
-import { createMessagePreviewSnapshot } from '../preview/core/projectSnapshot.ts';
+import {
+  getSessionPreviewProject,
+  PreviewRevisionAdvancedError,
+  readSessionPreviewProjectFiles,
+  saveSessionPreviewProject,
+} from '../api/previewProject';
 import { createPresentationSnapshot } from '../preview/core/presentationSnapshot.ts';
 
 const { QUOTA_WARNING_THRESHOLD } = MODEL_CONFIG;
@@ -180,6 +187,7 @@ export function useMessage(sessionId: string | null) {
         content: '',
         isStreaming: true,
         toolStatus: '',
+        executionPhase: 'thinking',
       };
 
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
@@ -201,6 +209,39 @@ export function useMessage(sessionId: string | null) {
       let previewFilesChanged = false;
 
       try {
+        let previewProject = structuredClone(usePreviewProjectStore.getState().project);
+        if (
+          previewProject.serverRevision !== undefined
+          && (previewProject.revision ?? 0) !== (previewProject.persistedRevision ?? -1)
+        ) {
+          const origin = previewProject.origin ?? 'generated';
+          const saved = await saveSessionPreviewProject(
+            sessionId,
+            previewProject,
+            origin,
+            previewProject.uploadName ?? null,
+            previewProject.serverRevision,
+          );
+          usePreviewProjectStore.getState().markServerSaved(
+            previewProject.id,
+            previewProject.revision ?? 0,
+            saved.revision,
+            origin,
+            previewProject.uploadName ?? null,
+          );
+          previewProject = structuredClone(usePreviewProjectStore.getState().project);
+        }
+        const previewReference = previewProject.serverRevision !== undefined
+          ? {
+              previewProjectId: previewProject.id,
+              previewServerRevision: previewProject.serverRevision,
+              previewContentRevision: previewProject.revision ?? 0,
+            }
+          : {
+              previewProjectBootstrap: previewProject,
+              previewProjectOrigin: previewProject.origin ?? 'generated' as const,
+              previewProjectUploadName: previewProject.uploadName ?? null,
+            };
         await sendChatMessage(
           {
             sessionId,
@@ -209,7 +250,7 @@ export function useMessage(sessionId: string | null) {
             attachments,
             analysisContext: requestAnalysisContext,
             analysisContextMode,
-            previewProject: structuredClone(usePreviewProjectStore.getState().project),
+            ...previewReference,
             assistantMessageId: assistantMsg.id,
           },
           {
@@ -218,12 +259,15 @@ export function useMessage(sessionId: string | null) {
                 ...last,
                 content: last.content + tokenContent,
                 toolStatus: '',
+                executionPhase: 'composing',
               }));
             },
             onToolStart: (name: string, _args: string) => {
               updateLastAssistant((last) => ({
                 ...last,
                 toolStatus: `正在调用 ${name}...`,
+                executionPhase: 'tool',
+                executionToolName: name,
               }));
               if (name === 'generate_xiaoyunque_video') {
                 startVideoPolling(
@@ -247,6 +291,7 @@ export function useMessage(sessionId: string | null) {
               updateLastAssistant((last) => ({
                 ...last,
                 toolStatus: '',
+                executionPhase: 'summarizing',
               }));
             },
             onFileReady: (fileInfo: GeneratedFile) => {
@@ -284,7 +329,6 @@ export function useMessage(sessionId: string | null) {
               if (!applied) return;
               previewFilesChanged = true;
               setPreviewRevision((revision) => revision + 1);
-              const updatedProject = usePreviewProjectStore.getState().project;
               updateLastAssistant((last) => {
                 const previewChanges = [
                   ...(last.previewChanges ?? []).filter((item) => item.path !== change.path),
@@ -293,13 +337,149 @@ export function useMessage(sessionId: string | null) {
                 return {
                   ...last,
                   previewChanges,
-                  previewSnapshot: createMessagePreviewSnapshot(
-                    updatedProject,
-                    last.id,
-                    previewChanges.map((item) => item.path),
-                  ),
                 };
               });
+            },
+            onPreviewProjectPersisted: (change) => {
+              usePreviewProjectStore.getState().applyServerProjectRevision(
+                change.projectId,
+                change.contentRevision,
+                change.serverRevision,
+              );
+            },
+            onPreviewProjectCommitted: async (change) => {
+              const paths = change.changedFiles.map((file) => file.path);
+              updateLastAssistant((last) => ({
+                ...last,
+                previewChanges: [
+                  ...(last.previewChanges ?? []).filter((item) => !change.changedFiles.some((file) => file.path === item.path)),
+                  ...change.changedFiles.map((file) => ({ projectId: change.projectId, path: file.path, diff: file.diff })),
+                ],
+              }));
+              if (paths.length === 0) return;
+
+              const initialState = usePreviewProjectStore.getState();
+              if (change.projectId !== initialState.project.id) {
+                console.warn(`[PreviewSync] ignored commit for inactive project=${change.projectId}`);
+                return;
+              }
+              if (change.contentRevision < (initialState.project.revision ?? 0)) {
+                console.info(
+                  `[PreviewSync] ignored stale commit revision=${change.contentRevision} local_revision=${initialState.project.revision ?? 0}`,
+                );
+                return;
+              }
+
+              console.info(
+                `[PreviewSync] commit_revision=${change.contentRevision} changed_paths=${paths.length} fetch_started=true`,
+              );
+              try {
+                let response;
+                try {
+                  response = await readSessionPreviewProjectFiles(
+                    sessionId,
+                    change.projectId,
+                    paths,
+                    change.contentRevision,
+                  );
+                } catch (error) {
+                  if (!(error instanceof PreviewRevisionAdvancedError)) throw error;
+                  const latest = await getSessionPreviewProject(sessionId);
+                  if (!latest || latest.project.id !== change.projectId) {
+                    throw new Error('服务器当前 Preview Project 已变化，请刷新页面后重试。');
+                  }
+                  const latestRevision = latest.project.revision ?? 0;
+                  const latestState = usePreviewProjectStore.getState();
+                  if (latestRevision < (latestState.project.revision ?? 0)) {
+                    console.info(
+                      `[PreviewSync] ignored recovery revision=${latestRevision} local_revision=${latestState.project.revision ?? 0}`,
+                    );
+                    return;
+                  }
+                  const selectedPath = latestState.selectedFilePath;
+                  usePreviewProjectStore.getState().importProject(
+                    latest.project.template,
+                    latest.project.files,
+                    latest.project.name,
+                    latest.project.id,
+                    latestRevision,
+                    latest.revision,
+                    latest.origin,
+                    latest.uploadName,
+                  );
+                  const recovered = usePreviewProjectStore.getState();
+                  if (selectedPath && recovered.project.files[selectedPath] !== undefined) recovered.selectFile(selectedPath);
+                  const sourceBytes = Object.values(latest.project.files).reduce(
+                    (total, content) => total + new TextEncoder().encode(content).byteLength,
+                    0,
+                  );
+                  previewFilesChanged = true;
+                  setPreviewRevision((revision) => revision + 1);
+                  console.info(
+                    `[PreviewSync] revision_advanced=true response_revision=${latestRevision} `
+                    + `files_received=${Object.keys(latest.project.files).length} content_bytes=${sourceBytes} `
+                    + `response_bytes=${latest.payloadBytes ?? 0} local_vfs_updated=true`,
+                  );
+                  return latest.payloadBytes;
+                }
+
+                const latestState = usePreviewProjectStore.getState();
+                if (response.revision < (latestState.project.revision ?? 0)) {
+                  console.info(
+                    `[PreviewSync] ignored stale response revision=${response.revision} local_revision=${latestState.project.revision ?? 0}`,
+                  );
+                  return;
+                }
+                if (response.revision !== change.contentRevision) {
+                  throw new Error(`源码响应 revision 不匹配：期望 ${change.contentRevision}，收到 ${response.revision}。`);
+                }
+                if (response.serverRevision < change.serverRevision) {
+                  throw new Error(`源码响应 server revision 过旧：期望至少 ${change.serverRevision}，收到 ${response.serverRevision}。`);
+                }
+                const fetchedPaths = response.files.map((file) => file.path);
+                if (paths.length !== fetchedPaths.length || paths.some((path) => !fetchedPaths.includes(path))) {
+                  throw new Error('批量源码响应未包含全部变更文件。');
+                }
+                const applied = usePreviewProjectStore.getState().applyAiProjectCommit({
+                  projectId: change.projectId,
+                  changedFiles: response.files,
+                  contentRevision: response.revision,
+                  serverRevision: response.serverRevision,
+                });
+                if (!applied) {
+                  const currentRevision = usePreviewProjectStore.getState().project.revision ?? 0;
+                  console.info(
+                    `[PreviewSync] apply_rejected response_revision=${response.revision} local_revision=${currentRevision}`,
+                  );
+                  if (currentRevision > response.revision) return;
+                  throw new Error('源码没有应用到当前项目，请刷新页面加载服务器最新版本。');
+                }
+                previewFilesChanged = true;
+                setPreviewRevision((revision) => revision + 1);
+                const contentBytes = response.files.reduce(
+                  (total, file) => total + new TextEncoder().encode(file.content).byteLength,
+                  0,
+                );
+                console.info(
+                  `[PreviewSync] response_revision=${response.revision} files_received=${response.files.length} `
+                  + `content_bytes=${contentBytes} response_bytes=${response.payloadBytes} local_vfs_updated=true`,
+                );
+                return response.payloadBytes;
+              } catch (error) {
+                console.error(
+                  `[PreviewSync] fetch_failed revision=${change.contentRevision} error=${error instanceof Error ? error.message : 'unknown'}`,
+                );
+                updateLastAssistant((last) => ({
+                  ...last,
+                  content: `${last.content}\n\n⚠️ 服务器源码已更新，但当前浏览器同步失败；请刷新页面加载最新项目。`,
+                }));
+              }
+            },
+            onPreviewProjectConflict: (message) => {
+              updateLastAssistant((last) => ({
+                ...last,
+                content: `${last.content}\n\n⚠️ ${message}`,
+              }));
             },
             onVideoReady: (videoInfo: any) => {
               updateLastAssistant((last) => ({
@@ -311,6 +491,8 @@ export function useMessage(sessionId: string | null) {
               updateLastAssistant((last) => ({
                 ...last,
                 toolStatus: status,
+                executionPhase: 'tool',
+                executionToolName: _name,
               }));
             },
             onTokenUsage: (usage: TokenUsage) => {
@@ -345,8 +527,28 @@ export function useMessage(sessionId: string | null) {
                 });
               }
             },
+            onSearchSources: (sources: SearchSource[], searchTrace?: SearchTrace) => {
+              updateLastAssistant((last) => {
+                // 合并多次搜索的结果（相同 url 去重），并保留最近一次 trace
+                const merged = [...(last.searchSources ?? [])];
+                for (const src of sources) {
+                  if (!src.url) continue;
+                  if (!merged.some((item) => item.url === src.url)) {
+                    merged.push(src);
+                  }
+                }
+                return {
+                  ...last,
+                  searchSources: merged,
+                  searchTrace: searchTrace ?? last.searchTrace,
+                };
+              });
+            },
             onDone: () => {
-              if (previewFilesChanged) usePreviewProjectStore.getState().requestBuildAndRun();
+              if (previewFilesChanged) {
+                console.info(`[PreviewSync] local_vfs_updated=true build_triggered=true`);
+                usePreviewProjectStore.getState().requestBuildAndRun();
+              }
               updateLastAssistant((last) => ({
                 ...last,
                 isStreaming: false,
@@ -435,8 +637,13 @@ export function useMessage(sessionId: string | null) {
    */
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
+    updateLastAssistant((last) => ({
+      ...last,
+      isStreaming: false,
+      toolStatus: '',
+    }));
     stopVideoPolling();
-  }, [stopVideoPolling]);
+  }, [stopVideoPolling, updateLastAssistant]);
 
   return {
     // 状态
