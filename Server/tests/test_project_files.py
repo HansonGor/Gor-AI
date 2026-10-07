@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import tempfile
@@ -7,6 +8,7 @@ from unittest.mock import AsyncMock
 from urllib.request import urlopen
 
 from langchain_core.messages import AIMessage
+from project_api.types import ProjectRef
 
 import agent.agent as agent_module
 import tools.project_files as project_files
@@ -26,6 +28,84 @@ class ProjectFileToolsTest(unittest.TestCase):
     def tearDown(self):
         project_files.ROOT = self.previous_root
         self.temp.cleanup()
+
+    def test_vscode_file_mutations_produce_the_shared_diff_view_model(self):
+        patch = agent_module._vscode_project_file_changes(
+            "write_project_file",
+            {"success": True, "path": "/src/App.tsx", "changed": True, "diff": "-Before\n+After"},
+            {},
+        )
+        self.assertEqual(patch, [{"path": "/src/App.tsx", "diff": "-Before\n+After"}])
+
+        created = agent_module._vscode_project_file_changes(
+            "create_project_file",
+            {"success": True, "path": "/src/New.tsx", "created": True},
+            {"content": "export const value = 1;\n"},
+        )
+        self.assertEqual(created[0]["path"], "/src/New.tsx")
+        self.assertIn("+++ b/src/New.tsx", created[0]["diff"])
+        self.assertIn("+export const value = 1;", created[0]["diff"])
+
+        batch = agent_module._vscode_project_file_changes(
+            "batch_patch_project_files",
+            {"success": True, "changedFiles": [{"path": "/src/App.tsx", "diff": "-a\n+b"}]},
+            {},
+        )
+        self.assertEqual(batch, [{"path": "/src/App.tsx", "diff": "-a\n+b"}])
+
+        self.assertEqual(agent_module._vscode_project_file_changes(
+            "write_project_file",
+            {"success": False, "path": "/src/App.tsx", "changed": False, "diff": ""},
+            {},
+        ), [])
+
+    def test_vscode_write_emits_shared_project_file_changed_event(self):
+        previous_model = agent_module.get_model_for_tools
+        previous_delay = agent_module.TYPING_DELAY_MS
+
+        class FakeProjectAPI:
+            async def write_file(self, project_ref, path, content, expected_version):
+                return {
+                    "success": True,
+                    "path": path,
+                    "changed": True,
+                    "diff": "--- a/src/App.tsx\n+++ b/src/App.tsx\n@@ -1 +1 @@\n-old\n+new",
+                }
+
+        class FakeModel:
+            calls = 0
+
+            async def ainvoke(self, _messages, config=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return AIMessage(content="", tool_calls=[{
+                        "name": "write_project_file",
+                        "args": {
+                            "path": "/src/App.tsx",
+                            "content": "new",
+                            "expected_file_version": 1,
+                        },
+                        "id": "call_write",
+                    }])
+                return AIMessage(content="已修改。")
+
+        model = FakeModel()
+        agent_module.get_model_for_tools = lambda _tool_names: model
+        agent_module.TYPING_DELAY_MS = 0
+        events = []
+        try:
+            asyncio.run(agent_module.run_agent(
+                [{"role": "user", "content": "修改 /src/App.tsx 的标题"}],
+                events.append,
+                vscode_project_context=(FakeProjectAPI(), ProjectRef("vscode-test", "vscode")),
+                vscode_client_mode=True,
+            ))
+            change = next(event for event in events if event.get("type") == "project_file_changed")
+            self.assertEqual(change["path"], "/src/App.tsx")
+            self.assertIn("+new", change["diff"])
+        finally:
+            agent_module.get_model_for_tools = previous_model
+            agent_module.TYPING_DELAY_MS = previous_delay
 
     def test_search_read_edit_and_create(self):
         found = json.loads(project_files.search_project_files.invoke({"query": "Before"}))

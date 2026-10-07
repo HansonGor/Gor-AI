@@ -65,6 +65,27 @@ class ProjectAPI:
             project_ref, path, content, expected_version
         )
 
+    async def create_file(
+        self, project_ref: ProjectRef, path: str, content: str = ""
+    ) -> dict[str, Any]:
+        return await self._provider(project_ref).create_file(project_ref, path, content)
+
+    async def create_directory(self, project_ref: ProjectRef, path: str) -> dict[str, Any]:
+        return await self._provider(project_ref).create_directory(project_ref, path)
+
+    async def delete_file(
+        self,
+        project_ref: ProjectRef,
+        path: str,
+        expected_version: int | str | None = None,
+    ) -> dict[str, Any]:
+        return await self._provider(project_ref).delete_file(project_ref, path, expected_version)
+
+    async def delete_directory(
+        self, project_ref: ProjectRef, path: str, recursive: bool = False
+    ) -> dict[str, Any]:
+        return await self._provider(project_ref).delete_directory(project_ref, path, recursive)
+
     async def get_version(self, project_ref: ProjectRef) -> int | str:
         return await self._provider(project_ref).get_version(project_ref)
 

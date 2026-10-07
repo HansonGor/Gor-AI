@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { deleteFile as deleteVirtualFile, readFile, writeFile as writeVirtualFile } from '../../preview/core/virtualFs';
 import { getPreviewEntryPoint } from '../../preview/core/entryPoint';
+import { canBuildPreviewSource } from '../../preview/core/buildReadiness';
 import { usePreviewProjectStore } from '../../stores/previewProjectStore';
 import { usePreviewCompiler } from '../../preview/runtime/usePreviewCompiler';
 import { usePreviewRuntime } from '../../preview/runtime/usePreviewRuntime';
@@ -16,6 +17,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Trash2 } from 'lucide-react';
 import type { FileTreeNode, PreviewProject as PreviewProjectData } from '../../preview/core/types';
 import type { PreviewProjectSnapshot } from '../../types';
+import { glbFileName } from '../../preview/core/artifactFormat';
 
 interface IsolatedProjectState {
   project: PreviewProjectData;
@@ -30,6 +32,7 @@ export default function PreviewProject({
   canSaveSceneGlb = true,
   projectSnapshot,
   initialSelectedFilePath,
+  sourcePending = false,
 }: {
   view: 'preview' | 'code';
   runtimeActionsHost?: HTMLElement | null;
@@ -38,6 +41,7 @@ export default function PreviewProject({
   canSaveSceneGlb?: boolean;
   projectSnapshot?: PreviewProjectSnapshot;
   initialSelectedFilePath?: string;
+  sourcePending?: boolean;
 }) {
   const globalStore = usePreviewProjectStore();
   const [isolatedState, setIsolatedState] = useState<IsolatedProjectState | null>(null);
@@ -76,6 +80,7 @@ export default function PreviewProject({
     ? isolatedState?.selectedFilePath ?? (project.files['/src/scene.json'] !== undefined ? '/src/scene.json' : Object.keys(project.files)[0] ?? null)
     : globalStore.selectedFilePath;
   const runtimeProjectId = isIsolated ? `${project.id}:${isolatedKey}` : project.id;
+  const sourceReady = canBuildPreviewSource(project.files, !isIsolated && sourcePending);
   const compiler = usePreviewCompiler(runtimeProjectId, project.files, project.revision ?? 0);
   const runtime = usePreviewRuntime(runtimeProjectId);
   const selectProjectFile = useCallback((path: string | null) => {
@@ -118,11 +123,19 @@ export default function PreviewProject({
   const lastAutoRunRef = useRef(0);
   const lastRunFilesRef = useRef<typeof project.files | null>(null);
   const lastViewRef = useRef<typeof view | null>(null);
+  useEffect(() => {
+    lastAutoRunRef.current = 0;
+    lastRunFilesRef.current = null;
+    lastViewRef.current = null;
+    setDownloadError('');
+  }, [runtimeProjectId]);
   const [downloadError, setDownloadError] = useState('');
   const [isSavingGlb, setIsSavingGlb] = useState(false);
   const [createDirectory, setCreateDirectory] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<FileTreeNode | null>(null);
   const buildRunRevision = isIsolated ? 0 : globalStore.buildRunRevision;
+  const buildRunGlbRevision = isIsolated ? 0 : globalStore.buildRunGlbRevision;
+  const shouldExportGlb = buildRunRevision > 0 && buildRunGlbRevision === buildRunRevision;
   const entryPoint = getPreviewEntryPoint(project);
   const source = useMemo(
     () =>
@@ -136,24 +149,25 @@ export default function PreviewProject({
   }, [project.files]);
 
   const buildAndRun = useCallback((generateGlb = false) => {
+    if (!sourceReady) return;
     lastRunFilesRef.current = project.files;
-    void compiler.build(entryPoint).then(async (result) => {
-      if (!result) return;
-      runtime.run(result);
+    void compiler.build(entryPoint).then((result) => {
+      if (result) runtime.run(result);
+    });
+    void (async () => {
       if (!generateGlb || !sceneSpec || !isSceneRendererProject(project.files) || !onSaveSceneGlb || !canSaveSceneGlb || isSavingGlb) return;
       setIsSavingGlb(true);
       setDownloadError('');
       try {
         const blob = await exportSceneGlb(sceneSpec);
-        const safeName = sceneSpec.name.replace(/[\\/:*?"<>|]/g, '-').slice(0, 80) || '3D Model';
-        await onSaveSceneGlb(blob, `${safeName}.glb`);
+        await onSaveSceneGlb(blob, glbFileName(sceneSpec.name));
       } catch (error) {
         setDownloadError(error instanceof Error ? error.message : 'GLB 生成或保存失败，请重试。');
       } finally {
         setIsSavingGlb(false);
       }
-    });
-  }, [project.files, compiler.build, entryPoint, runtime.run, sceneSpec, onSaveSceneGlb, canSaveSceneGlb, isSavingGlb]);
+    })();
+  }, [sourceReady, project.files, compiler.build, entryPoint, runtime.run, sceneSpec, onSaveSceneGlb, canSaveSceneGlb, isSavingGlb]);
 
   const downloadSource = useCallback(async (path: string) => {
     const content = readFile(project.files, path);
@@ -172,6 +186,7 @@ export default function PreviewProject({
 
   const downloadDist = useCallback(async (title: string) => {
     await saveBlobTask(previewDistArchiveName(title), async () => {
+      if (!sourceReady) throw new Error('项目源码尚未就绪，请等待生成完成。');
       const result = compiler.state.result ?? await compiler.build(entryPoint);
       if (!result) throw new Error('当前项目构建失败，无法导出 Preview dist。');
       const runtimeUrl = `${import.meta.env.BASE_URL}preview-runtime-dist/preview-runtime.js`;
@@ -181,7 +196,7 @@ export default function PreviewProject({
       const archive = createPreviewDistArchive(result, runtimeSource);
       return new Blob([new Uint8Array(archive)], { type: 'application/zip' });
     });
-  }, [compiler.state.result, compiler.build, entryPoint]);
+  }, [sourceReady, compiler.state.result, compiler.build, entryPoint]);
 
   useEffect(() => {
     onDownloadDistReady?.(downloadDist);
@@ -190,18 +205,21 @@ export default function PreviewProject({
 
   useEffect(() => {
     if (
+      !sourceReady ||
       buildRunRevision === 0 ||
       buildRunRevision === lastAutoRunRef.current ||
+      (shouldExportGlb && !canSaveSceneGlb) ||
       compiler.state.status === 'initializing' ||
       compiler.state.status === 'building'
     ) return;
     lastAutoRunRef.current = buildRunRevision;
-    if (lastRunFilesRef.current === project.files) return;
-    buildAndRun();
-  }, [buildRunRevision, buildAndRun, compiler.state.status, project.files]);
+    if (lastRunFilesRef.current === project.files && !shouldExportGlb) return;
+    buildAndRun(shouldExportGlb);
+  }, [sourceReady, buildRunRevision, buildRunGlbRevision, shouldExportGlb, canSaveSceneGlb, buildAndRun, compiler.state.status, project.files]);
 
   useEffect(() => {
     if (
+      sourceReady &&
       view === 'preview' &&
       lastViewRef.current === 'code' &&
       buildRunRevision === 0 &&
@@ -210,10 +228,11 @@ export default function PreviewProject({
       buildAndRun();
     }
     lastViewRef.current = view;
-  }, [view, project.files, buildAndRun]);
+  }, [sourceReady, view, project.files, buildAndRun]);
 
   useEffect(() => {
     if (
+      sourceReady &&
       view === 'preview' &&
       buildRunRevision === 0 &&
       compiler.state.status === 'ready' &&
@@ -222,7 +241,7 @@ export default function PreviewProject({
     ) {
       buildAndRun();
     }
-  }, [view, buildRunRevision, compiler.state.status, runtime.state.status, project.files, buildAndRun]);
+  }, [sourceReady, view, buildRunRevision, compiler.state.status, runtime.state.status, project.files, buildAndRun]);
 
   const createFile = useCallback((path: string): string | null => {
     if (Object.keys(project.files).length >= 40) return '项目文件数量已达上限（40 个）。';
@@ -290,8 +309,9 @@ export default function PreviewProject({
           iframeRef={runtime.iframeRef}
           state={runtime.state}
           buildState={compiler.state}
+          sourcePending={!sourceReady}
           buildDisabled={
-            compiler.state.status === 'initializing' || compiler.state.status === 'building' || (sceneSpec !== null && !canSaveSceneGlb)
+            !sourceReady || compiler.state.status === 'initializing' || compiler.state.status === 'building' || (sceneSpec !== null && !canSaveSceneGlb)
           }
           onBuildAndRun={() => buildAndRun(true)}
           isSavingGlb={isSavingGlb}

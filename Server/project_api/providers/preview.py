@@ -122,6 +122,39 @@ class PreviewProjectProvider:
             self._service.write_file(path, content, expected_version), "write"
         )
 
+    async def create_file(
+        self, project_ref: ProjectRef, path: str, content: str = ""
+    ) -> dict[str, Any]:
+        del path, content
+        if not self._matches(project_ref):
+            return self._not_found()
+        return {"success": False, "code": "UNSUPPORTED_OPERATION", "error": "Preview Provider 不支持通用文件创建。"}
+
+    async def create_directory(self, project_ref: ProjectRef, path: str) -> dict[str, Any]:
+        del path
+        if not self._matches(project_ref):
+            return self._not_found()
+        return {"success": False, "code": "UNSUPPORTED_OPERATION", "error": "Preview Provider 不支持目录创建。"}
+
+    async def delete_file(
+        self,
+        project_ref: ProjectRef,
+        path: str,
+        expected_version: int | str | None = None,
+    ) -> dict[str, Any]:
+        del path, expected_version
+        if not self._matches(project_ref):
+            return self._not_found()
+        return {"success": False, "code": "UNSUPPORTED_OPERATION", "error": "Preview Provider 不支持通用文件删除。"}
+
+    async def delete_directory(
+        self, project_ref: ProjectRef, path: str, recursive: bool = False
+    ) -> dict[str, Any]:
+        del path, recursive
+        if not self._matches(project_ref):
+            return self._not_found()
+        return {"success": False, "code": "UNSUPPORTED_OPERATION", "error": "Preview Provider 不支持目录删除。"}
+
     async def get_version(self, project_ref: ProjectRef) -> int | str:
         if not self._matches(project_ref):
             raise ValueError("Preview Project 不存在。")
@@ -137,6 +170,11 @@ class PreviewProjectProvider:
             "patch": True,
             "batchPatch": True,
             "write": True,
+            "createFile": False,
+            "createDirectory": False,
+            "deleteFile": False,
+            "deleteDirectory": False,
+            "recursiveDelete": False,
             "build": True,
             "diagnostics": True,
             "terminal": False,

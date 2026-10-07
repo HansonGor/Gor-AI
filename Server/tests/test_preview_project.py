@@ -297,6 +297,12 @@ class PreviewProjectToolTest(unittest.TestCase):
             self.assertIn("After", changed[0]["content"])
             self.assertEqual(disk_file.read_text(encoding="utf-8"), "untouched")
             self.assertFalse(any(event.get("type") == "project_file_changed" for event in events))
+            final_text = "".join(event.get("content", "") for event in events if event.get("type") == "token")
+            self.assertIn("创建了一个 React 项目", final_text)
+            self.assertIn("Diff", final_text)
+            self.assertNotIn("/src/App.tsx", final_text)
+            self.assertNotIn("After", final_text)
+            self.assertNotIn("export default", final_text)
 
     def test_one_agent_turn_patches_two_files_in_one_project(self):
         workspace = PreviewProjectWorkspace.from_request(template_snapshot())

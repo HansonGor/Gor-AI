@@ -835,14 +835,6 @@
   }
 }
 
-.cursor-blink {
-  display: inline-block;
-  animation: blink 1s step-end infinite;
-  color: @color-accent;
-  font-size: 0.3rem;
-  margin-left: 0.05rem;
-}
-
 // ========== 待发送图片预览 ==========
 .image-preview-item {
   position: relative;
@@ -2297,7 +2289,7 @@
   position: relative;
   display: grid;
   width: 24px;
-  min-height: 43px;
+  min-height: 38px;
   align-self: stretch;
   margin-block: -4px;
   flex: 0 0 24px;
@@ -2373,29 +2365,86 @@
   small { overflow: hidden; color: rgba(203, 213, 236, 0.7); font-size: 11.5px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 }
 
-.chat-page .assistant-loading-card {
-  display: grid;
-  min-height: 110px;
-  align-content: start;
-  gap: 12px;
-  margin-top: 12px;
-  padding: 17px 18px 12px;
-  border: 1px solid rgba(222, 230, 255, 0.11);
-  border-radius: 21px;
-  background: rgba(18, 32, 56, 0.72);
-  box-shadow: 0 14px 36px rgba(4, 11, 28, 0.24);
+.chat-page .assistant-loading-indicator {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  justify-content: center;
+  gap: 13px;
+  margin-top: 7px;
+  padding: 5px 0 0;
 }
 
-.assistant-skeleton-line {
-  display: block;
-  height: 12px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, rgba(171, 184, 222, 0.11), rgba(191, 199, 230, 0.17), rgba(171, 184, 222, 0.09));
+.assistant-loading-visual {
+  position: relative;
+  display: grid;
+  width: 56px;
+  height: 56px;
+  flex: 0 0 56px;
+  place-items: center;
 }
-.assistant-skeleton-line.is-short { width: 35%; }
-.assistant-skeleton-line.is-medium { width: 58%; }
-.assistant-skeleton-line.is-faded { width: 44%; opacity: 0.55; }
-.assistant-loading-dots { width: max-content; margin: -3px 0 0 -10px; padding: 5px 11px; border-radius: 999px; background: rgba(13, 25, 47, 0.82); color: #f1f3ff; font-size: 13px; letter-spacing: 2px; line-height: 1; }
+
+.assistant-loading-glow {
+  position: absolute;
+  inset: 7px;
+  border-radius: 50%;
+  background: rgba(139, 92, 246, 0.22);
+  filter: blur(9px);
+  animation: assistant-loading-breathe 2.2s ease-in-out infinite;
+}
+
+.assistant-loading-orbit {
+  position: absolute;
+  inset: 6px 0;
+  border: 1px solid rgba(198, 176, 255, 0.43);
+  border-right-color: rgba(198, 176, 255, 0.06);
+  border-radius: 50%;
+  transform: rotate(-28deg) scaleX(0.72);
+  animation: assistant-loading-spin 3.8s linear infinite;
+}
+
+.assistant-loading-orbit-dot {
+  position: absolute;
+  top: 5px;
+  left: 7px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #efe7ff;
+  box-shadow: 0 0 9px 2px rgba(190, 153, 255, 0.9);
+}
+
+.assistant-loading-core {
+  z-index: 1;
+  display: grid;
+  width: 31px;
+  height: 31px;
+  place-items: center;
+  color: #f5efff;
+  filter: drop-shadow(0 0 8px rgba(176, 130, 255, 0.95));
+  animation: assistant-loading-float 2.2s ease-in-out infinite;
+
+  svg { width: 23px; height: 23px; stroke-width: 1.7; }
+}
+
+.assistant-loading-label {
+  color: rgba(220, 215, 246, 0.82);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  animation: assistant-loading-label-glow 2.2s ease-in-out infinite;
+}
+
+@keyframes assistant-loading-spin { to { transform: rotate(332deg) scaleX(0.72); } }
+@keyframes assistant-loading-breathe { 50% { opacity: 0.48; transform: scale(0.78); } }
+@keyframes assistant-loading-float { 50% { transform: translateY(-2px) scale(1.06); } }
+@keyframes assistant-loading-label-glow { 50% { color: rgba(244, 238, 255, 1); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-loading-orbit,
+  .assistant-loading-glow,
+  .assistant-loading-core,
+  .assistant-loading-label { animation: none; }
+}
 
 .chat-page .input-dock {
   z-index: 4;
@@ -2439,12 +2488,18 @@
 .chat-page .chat-composer-panel .chat-input {
   width: 100%;
   min-height: 38px;
+  overflow-wrap: anywhere;
+  box-sizing: border-box;
   grid-column: 1 / 4;
   grid-row: 1;
-  padding: 0 4px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 4px !important;
   color: #f8f9ff !important;
   font-size: 17px !important;
   line-height: 1.5 !important;
+  outline: none !important;
+  box-shadow: none !important;
 }
 .chat-page .chat-composer-panel .chat-input::placeholder { color: rgba(222, 229, 250, 0.62) !important; opacity: 1; }
 

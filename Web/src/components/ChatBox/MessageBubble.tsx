@@ -2,7 +2,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Box,
-  Check,
   ChevronRight,
   BarChart3,
   Code2,
@@ -29,10 +28,9 @@ import { isPreviewableGeneratedFile } from '../../preview/core/previewFilePresen
 import { extractVideoUrl, removeVideoUrl, buildProxyVideoUrl } from '../../utils/video';
 import type { MessageBubbleProps, SearchSource } from '../../types';
 import { Button } from '../ui/button';
+import ProjectChanges from '../chat/ProjectChanges';
 
 const QUOTA_WARNING_THRESHOLD = MODEL_CONFIG.QUOTA_WARNING_THRESHOLD;
-
-type ExecutionStepState = 'complete' | 'active' | 'upcoming' | 'skipped';
 
 function ExecutionTimeline({
   phase = 'thinking',
@@ -63,9 +61,6 @@ function ExecutionTimeline({
     ? ['正在搜索关键词', '查看相关网页', '分析内容并整理要点', '生成最终回答']
     : ['分析并理解需求', '准备执行任务', '整合执行结果', '生成最终回答'];
   const steps = stepTitles.map((title, index) => {
-    const stepNumber = index + 1;
-    let state: ExecutionStepState = stepNumber < activeStep ? 'complete' : stepNumber === activeStep ? 'active' : 'upcoming';
-
     const descriptions = isSearch
       ? [
           '提取问题重点与检索词',
@@ -80,31 +75,26 @@ function ExecutionTimeline({
           '组织清晰、完整的回答',
         ];
     const icons = isSearch ? [Search, Link2, FileText, BarChart3] : [Search, Globe2, FileSearch, Sparkles];
-    return { title, description: descriptions[index], state, Icon: icons[index] };
+    return { title, description: descriptions[index], Icon: icons[index] };
   });
+  const currentStep = steps[Math.min(activeStep, steps.length) - 1];
+  const CurrentStepIcon = currentStep.Icon;
 
   return (
     <section className="execution-timeline" aria-label="助手执行进度" aria-live="polite">
       <ol className="execution-steps">
-        {steps.map((step, index) => (
-          <li className={`execution-step is-${step.state}`} key={`${index}-${step.title}`}>
-            <span className="execution-step-rail" aria-hidden="true">
-              <span className="execution-step-node">
-                {step.state === 'complete'
-                  ? <Check />
-                  : step.state === 'active'
-                    ? <span className="execution-step-node-empty" />
-                    : <span className="execution-step-node-dot" />}
-              </span>
-              {index < steps.length - 1 && <span className="execution-step-line" />}
+        <li className="execution-step is-active">
+          <span className="execution-step-rail" aria-hidden="true">
+            <span className="execution-step-node">
+              <span className="execution-step-node-empty" />
             </span>
-            <span className="execution-step-copy">
-              <strong>{step.title}</strong>
-              <small>{step.description}</small>
-            </span>
-            <span className="execution-step-icon"><step.Icon aria-hidden="true" /></span>
-          </li>
-        ))}
+          </span>
+          <span className="execution-step-copy">
+            <strong>{currentStep.title}</strong>
+            <small>{currentStep.description}</small>
+          </span>
+          <span className="execution-step-icon"><CurrentStepIcon aria-hidden="true" /></span>
+        </li>
       </ol>
     </section>
   );
@@ -244,6 +234,7 @@ function SearchSourcesBlock({ sources }: { sources: SearchSource[] }) {
 
 export default function MessageBubble({
   message,
+  currentPreviewProject,
   uploadedAttachments: replyAttachments = [],
   onPreviewFile,
   onPreviewProject,
@@ -269,15 +260,35 @@ export default function MessageBubble({
   const hasProjectOutput = (message.previewChanges?.length ?? 0) > 0;
   const isPresentationSnapshot = message.previewSnapshot?.template === 'presentation';
   const hasRestorableProjectOutput = Boolean(message.previewSnapshot && (hasProjectOutput || isPresentationSnapshot));
-  const projectArtifactSummary = hasRestorableProjectOutput && message.previewSnapshot
+  const snapshotArtifactSummary = hasRestorableProjectOutput && message.previewSnapshot
     ? {
         name: previewArtifactName(message.previewSnapshot, previewSnapshotExtension(message.previewSnapshot)),
         title: previewArtifactName(message.previewSnapshot, previewSnapshotExtension(message.previewSnapshot))
           .replace(/\.[^.]+$/, ''),
         extension: previewSnapshotExtension(message.previewSnapshot),
         kind: previewSnapshotExtension(message.previewSnapshot) === '.glb' ? '3D 模型' : isPresentationSnapshot ? '演示文稿' : '网页项目',
+    }
+    : null;
+  const currentPreviewProjectIsRelevant = Boolean(currentPreviewProject && (
+    message.previewChanges?.some((change) => change.projectId === currentPreviewProject.id)
+    || (!message.previewChanges?.length && !message.previewSnapshot && (message.tokenUsage?.preview_tool_calls ?? 0) > 0)
+  ));
+  const currentPreviewExtension = currentPreviewProject?.outputExtension ?? '.html';
+  const currentPreviewProjectSummary = currentPreviewProjectIsRelevant && currentPreviewProject
+    ? {
+        name: /\.[a-z0-9]+$/i.test(currentPreviewProject.name)
+          ? currentPreviewProject.name
+          : `${currentPreviewProject.name}${currentPreviewExtension}`,
+        title: currentPreviewProject.name.replace(/\.[^.]+$/, ''),
+        extension: currentPreviewExtension,
+        kind: currentPreviewExtension === '.glb'
+          ? '3D 模型'
+          : currentPreviewExtension === '.pptx' || currentPreviewProject.template === 'presentation'
+            ? '演示文稿'
+            : '网页项目',
       }
     : null;
+  const projectArtifactSummary = snapshotArtifactSummary ?? currentPreviewProjectSummary;
   const changedSourcePaths = message.previewChanges?.map((change) => change.path) ?? [];
   const preferredSourcePath =
     (isPresentationSnapshot && message.previewSnapshot?.files['/presentation.json'] ? '/presentation.json' : undefined) ??
@@ -368,11 +379,15 @@ export default function MessageBubble({
         )}
 
         {showExecutionTimeline && !displayContent && (
-          <div className="assistant-loading-card" aria-hidden="true">
-            <span className="assistant-skeleton-line is-short" />
-            <span className="assistant-skeleton-line is-medium" />
-            <span className="assistant-skeleton-line is-faded" />
-            <span className="assistant-loading-dots">•••</span>
+          <div className="assistant-loading-indicator" role="status" aria-label="正在生成回答">
+            <span className="assistant-loading-visual" aria-hidden="true">
+              <span className="assistant-loading-glow" />
+              <span className="assistant-loading-orbit">
+                <span className="assistant-loading-orbit-dot" />
+              </span>
+              <span className="assistant-loading-core"><Sparkles /></span>
+            </span>
+            <span className="assistant-loading-label">正在整理内容</span>
           </div>
         )}
 
@@ -387,37 +402,20 @@ export default function MessageBubble({
           ))}
 
         {!isUser && !message.isStreaming && message.projectChanges && message.projectChanges.length > 0 && (
-          <div className="project-changes" aria-label="本次代码修改">
-            <div className="project-changes-title">
-              已修改 {message.projectChanges.length} 个文件
-            </div>
-            {message.projectChanges.map((change, index) => (
-              <details key={`${change.path}-${index}`} className="project-change">
-                <summary>{change.path} · 查看 diff</summary>
-                <pre>{change.diff}</pre>
-              </details>
-            ))}
-          </div>
+          <ProjectChanges changes={message.projectChanges} label="本次代码修改"
+            title={`本次变更 ${message.projectChanges.length} 个文件`} />
         )}
 
         {!isUser && !message.isStreaming && message.previewChanges && message.previewChanges.length > 0 && (
-          <div className="project-changes" aria-label="虚拟项目文件">
-            <div className="project-changes-title">
-              {message.previewChangesRestored
-                ? `已恢复项目文件 ${message.previewChanges.length} 个`
-                : `本轮更新了 ${message.previewChanges.length} 个项目文件`}
-            </div>
-            {message.previewChanges.map((change) => (
-              <details key={change.path} className="project-change">
-                <summary>{message.previewChangesRestored ? change.path : `${change.path} · 查看 diff`}</summary>
-                {change.diff && <pre>{change.diff}</pre>}
-              </details>
-            ))}
-          </div>
+          <ProjectChanges changes={message.previewChanges} label="虚拟项目文件"
+            restored={message.previewChangesRestored}
+            title={message.previewChangesRestored
+              ? `已恢复项目文件 ${message.previewChanges.length} 个`
+              : `本轮更新了 ${message.previewChanges.length} 个项目文件`} />
         )}
 
         {!isUser && !message.isStreaming && (
-          hasRestorableProjectOutput || previewableGeneratedFiles.length > 0
+          projectArtifactSummary || hasRestorableProjectOutput || hasProjectOutput || previewableGeneratedFiles.length > 0
         ) && (
           <>
             {projectArtifactSummary && (
@@ -442,12 +440,13 @@ export default function MessageBubble({
                 </span>
               </div>
             )}
-            {(onPreviewProject || (!hasRestorableProjectOutput && onPreviewFile)) && (
+            {(((hasRestorableProjectOutput || hasProjectOutput) && onPreviewProject)
+              || (!hasRestorableProjectOutput && previewableGeneratedFiles.length > 0 && onPreviewFile)) && (
               <div
-                className={`message-artifact-actions ${hasRestorableProjectOutput ? 'message-project-actions' : ''}`}
+                className={`message-artifact-actions ${hasRestorableProjectOutput || hasProjectOutput ? 'message-project-actions' : ''}`}
                 aria-label="预览和生成的产物"
               >
-              {hasRestorableProjectOutput && onPreviewProject && (
+              {(hasRestorableProjectOutput || hasProjectOutput) && onPreviewProject && (
                 <Button
                   type="button"
                   variant="outline"
@@ -462,7 +461,7 @@ export default function MessageBubble({
                   </span>
                 </Button>
               )}
-              {hasRestorableProjectOutput && onPreviewProject && (
+              {(hasRestorableProjectOutput || hasProjectOutput) && onPreviewProject && (
                 <Button
                   type="button"
                   variant="outline"
@@ -570,7 +569,6 @@ export default function MessageBubble({
                 aria-label="正在生成"
               />
             )}
-            {message.isStreaming && displayContent && <span className="cursor-blink">▋</span>}
           </>
         )}
       </div>

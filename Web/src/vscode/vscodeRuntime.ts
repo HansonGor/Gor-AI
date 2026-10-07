@@ -2,6 +2,22 @@
 export function installVscodeWebviewRuntime(): void {
   // Keep VS Code conversations in their own server-side session namespace.
   document.documentElement.dataset.gorClientMode = 'vscode';
+  let activeWorkspaceId: string | undefined;
+  const workspaceIdWaiters = new Set<(workspaceId: string) => void>();
+  window.addEventListener('message', (event: MessageEvent) => {
+    const data = event.data;
+    if (!data || typeof data !== 'object' || data.type !== 'gor.workspaceContext') return;
+    activeWorkspaceId = typeof data.workspaceId === 'string' ? data.workspaceId : undefined;
+    if (activeWorkspaceId) {
+      document.documentElement.dataset.gorWorkspaceId = activeWorkspaceId;
+      for (const resolve of workspaceIdWaiters) resolve(activeWorkspaceId);
+      workspaceIdWaiters.clear();
+    } else {
+      delete document.documentElement.dataset.gorWorkspaceId;
+    }
+  });
+  const vscodeApi = (window as any).acquireVsCodeApi?.();
+  vscodeApi?.postMessage?.({ type: 'gor.workspaceContextReady' });
 
   const apiMeta = document.querySelector<HTMLMetaElement>('meta[name="gor-api-base"]');
   const assetsMeta = document.querySelector<HTMLMetaElement>('meta[name="gor-assets-base"]');
@@ -24,9 +40,22 @@ export function installVscodeWebviewRuntime(): void {
   const apiUrl = (path: string) => new URL(path.replace(/^\/+/, ''), `${apiBase.origin}/`).toString();
   const assetUrl = (path: string) => new URL(path.replace(/^\/+/, ''), assetsBase).toString();
   const isApiPath = (pathname: string) => pathname === '/api' || pathname.startsWith('/api/');
+  const waitForWorkspaceId = (timeoutMs = 3_000): Promise<string | undefined> => {
+    if (activeWorkspaceId) return Promise.resolve(activeWorkspaceId);
+    return new Promise((resolve) => {
+      const finish = (workspaceId?: string) => {
+        clearTimeout(timer);
+        workspaceIdWaiters.delete(onWorkspaceId);
+        resolve(workspaceId);
+      };
+      const onWorkspaceId = (workspaceId: string) => finish(workspaceId);
+      const timer = window.setTimeout(() => finish(), timeoutMs);
+      workspaceIdWaiters.add(onWorkspaceId);
+    });
+  };
 
   const originalFetch = window.fetch.bind(window);
-  window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+  window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const raw = input instanceof Request ? input.url : input instanceof URL ? input.href : input;
     let parsed: URL;
     try {
@@ -34,11 +63,37 @@ export function installVscodeWebviewRuntime(): void {
     } catch {
       return originalFetch(input, init);
     }
-    if (!isApiPath(parsed.pathname) || parsed.origin === apiBase.origin) return originalFetch(input, init);
+    if (!isApiPath(parsed.pathname)) return originalFetch(input, init);
+
+    let requestInit = init;
+    if (parsed.pathname === '/api/chat' && typeof init?.body === 'string') {
+      try {
+        const body = JSON.parse(init.body);
+        if (body && typeof body === 'object' && !Array.isArray(body)) {
+          const chatBody = { ...body, clientMode: 'vscode' } as Record<string, unknown>;
+          for (const key of Object.keys(chatBody)) {
+            if (key.startsWith('previewProject') || key.startsWith('previewServer') || key.startsWith('previewContent') || key === 'newPreviewProject') delete chatBody[key];
+          }
+          // A chat submitted immediately after opening the view can race the
+          // extension's WebSocket registration. Wait briefly for the handshake
+          // instead of silently sending a write request without its workspace.
+          const workspaceId = activeWorkspaceId ?? await waitForWorkspaceId();
+          if (workspaceId) chatBody.workspaceId = workspaceId;
+          else delete chatBody.workspaceId;
+          requestInit = {
+            ...init,
+            body: JSON.stringify(chatBody),
+          };
+        }
+      } catch {
+        // Leave malformed/non-JSON requests untouched; normal Chat requests are JSON.
+      }
+    }
+    if (parsed.origin === apiBase.origin) return originalFetch(input, requestInit);
 
     const target = apiUrl(`${parsed.pathname}${parsed.search}${parsed.hash}`);
-    if (input instanceof Request) return originalFetch(new Request(target, input), init);
-    return originalFetch(target, init);
+    if (input instanceof Request) return originalFetch(new Request(target, input), requestInit);
+    return originalFetch(target, requestInit);
   }) as typeof window.fetch;
 
   const rewriteElement = (element: Element) => {

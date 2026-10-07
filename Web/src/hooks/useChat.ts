@@ -84,7 +84,7 @@ export function useChat() {
     async (sid: string) => {
       const success = await selectSessionBase(sid, isLoading);
       if (success) {
-        usePreviewProjectStore.getState().createProject('react');
+        usePreviewProjectStore.getState().clearProject();
         setMessagesList([]);
         await loadSessionCache(sid);
       }
@@ -101,7 +101,7 @@ export function useChat() {
     if (sid) {
       sessionCacheRequestRef.current += 1;
       setIsSessionCacheLoading(false);
-      usePreviewProjectStore.getState().createProject('react');
+      usePreviewProjectStore.getState().clearProject();
       setMessagesList([]);
       clearInput();
       void waitForSessionCreation(sid).then((created) => {
@@ -122,7 +122,7 @@ export function useChat() {
         void deleteSessionPreview(sid).catch((error) => console.warn('[Preview] 清理已删除会话缓存失败:', error));
       }
       if (newSid && newSid !== sessionId) {
-        usePreviewProjectStore.getState().createProject('react');
+        usePreviewProjectStore.getState().clearProject();
         setMessagesList([]);
         await loadSessionCache(newSid);
       }

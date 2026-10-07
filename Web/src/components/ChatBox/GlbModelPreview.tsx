@@ -101,7 +101,7 @@ export default function GlbModelPreview({ file }: { file: GeneratedFile }) {
       updateCamera();
     };
 
-    void fetch(file.downloadUrl, { signal: controller.signal, credentials: 'same-origin' })
+    void fetch(file.downloadUrl, { signal: controller.signal, credentials: 'same-origin', cache: 'no-store' })
       .then(async (response) => {
         if (!response.ok) throw new Error(`模型下载失败（${response.status}）。`);
         const length = Number(response.headers.get('content-length') || 0);

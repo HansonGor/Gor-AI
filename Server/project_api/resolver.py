@@ -4,10 +4,10 @@ from project_api.types import ProjectRef
 
 
 def resolve_current_project_ref(project_id: str | None, provider: str = "preview") -> ProjectRef | None:
-    """Resolve an active Preview project ID supplied by the chat request context.
+    """Resolve the active provider ID supplied by the chat request context.
 
-    Session-to-project lookup remains in the chat route. The ProjectProvider never
-    receives or looks up a session ID.
+    Session-to-project lookup remains outside this resolver. A VS Code workspace ID
+    is opaque here; host paths never become project IDs.
     """
     if not isinstance(project_id, str) or not project_id.strip():
         return None

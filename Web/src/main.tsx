@@ -6,6 +6,8 @@ import './index.less';
 import App from './App';
 import { FeedbackProvider } from './components/ui/feedback';
 
+document.documentElement.dataset.gorClientMode = 'web';
+
 const rootElement = document.getElementById('root');
 if (!rootElement) {
   throw new Error('Root element not found');

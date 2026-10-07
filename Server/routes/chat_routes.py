@@ -2,14 +2,16 @@
 会话管理路由
 职责：会话创建、消息查询、会话列表、消息保存、会话删除
 """
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from typing import Optional
 import re
 import uuid
 import json
 from pathlib import Path
+from io import BytesIO
+from urllib.parse import quote
 
 from db.supabase_chat import (
     create_session,
@@ -177,32 +179,23 @@ async def upload_session_attachment(
     }
 
 
-@router.post("/session/{session_id}/generated-artifacts")
-async def save_generated_glb(session_id: str, file: UploadFile = File(...)):
-    """Persist a validated GLB and attach its metadata to the latest assistant message."""
-    if not (file.filename or "").lower().endswith(".glb"):
+def _glb_artifact_name(name: str) -> str:
+    if not name.lower().endswith(".glb"):
         raise HTTPException(status_code=415, detail="目前只支持保存 GLB 文件。")
-    if not await session_exists(session_id):
-        raise HTTPException(status_code=404, detail="会话不存在")
-
-    artifact_id = str(uuid.uuid4())
-    raw_name = Path(file.filename.replace("\\", "/")).name
+    raw_name = Path(name.replace("\\", "/")).name
     safe_name = re.sub(r"[^\w.()\- ]", "_", raw_name, flags=re.UNICODE).strip(" .")[:180]
     if not safe_name or not safe_name.lower().endswith(".glb"):
         raise HTTPException(status_code=422, detail="GLB 文件名无效。")
-    stored_name = f"{artifact_id}.glb"
-    ensure_storage_dirs()
-    destination = GENERATED_ROOT / stored_name
-    size = 0
+    safe_name = re.sub(r"(?:\.glb\s*)+$", "", safe_name, flags=re.I).strip(" .") or "3D Model"
+    return f"{safe_name}.glb"
+
+
+async def _save_virtual_glb(session_id: str, safe_name: str, payload: bytes, message_id: str | None):
+    """Persist virtual bytes and their message association atomically, never to disk."""
+    artifact_id = str(uuid.uuid4())
+    size = len(payload)
     try:
-        with destination.open("xb") as output:
-            while chunk := await file.read(1024 * 1024):
-                size += len(chunk)
-                if size > MAX_GENERATED_GLB_BYTES:
-                    raise HTTPException(status_code=413, detail="GLB 文件不能超过 32 MB。")
-                output.write(chunk)
-        with destination.open("rb") as saved:
-            validate_glb_stream(saved, size)
+        validate_glb_stream(BytesIO(payload), size)
         reference = {
             "artifactId": artifact_id,
             "fileType": "3d",
@@ -210,22 +203,55 @@ async def save_generated_glb(session_id: str, file: UploadFile = File(...)):
             "downloadUrl": f"/api/chat/session/{session_id}/generated-artifacts/{artifact_id}",
         }
         await save_session_generated_artifact(
-            artifact_id, session_id, safe_name, stored_name,
+            artifact_id, session_id, safe_name, None,
             "model/gltf-binary", size, reference,
+            message_id=message_id if isinstance(message_id, str) else None,
+            artifact_bytes=payload,
         )
         return {"success": True, "file": reference, "size": size}
     except HTTPException:
-        destination.unlink(missing_ok=True)
         raise
     except GlbValidationError as exc:
-        destination.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail=str(exc))
     except ValueError as exc:
-        destination.unlink(missing_ok=True)
         raise HTTPException(status_code=409, detail=str(exc))
     except Exception as exc:
-        destination.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"保存 GLB 失败：{exc}")
+
+
+async def _bounded_glb_bytes(chunks) -> bytes:
+    payload = bytearray()
+    async for chunk in chunks:
+        if len(payload) + len(chunk) > MAX_GENERATED_GLB_BYTES:
+            raise HTTPException(status_code=413, detail="GLB 文件不能超过 32 MB。")
+        payload.extend(chunk)
+    return bytes(payload)
+
+
+@router.put("/session/{session_id}/generated-artifacts")
+async def save_virtual_generated_glb(session_id: str, request: Request, name: str, message_id: str | None = None):
+    """Raw-body export avoids multipart temporary-file spooling on the Web path."""
+    safe_name = _glb_artifact_name(name)
+    if not await session_exists(session_id):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    payload = await _bounded_glb_bytes(request.stream())
+    return await _save_virtual_glb(session_id, safe_name, payload, message_id)
+
+
+@router.post("/session/{session_id}/generated-artifacts")
+async def save_generated_glb(session_id: str, file: UploadFile = File(...), message_id: str | None = Form(None)):
+    """Legacy client compatibility; never create a durable generated file."""
+    try:
+        safe_name = _glb_artifact_name(file.filename or "")
+        if not await session_exists(session_id):
+            raise HTTPException(status_code=404, detail="会话不存在")
+
+        async def chunks():
+            while chunk := await file.read(1024 * 1024):
+                yield chunk
+
+        payload = await _bounded_glb_bytes(chunks())
+        return await _save_virtual_glb(session_id, safe_name, payload, message_id)
     finally:
         await file.close()
 
@@ -235,13 +261,23 @@ async def download_generated_artifact(session_id: str, artifact_id: str):
     record = await get_session_generated_artifact(session_id, artifact_id)
     if not record:
         raise HTTPException(status_code=404, detail="生成产物不存在")
+    headers = {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": f"inline; filename*=utf-8''{quote(record['name'], safe='')}",
+    }
+    if record.get("artifact_bytes") is not None:
+        return Response(content=bytes(record["artifact_bytes"]), media_type=record["content_type"], headers=headers)
+    # Read-only fallback for old artifacts. Do not migrate/delete user data here.
+    if not record.get("relative_path"):
+        raise HTTPException(status_code=404, detail="生成产物内容不存在")
     relative_path = Path(record["relative_path"])
     if relative_path.is_absolute() or ".." in relative_path.parts:
         raise HTTPException(status_code=400, detail="产物路径无效")
     filepath = (GENERATED_ROOT / relative_path).resolve()
     if not filepath.is_relative_to(GENERATED_ROOT) or filepath.is_symlink() or not filepath.is_file():
         raise HTTPException(status_code=404, detail="生成文件不存在")
-    return FileResponse(filepath, media_type=record["content_type"], filename=record["name"])
+    return FileResponse(filepath, media_type=record["content_type"], headers=headers)
 
 
 @router.get("/session/{session_id}/attachments/{attachment_id}")

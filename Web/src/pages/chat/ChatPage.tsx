@@ -1,31 +1,23 @@
 // AI 对话页面组件
 import { useEffect, useCallback, useMemo, useRef, useState } from 'react';
 import {
-  ArrowLeft,
-  ChevronLeft,
-  Menu,
-  PanelLeftClose,
-  PanelLeftOpen,
-  PanelRightClose,
-  PanelRightOpen,
-} from 'lucide-react';
-import { Button } from '../../components/ui/button';
-import ChatBox from '../../components/ChatBox';
-import SessionCacheLoader from '../../components/ChatBox/SessionCacheLoader';
+  ChatBox,
+  ChatHeader,
+  ChatPageLayout,
+  ChatSidebarLayer,
+  PreviewWorker,
+  SessionCacheLoader,
+  WebPreview,
+} from '../../components/chat';
+import type { PreviewWorkerMode, PreviewWorkerTarget } from '../../components/chat';
 import GorBrandLogo from '../../components/GorBrandLogo';
-import WebPreview from '../../components/ChatBox/WebPreview';
-import PreviewWorker from '../../components/ChatBox/PreviewWorker';
-import type {
-  PreviewWorkerMode,
-  PreviewWorkerTarget,
-} from '../../components/ChatBox/PreviewWorker';
-import Sidebar from '../../components/Sidebar/Sidebar';
 import { useChat } from '../../hooks/useChat';
 import { useLayout } from '../../hooks/useLayout';
 import { useTheme } from '../../hooks/useTheme';
 import { nativeBridge } from '../../utils/nativeBridge';
+import { getChatClientMode } from '../../utils/clientMode';
 import '../../App.less';
-import './chat.less';
+import '../../components/chat/styles.less';
 import type { GeneratedFile, PreviewProjectSnapshot, UploadedAttachment } from '../../types';
 import { importPreviewArchive, importPreviewDirectory } from '../../preview/core/importArchive';
 import type { ImportedDistArchive, ImportedPreviewArchive } from '../../preview/core/importArchive';
@@ -37,12 +29,33 @@ import { getSessionPreviewProject, saveSessionPreviewProject } from '../../api/p
 import { hasCurrentProjectSource, hasPreviewFiles, isPreviewableGeneratedFile, isPreviewableUploadedAttachment } from '../../preview/core/previewFilePresence';
 import { getSnapshotBackedHtmlArtifactUrls } from '../../preview/core/snapshotArtifactDedup';
 import { canonicalizePresentationFiles, isPresentationSnapshotFile } from '../../preview/core/presentationSnapshot';
-import { deletePendingSessionAttachment, saveGeneratedGlb, uploadSessionAttachment } from '../../api/chat';
+import { deletePendingSessionAttachment, uploadSessionAttachment } from '../../api/chat';
+import { saveGeneratedGlb } from '../../api/webProjectArtifacts';
 import { createTemplateFiles } from '../../preview/templates';
+import { createMessagePreviewSnapshot } from '../../preview/core/projectSnapshot';
+import { linkGeneratedFileToProject } from '../../preview/core/artifactFormat';
+import { previewArtifactCreationOrder } from '../../preview/core/artifactSelection';
 import { useFeedback } from '../../components/ui/feedback';
 
+function isUntouchedStarterProject(project: {
+  name?: string;
+  template?: string;
+  revision?: number;
+  files?: Record<string, string>;
+} | null | undefined): boolean {
+  if (!project || (project.template !== 'react' && project.template !== 'html')) return false;
+  if ((project.revision ?? 0) !== 0) return false;
+  const expectedName = project.template === 'react' ? 'React Preview' : 'HTML Preview';
+  if (project.name !== expectedName || !project.files) return false;
+  const expectedFiles = createTemplateFiles(project.template);
+  const actualPaths = Object.keys(project.files).sort();
+  const expectedPaths = Object.keys(expectedFiles).sort();
+  return actualPaths.length === expectedPaths.length
+    && actualPaths.every((path, index) => path === expectedPaths[index] && project.files?.[path] === expectedFiles[path]);
+}
+
 export default function ChatPage() {
-  const isVscodePluginMode = document.documentElement.dataset.gorClientMode === 'vscode';
+  const isVscodePluginMode = getChatClientMode() === 'vscode';
   const {
     sessions,
     sessionId,
@@ -120,6 +133,9 @@ export default function ChatPage() {
     if (!sessionId) throw new Error('当前没有活动会话，无法保存模型。');
     const file = await saveGeneratedGlb(sessionId, blob, name);
     addGeneratedFileToLatestAssistant(file);
+    setActivePreviewFile(file);
+    setPreviewWorkerTarget('generated');
+    setPreviewWorkerMode('preview');
     notify(`已保存 ${file.displayName} 到当前会话。`);
     return file;
   }, [sessionId, addGeneratedFileToLatestAssistant, notify]);
@@ -132,6 +148,9 @@ export default function ChatPage() {
   const [activeProjectSourcePath, setActiveProjectSourcePath] = useState<string | undefined>();
   const [hiddenArtifactsBySession, setHiddenArtifactsBySession] = useState<Record<string, string[]>>({});
   const [activePreviewFile, setActivePreviewFile] = useState<GeneratedFile | null>(null);
+  const lastAutoGlbRef = useRef<string | null>(null);
+  const lastProjectChangeRef = useRef<string | null>(null);
+  const defaultOpenedPreviewSessionRef = useRef<string | null>(null);
   const [activeUploadedAttachmentKey, setActiveUploadedAttachmentKey] = useState<string | null>(null);
   const [importedDist, setImportedDist] = useState<ImportedDistArchive | null>(null);
   const [hasImportedSource, setHasImportedSource] = useState(false);
@@ -140,11 +159,12 @@ export default function ChatPage() {
   const [pendingImportedUploadName, setPendingImportedUploadName] = useState<string | null>(null);
   const [loadedPreviewSessionId, setLoadedPreviewSessionId] = useState<string | null>(null);
   const previewProjectState = usePreviewProjectStore();
+  const artifactCreationOrder = useMemo(() => previewArtifactCreationOrder(messages), [messages]);
   const projectSnapshots = useMemo(() => {
     const latestByProject = new Map<string, PreviewProjectSnapshot>();
     messages.forEach((message) => {
       const snapshot = message.role === 'assistant' ? message.previewSnapshot : undefined;
-      if (!snapshot) return;
+      if (!snapshot || isUntouchedStarterProject(snapshot)) return;
       const snapshotProjectId = snapshot.projectId || snapshot.id;
       if (
         snapshot.template !== 'presentation'
@@ -161,6 +181,7 @@ export default function ChatPage() {
   }, [messages, previewProjectState.project.id, previewProjectState.project.serverRevision, hasServerPreviewProject]);
   const messagePreviewArtifacts = useMemo(() => messages.flatMap((message) => {
     if (message.role !== 'assistant') return [];
+    if (isUntouchedStarterProject(message.previewSnapshot)) return [];
     const files = message.files?.length ? message.files : message.file ? [message.file] : [];
     if (
       message.previewSnapshot
@@ -185,7 +206,11 @@ export default function ChatPage() {
     const unique = new Map<string, GeneratedFile>();
     messages.forEach((message) => {
       const files = message.files?.length ? message.files : message.file ? [message.file] : [];
-      canonicalizePresentationFiles(files, message.previewSnapshot).forEach((file) => unique.set(file.downloadUrl, file));
+      const projectIds = message.previewChanges?.map((change) => change.projectId) ?? [];
+      canonicalizePresentationFiles(files, message.previewSnapshot).forEach((file) => {
+        const linked = linkGeneratedFileToProject(file, projectIds);
+        unique.set(linked.downloadUrl, linked);
+      });
     });
     projectChanges.forEach((change) => {
       if (!/\.html?$/i.test(change.path)) return;
@@ -205,14 +230,16 @@ export default function ChatPage() {
   const previewSourcePaths = useMemo(() => {
     const changedPaths = new Set<string>();
     messages.forEach((message) => {
-      message.previewChanges?.forEach((change) => changedPaths.add(change.path));
+      message.previewChanges?.forEach((change) => {
+        if (change.projectId === previewProjectState.project.id) changedPaths.add(change.path);
+      });
     });
     const existingChangedPaths = [...changedPaths].filter((path) => Object.prototype.hasOwnProperty.call(previewProjectState.project.files, path));
     if (hasImportedSource) {
       return [...new Set([...Object.keys(previewProjectState.project.files), ...existingChangedPaths])];
     }
     return existingChangedPaths;
-  }, [messages, previewProjectState.project.files, hasImportedSource]);
+  }, [messages, previewProjectState.project.id, previewProjectState.project.files, hasImportedSource]);
   const uploadedAttachments = useMemo(() => {
     const unique = new Map<string, UploadedAttachment>();
     messages.forEach((message) => {
@@ -375,14 +402,37 @@ export default function ChatPage() {
     setPreviewWorkerTarget(sameUpload && importedDist ? 'uploaded-dist' : sameUpload && hasImportedSource ? 'project' : 'uploaded-missing');
   }, [sessionId, importedUploadName, importedDist, hasImportedSource, notify]);
   const isPreviewSessionLoaded = Boolean(sessionId) && loadedPreviewSessionId === sessionId;
+  useEffect(() => {
+    if (!isPreviewSessionLoaded || previewProjectState.project.origin !== 'generated') return;
+    setHasImportedSource(false);
+    setImportedUploadName(null);
+  }, [isPreviewSessionLoaded, previewProjectState.project.id, previewProjectState.project.origin]);
   const visibleImportedDist = isPreviewSessionLoaded ? importedDist : null;
   const visibleImportedSource = isPreviewSessionLoaded && hasImportedSource;
+  const hasCurrentProjectMessageChanges = Object.keys(previewProjectState.project.files).length > 0 && messages.some((message) =>
+    message.role === 'assistant'
+    && message.previewChanges?.some((change) => change.projectId === previewProjectState.project.id),
+  );
   const hasProjectSource = hasCurrentProjectSource(
     Object.keys(previewProjectState.project.files).length,
     visibleImportedSource,
     hasServerPreviewProject || previewProjectState.project.serverRevision !== undefined,
     previewSourcePaths.length,
-  );
+  ) || hasCurrentProjectMessageChanges;
+  const currentPreviewProject = useMemo(() => {
+    if (!hasProjectSource) return undefined;
+    const snapshot = createMessagePreviewSnapshot(
+      previewProjectState.project,
+      'current-preview-project',
+      previewSourcePaths,
+    );
+    return {
+      id: snapshot.id,
+      name: snapshot.name,
+      template: snapshot.template,
+      outputExtension: snapshot.outputExtension,
+    };
+  }, [hasProjectSource, previewProjectState.project, previewSourcePaths]);
   // A session-level server project alone is not enough to show the Worker entry:
   // require source tied to a message in this conversation or an explicitly imported source.
   const hasVisibleCurrentProjectSnapshot = messages.some((message) => {
@@ -397,7 +447,7 @@ export default function ChatPage() {
       visibleImportedSource,
       false,
       previewSourcePaths.length,
-    ) || hasVisibleCurrentProjectSnapshot
+    ) || hasVisibleCurrentProjectSnapshot || hasCurrentProjectMessageChanges
   ) && !hiddenArtifactKeys.includes(`project:${previewProjectState.project.id}`);
   const hasVisibleProjectSnapshot = projectSnapshots.some(
     (snapshot) => !hiddenArtifactKeys.includes(`project-snapshot:${snapshot.messageId}`),
@@ -412,6 +462,29 @@ export default function ChatPage() {
     hasImportedDist: visibleImportedDist !== null,
   });
   const visiblePreviewWorkerOpen = !isVscodePluginMode && isPreviewSessionLoaded && previewWorkerOpen && hasPreviewWorkerContent;
+  useEffect(() => {
+    if (isVscodePluginMode || !sessionId || !isSessionReady || isSessionCacheLoading || !hasPreviewWorkerContent) return;
+    if (defaultOpenedPreviewSessionRef.current === sessionId) return;
+    defaultOpenedPreviewSessionRef.current = sessionId;
+    // Open once when real content has finished restoring. A manual collapse
+    // stays collapsed until another generation or explicit user action.
+    if (hasVisibleCurrentProject) setPreviewWorkerTarget('project');
+    else if (hasVisibleProjectSnapshot) {
+      const snapshot = projectSnapshots.find((item) => !hiddenArtifactKeys.includes(`project-snapshot:${item.messageId}`));
+      if (snapshot) setActiveProjectSnapshotMessageId(snapshot.messageId);
+      setPreviewWorkerTarget('project-snapshot');
+    } else if (previewableGeneratedFileCount > 0) {
+      setActivePreviewFile(visibleGeneratedFiles.filter(isPreviewableGeneratedFile).slice(-1)[0] ?? null);
+      setPreviewWorkerTarget('generated');
+    } else if (visibleImportedDist) setPreviewWorkerTarget('uploaded-dist');
+    else if (previewableUploadedAttachmentCount > 0) {
+      const attachment = visibleUploadedAttachments.find(isPreviewableUploadedAttachment);
+      if (attachment) void handlePreviewAttachment(attachment);
+    }
+    setPreviewOpen(false);
+    setPreviewWorkerMode('preview');
+    setPreviewWorkerOpen(true);
+  }, [sessionId, isVscodePluginMode, isSessionReady, isSessionCacheLoading, hasPreviewWorkerContent, hasVisibleCurrentProject, hasVisibleProjectSnapshot, projectSnapshots, hiddenArtifactKeys, previewableGeneratedFileCount, visibleGeneratedFiles, visibleImportedDist, previewableUploadedAttachmentCount, visibleUploadedAttachments, handlePreviewAttachment]);
   useEffect(() => {
     if (visiblePreviewWorkerOpen) {
       setPreviewWorkerMounted(true);
@@ -455,7 +528,11 @@ export default function ChatPage() {
       .then(([localResult, serverResult]) => {
         if (cancelled || activeSessionRef.current !== sessionId) return;
         const localSnapshot = localResult.status === 'fulfilled' ? localResult.value : undefined;
-        const serverSnapshot = serverResult.status === 'fulfilled' ? serverResult.value : null;
+        const fetchedServerSnapshot = serverResult.status === 'fulfilled' ? serverResult.value : null;
+        const serverSnapshot = fetchedServerSnapshot
+          && !isUntouchedStarterProject(fetchedServerSnapshot.project)
+          ? fetchedServerSnapshot
+          : null;
         if (localResult.status === 'rejected') console.warn('[Preview] 恢复本地会话上传内容失败:', localResult.reason);
         if (serverResult.status === 'rejected') console.warn('[Preview] 恢复服务端 Preview 项目失败，将尝试本地缓存:', serverResult.reason);
 
@@ -580,6 +657,7 @@ export default function ChatPage() {
   useEffect(() => {
     if (!sessionId || loadedPreviewSessionRef.current !== sessionId) return;
     const project = previewProjectState.project;
+    if (Object.keys(project.files).length === 0) return;
     const defaultFiles = createTemplateFiles(project.template);
     const differsFromTemplate = project.name !== (project.template === 'react' ? 'React Preview' : 'HTML Preview')
       || JSON.stringify(project.files) !== JSON.stringify(defaultFiles);
@@ -667,13 +745,13 @@ export default function ChatPage() {
   ]);
 
   useEffect(() => {
-    if (previewRevision > 0) {
-      setPreviewOpen(false);
-      setPreviewWorkerMode('preview');
-      setPreviewWorkerTarget('project');
-      setPreviewWorkerOpen(true);
-    }
-  }, [previewRevision]);
+    if (isVscodePluginMode || !isPreviewSessionLoaded || previewRevision <= 0) return;
+    restorePreviewArtifact(`project:${previewProjectState.project.id}`);
+    setPreviewOpen(false);
+    setPreviewWorkerMode('preview');
+    setPreviewWorkerTarget('project');
+    setPreviewWorkerOpen(true);
+  }, [isVscodePluginMode, isPreviewSessionLoaded, previewRevision, previewProjectState.project.id, restorePreviewArtifact]);
 
   useEffect(() => {
     if (!isLoading) return;
@@ -688,7 +766,26 @@ export default function ChatPage() {
   }, [messages, isLoading]);
 
   useEffect(() => {
-    if (projectRevision > 0) {
+    if (isVscodePluginMode || !isLoading) return;
+    const latest = messages[messages.length - 1];
+    const file = latest?.role === 'assistant'
+      ? [...(latest.files ?? []), ...(latest.file ? [latest.file] : [])].find((item) => item.fileType === '3d')
+      : undefined;
+    if (!file || file.downloadUrl === lastAutoGlbRef.current) return;
+    lastAutoGlbRef.current = file.downloadUrl;
+    setActivePreviewFile(file);
+    setPreviewWorkerTarget('generated');
+    setPreviewWorkerMode('preview');
+    setPreviewOpen(false);
+    setPreviewWorkerOpen(true);
+  }, [messages, isLoading, isVscodePluginMode]);
+
+  useEffect(() => {
+    // Adding a GLB must not replay an older HTML change and select that HTML again.
+    const changeKey = `${sessionId}:${projectRevision}`;
+    if (lastProjectChangeRef.current === changeKey) return;
+    lastProjectChangeRef.current = changeKey;
+    if (!isVscodePluginMode && projectRevision > 0) {
       const latestChange = projectChanges[projectChanges.length - 1];
       if (latestChange && /\.html?$/i.test(latestChange.path)) {
         const previewUrl = `/${latestChange.path.split('/').map(encodeURIComponent).join('/')}`;
@@ -701,11 +798,15 @@ export default function ChatPage() {
           setPreviewWorkerOpen(true);
         }
       } else {
-        setPreviewWorkerOpen(false);
-        setPreviewOpen(true);
+        if (Object.keys(previewProjectState.project.files).length === 0) return;
+        setActiveUploadedAttachmentKey(null);
+        setPreviewWorkerTarget('project');
+        setPreviewWorkerMode('preview');
+        setPreviewOpen(false);
+        setPreviewWorkerOpen(true);
       }
     }
-  }, [generatedFiles, projectChanges, projectRevision]);
+  }, [generatedFiles, isVscodePluginMode, projectChanges, projectRevision, sessionId, previewProjectState.project.files]);
 
   useEffect(() => {
     if (generatedFiles.length === 0) {
@@ -882,177 +983,123 @@ export default function ChatPage() {
   }, [canGoBack]);
 
   return (
-    <div className={`chat-page theme-${theme} ${isVscodePluginMode ? 'is-vscode-plugin' : ''} ${sidebarOpen ? '' : 'is-sidebar-collapsed'} ${mobileSidebarVisible ? 'is-mobile-sidebar-open' : ''} ${messages.length === 0 ? 'is-empty-chat' : ''} ${hasPreviewWorkerContent && !isVscodePluginMode ? 'has-preview-worker-content' : ''} ${visiblePreviewWorkerOpen ? 'has-preview-worker-open' : ''}`}>
-      <div className="gor-brand chat-persistent-brand">
-        <GorBrandLogo />
-      </div>
-      {/* PC端常驻左侧边栏 */}
-        <aside className="chat-sidebar-desktop hidden lg:flex" aria-hidden={!sidebarOpen}>
-          <Sidebar
-            sessions={sessions}
-            activeSessionId={sessionId}
-            onSelectSession={selectSession}
-            onCreateSession={createNewSession}
-            onDeleteSession={deleteSessionById}
-            theme={theme}
-            isCollapsed={false}
-          />
-        </aside>
-      <button
-        type="button"
-        className={`chat-sidebar-float-toggle ${sidebarOpen ? 'is-open' : 'is-closed'}`}
-        onClick={togglePCSidebar}
-        aria-label={sidebarOpen ? '收起会话侧边栏' : '展开会话侧边栏'}
-        title={sidebarOpen ? '收起会话列表' : '展开会话列表'}
-      >
-        {sidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
-      </button>
-      {/* 移动端悬浮侧边栏 */}
-      {mobileSidebarMounted && (
-        <>
-          <div
-            className={`chat-mobile-mask ${mobileSidebarVisible ? 'is-entering' : 'is-closing'}`}
-            onClick={closeMobileSidebar}
-            aria-hidden="true"
-          />
-          <div className={`chat-sidebar-mobile ${mobileSidebarVisible ? 'is-entering' : 'is-closing'}`}>
-            <Sidebar
-              sessions={sessions}
-              activeSessionId={sessionId}
-              onSelectSession={handleSelectSession}
-              onCreateSession={handleCreateSessionFromMobileSidebar}
-              onDeleteSession={deleteSessionById}
-              theme={theme}
-              isCollapsed={false}
-            />
-          </div>
-        </>
+    <ChatPageLayout
+      className={`theme-${theme} ${isVscodePluginMode ? 'is-vscode-plugin' : ''} ${sidebarOpen ? '' : 'is-sidebar-collapsed'} ${mobileSidebarVisible ? 'is-mobile-sidebar-open' : ''} ${messages.length === 0 ? 'is-empty-chat' : ''} ${hasPreviewWorkerContent && !isVscodePluginMode ? 'has-preview-worker-content' : ''} ${visiblePreviewWorkerOpen ? 'has-preview-worker-open' : ''}`}
+      brand={<GorBrandLogo />}
+      sidebar={(
+        <ChatSidebarLayer
+          sessions={sessions}
+          activeSessionId={sessionId}
+          theme={theme}
+          sidebarOpen={sidebarOpen}
+          mobileSidebarVisible={mobileSidebarVisible}
+          mobileSidebarMounted={mobileSidebarMounted}
+          onSelectSession={selectSession}
+          onSelectMobileSession={handleSelectSession}
+          onCreateSession={createNewSession}
+          onCreateMobileSession={handleCreateSessionFromMobileSidebar}
+          onDeleteSession={deleteSessionById}
+          onToggleDesktopSidebar={togglePCSidebar}
+          onCloseMobileSidebar={closeMobileSidebar}
+        />
       )}
-
-      {/* 右侧主内容区 */}
-      <div className="chat-main-content">
-        <header className="chat-header">
-          <div className="chat-header-heading">
-            <div className={`chat-header-left ${isVscodePluginMode ? '' : 'lg:hidden'}`}>
-              {canGoBack && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={goBack}
-                  aria-label="返回上一页"
-                  title="返回上一页"
-                  className="chat-icon-btn h-[0.72rem] w-[0.72rem] rounded-full bg-transparent text-white/80 hover:bg-transparent hover:text-white active:scale-90"
-                >
-                  <ArrowLeft size={22} />
-                </Button>
-              )}
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={messages.length === 0 ? (isPC ? togglePCSidebar : openMobileSidebar) : handleHeaderLeft}
-                aria-label={messages.length === 0 ? (isPC && sidebarOpen ? '收起会话列表' : '打开会话列表') : !showNativeBack ? '打开会话列表' : '返回首页'}
-                className="chat-icon-btn h-[0.72rem] w-[0.72rem] rounded-full text-white hover:bg-white/10 hover:text-white active:scale-95"
-              >
-                  {messages.length === 0 && isPC ? (sidebarOpen ? <PanelLeftClose size={22} /> : <PanelLeftOpen size={22} />) : messages.length === 0 || !showNativeBack ? <Menu size={22} /> : <ChevronLeft size={22} />}
-              </Button>
-            </div>
-            <div className="chat-mobile-brand"><GorBrandLogo /></div>
-            <div className="chat-session-title" title={activeSessionTitle}>
-              <span>{activeSessionTitle}</span>
-            </div>
-          </div>
-          <div className="chat-header-right">
-            {!isVscodePluginMode && hasPreviewWorkerContent && (
-              <button
-                type="button"
-                className="chat-preview-worker-toggle"
-                onClick={() => { visiblePreviewWorkerOpen ? setPreviewWorkerOpen(false) : openPreviewWorker(); }}
-                aria-label={visiblePreviewWorkerOpen ? '收起 Preview Worker' : '展开 Preview Worker'}
-                aria-expanded={visiblePreviewWorkerOpen}
-                title={visiblePreviewWorkerOpen ? '收起 Preview Worker' : '展开 Preview Worker'}
-              >
-                {visiblePreviewWorkerOpen ? <PanelRightClose size={19} /> : <PanelRightOpen size={19} />}
-                {previewableGeneratedFileCount > 0 && <span>{previewableGeneratedFileCount}</span>}
-              </button>
-            )}
-          </div>
-        </header>
-
-        <main className="chat-main">
-          <div className="chat-conversation min-w-0 flex-1">
-            {isSessionReady && !isSessionCacheLoading ? (
-              <ChatBox
-                key={sessionId ?? 'chat'}
-                messages={messages}
-                input={input}
-                setInput={setInput}
-                pendingImages={pendingImages}
-                pendingUploadAttachments={pendingUploadAttachments}
-                isLoading={isLoading}
-                handleSend={handleChatSend}
-                handleStop={handleStop}
-                handleImageSelect={handleImageSelect}
-                removePendingImage={removePendingImage}
-                onArchiveSelect={handleArchiveSelect}
-                onFolderSelect={handleFolderSelect}
-                onUploadImages={handleSummarizeImages}
-                importedUploadName={isPreviewSessionLoaded && hasPendingUploadSummary ? pendingImportedUploadName : null}
-                hasPendingUploadSummary={hasPendingUploadSummary}
-                onRemoveImportedUpload={removeImportedUpload}
-                onClearPendingUpload={clearPendingUploadSummary}
-                onPreviewFile={isVscodePluginMode ? undefined : openPreviewWorker}
-                onPreviewAttachment={isVscodePluginMode ? undefined : handlePreviewAttachment}
-                onPreviewProject={isVscodePluginMode ? undefined : (file, intent = 'preview', sourcePath, snapshot) => {
-                  if (snapshot) {
-                    const currentSnapshot = projectSnapshots.find((candidate) =>
-                      candidate.template === snapshot.template
-                      && (candidate.projectId || candidate.id) === (snapshot.projectId || snapshot.id),
-                    ) ?? snapshot;
-                    setPreviewOpen(false);
-                    setActiveProjectSnapshotMessageId(currentSnapshot.messageId);
-                    setActiveProjectSourcePath(sourcePath);
-                    restorePreviewArtifact(`project-snapshot:${currentSnapshot.messageId}`);
-                    setPreviewWorkerTarget('project-snapshot');
-                    setPreviewWorkerMode(intent === 'source' ? 'code' : 'preview');
-                    setPreviewWorkerOpen(true);
-                    return;
-                  }
-                  if (file) {
-                    openPreviewWorker(file, intent);
-                    return;
-                  }
-                  setPreviewOpen(false);
-                  restorePreviewArtifact(`project:${previewProjectState.project.id}`);
-                  if (intent === 'source') {
-                    const store = usePreviewProjectStore.getState();
-                    const sourceCandidates = [
-                      sourcePath,
-                      '/src/App.tsx', '/src/App.jsx', '/src/App.ts', '/src/App.js',
-                      '/src/main.tsx', '/src/main.jsx', '/src/main.ts', '/src/main.js',
-                      '/index.html',
-                    ];
-                    const selectedSource = sourceCandidates.find(
-                      (path) => path && store.project.files[path] !== undefined,
-                    );
-                    if (selectedSource) store.selectFile(selectedSource);
-                  }
-                  setPreviewWorkerTarget('project');
-                  setPreviewWorkerMode(intent === 'source' ? 'code' : 'preview');
-                  setPreviewWorkerOpen(true);
-                }}
-              />
-            ) : (
-              <SessionCacheLoader statusText={isSessionReady ? '正在读取会话缓存' : '正在初始化会话'} />
-            )}
-          </div>
-          {visiblePreviewOpen && (
-            <WebPreview revision={projectRevision} onClose={() => setPreviewOpen(false)} />
-          )}
-          {!isVscodePluginMode && <div className={`chat-preview-worker-slot ${visiblePreviewWorkerOpen ? 'is-open' : ''}`} aria-hidden={!visiblePreviewWorkerOpen}>
+      header={(
+        <ChatHeader
+          isVscodePluginMode={isVscodePluginMode}
+          isEmpty={messages.length === 0}
+          isPC={isPC}
+          sidebarOpen={sidebarOpen}
+          canGoBack={canGoBack}
+          showNativeBack={showNativeBack}
+          title={activeSessionTitle}
+          hasPreviewWorkerContent={hasPreviewWorkerContent}
+          previewWorkerOpen={visiblePreviewWorkerOpen}
+          previewableGeneratedFileCount={previewableGeneratedFileCount}
+          onBack={goBack}
+          onMenuClick={messages.length === 0 ? (isPC ? togglePCSidebar : openMobileSidebar) : handleHeaderLeft}
+          onTogglePreviewWorker={() => {
+            visiblePreviewWorkerOpen ? setPreviewWorkerOpen(false) : openPreviewWorker();
+          }}
+        />
+      )}
+    >
+      <div className="chat-conversation min-w-0 flex-1">
+        {isSessionReady && !isSessionCacheLoading ? (
+          <ChatBox
+            key={sessionId ?? 'chat'}
+            messages={messages}
+            currentPreviewProject={isVscodePluginMode ? undefined : currentPreviewProject}
+            input={input}
+            setInput={setInput}
+            pendingImages={pendingImages}
+            pendingUploadAttachments={pendingUploadAttachments}
+            isLoading={isLoading}
+            handleSend={handleChatSend}
+            handleStop={handleStop}
+            handleImageSelect={handleImageSelect}
+            removePendingImage={removePendingImage}
+            onArchiveSelect={handleArchiveSelect}
+            onFolderSelect={handleFolderSelect}
+            onUploadImages={handleSummarizeImages}
+            importedUploadName={isPreviewSessionLoaded && hasPendingUploadSummary ? pendingImportedUploadName : null}
+            hasPendingUploadSummary={hasPendingUploadSummary}
+            onRemoveImportedUpload={removeImportedUpload}
+            onClearPendingUpload={clearPendingUploadSummary}
+            onPreviewFile={isVscodePluginMode ? undefined : openPreviewWorker}
+            onPreviewAttachment={isVscodePluginMode ? undefined : handlePreviewAttachment}
+            onPreviewProject={isVscodePluginMode ? undefined : (file, intent = 'preview', sourcePath, snapshot) => {
+              if (snapshot) {
+                const currentSnapshot = projectSnapshots.find((candidate) =>
+                  candidate.template === snapshot.template
+                  && (candidate.projectId || candidate.id) === (snapshot.projectId || snapshot.id),
+                ) ?? snapshot;
+                setPreviewOpen(false);
+                setActiveProjectSnapshotMessageId(currentSnapshot.messageId);
+                setActiveProjectSourcePath(sourcePath);
+                restorePreviewArtifact(`project-snapshot:${currentSnapshot.messageId}`);
+                setPreviewWorkerTarget('project-snapshot');
+                setPreviewWorkerMode(intent === 'source' ? 'code' : 'preview');
+                setPreviewWorkerOpen(true);
+                return;
+              }
+              if (file) {
+                openPreviewWorker(file, intent);
+                return;
+              }
+              setPreviewOpen(false);
+              restorePreviewArtifact(`project:${previewProjectState.project.id}`);
+              if (intent === 'source') {
+                const store = usePreviewProjectStore.getState();
+                const sourceCandidates = [
+                  sourcePath,
+                  '/src/App.tsx', '/src/App.jsx', '/src/App.ts', '/src/App.js',
+                  '/src/main.tsx', '/src/main.jsx', '/src/main.ts', '/src/main.js',
+                  '/index.html',
+                ];
+                const selectedSource = sourceCandidates.find(
+                  (path) => path && store.project.files[path] !== undefined,
+                );
+                if (selectedSource) store.selectFile(selectedSource);
+              }
+              setPreviewWorkerTarget('project');
+              setPreviewWorkerMode(intent === 'source' ? 'code' : 'preview');
+              setPreviewWorkerOpen(true);
+            }}
+          />
+        ) : (
+          <SessionCacheLoader statusText={isSessionReady ? '正在读取会话缓存' : '正在初始化会话'} />
+        )}
+      </div>
+      {visiblePreviewOpen && (
+        <WebPreview revision={projectRevision} onClose={() => setPreviewOpen(false)} />
+      )}
+      {!isVscodePluginMode && (
+        <div className={`chat-preview-worker-slot ${visiblePreviewWorkerOpen ? 'is-open' : ''}`} aria-hidden={!visiblePreviewWorkerOpen}>
           {(visiblePreviewWorkerOpen || (previewWorkerMounted && isPreviewSessionLoaded && hasPreviewWorkerContent)) && (
             <PreviewWorker
               files={visibleGeneratedFiles}
               messagePreviewArtifacts={messagePreviewArtifacts}
+              artifactCreationOrder={artifactCreationOrder}
               activeFile={activePreviewFile}
               projectSourcePaths={previewSourcePaths}
               uploadedAttachments={visibleUploadedAttachments}
@@ -1082,9 +1129,8 @@ export default function ChatPage() {
               onClose={() => setPreviewWorkerOpen(false)}
             />
           )}
-          </div>}
-        </main>
-      </div>
-    </div>
+        </div>
+      )}
+    </ChatPageLayout>
   );
 }

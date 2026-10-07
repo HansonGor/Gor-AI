@@ -1,9 +1,9 @@
 // SSE 聊天 API 封装
 import { parseSSEStream } from '../utils/sse';
 import config from '../config';
+import { getChatClientMode, projectClientContext } from '../utils/clientMode';
 import type { Session, TokenUsage, ModelQuotaInfo, ProjectChange, UploadedAttachment, SearchSource, SearchTrace } from '../types';
 import type { PreviewProject } from '../preview/core/types.ts';
-import type { GeneratedFile } from '../types';
 
 interface SendChatMessageParams {
   sessionId: string;
@@ -19,6 +19,7 @@ interface SendChatMessageParams {
   previewProjectOrigin?: 'generated' | 'uploaded-source';
   previewProjectUploadName?: string | null;
   assistantMessageId?: string;
+  newPreviewProject?: boolean;
 }
 
 interface SendChatMessageCallbacks {
@@ -95,18 +96,6 @@ export async function uploadSessionAttachment(
   return data.attachment as UploadedAttachment;
 }
 
-export async function saveGeneratedGlb(sessionId: string, blob: Blob, name: string): Promise<GeneratedFile> {
-  const form = new FormData();
-  form.append('file', blob, name.endsWith('.glb') ? name : `${name}.glb`);
-  const response = await fetch(`/api/chat/session/${encodeURIComponent(sessionId)}/generated-artifacts`, {
-    method: 'POST',
-    body: form,
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.success || !data.file) throw new Error(data.detail || 'GLB 保存失败，请重试。');
-  return data.file as GeneratedFile;
-}
-
 export async function deletePendingSessionAttachment(sessionId: string, attachmentId: string): Promise<void> {
   const response = await fetch(
     `/api/chat/session/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
@@ -180,6 +169,7 @@ export async function sendChatMessage(
   let previewProjectOrigin: 'generated' | 'uploaded-source' | undefined;
   let previewProjectUploadName: string | null | undefined;
   let assistantMessageId: string | undefined;
+  let newPreviewProject: boolean | undefined;
   if (Array.isArray(params)) {
     messages = params;
   } else {
@@ -196,9 +186,13 @@ export async function sendChatMessage(
     previewProjectOrigin = params.previewProjectOrigin;
     previewProjectUploadName = params.previewProjectUploadName;
     assistantMessageId = params.assistantMessageId;
+    newPreviewProject = params.newPreviewProject;
   }
 
   try {
+    const clientMode = getChatClientMode();
+    const vscodeMode = clientMode === 'vscode';
+    const vscodeWorkspaceId = document.documentElement.dataset.gorWorkspaceId;
     const response = await fetch(config.api.chatEndpoint, {
       method: 'POST',
       headers: {
@@ -207,8 +201,10 @@ export async function sendChatMessage(
       },
       body: JSON.stringify({
         sessionId, message, messages, attachments, analysisContext, analysisContextMode,
-        previewProjectId, previewServerRevision, previewContentRevision,
-        previewProjectBootstrap, previewProjectOrigin, previewProjectUploadName, assistantMessageId,
+        assistantMessageId,
+        ...(!vscodeMode ? { previewProjectId, previewServerRevision, previewContentRevision,
+          previewProjectBootstrap, previewProjectOrigin, previewProjectUploadName, newPreviewProject } : {}),
+        ...projectClientContext(clientMode, vscodeWorkspaceId),
       }),
       signal,
     });

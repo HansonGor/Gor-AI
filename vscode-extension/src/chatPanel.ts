@@ -27,6 +27,7 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
   private constructor(
     extensionUri: vscode.Uri,
     output: vscode.OutputChannel,
+    private readonly getWorkspaceId: () => string | undefined,
   ) {
     this.extensionUri = extensionUri;
     this.output = output;
@@ -34,8 +35,12 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
 
   private readonly output: vscode.OutputChannel;
 
-  static register(extensionUri: vscode.Uri, output: vscode.OutputChannel): ChatView {
-    const provider = new ChatView(extensionUri, output);
+  static register(
+    extensionUri: vscode.Uri,
+    output: vscode.OutputChannel,
+    getWorkspaceId: () => string | undefined = () => undefined,
+  ): ChatView {
+    const provider = new ChatView(extensionUri, output, getWorkspaceId);
     provider.registration = vscode.window.registerWebviewViewProvider(
       ChatView.viewType,
       provider,
@@ -58,7 +63,10 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media', 'chat')],
     };
     void this.getHtml(this.extensionUri, view.webview).then((html) => {
-      if (!this.disposed && this.view === view) view.webview.html = html;
+      if (!this.disposed && this.view === view) {
+        view.webview.html = html;
+        this.sendWorkspaceContext();
+      }
     });
     view.webview.onDidReceiveMessage((message: WebviewRequest) => {
       void this.handleMessage(message);
@@ -69,6 +77,17 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         this.webview = undefined;
       }
     });
+  }
+
+  setWorkspaceContext(workspaceId?: string): void {
+    this.post({
+      type: 'gor.workspaceContext',
+      workspaceId: workspaceId ?? null,
+    });
+  }
+
+  private sendWorkspaceContext(): void {
+    this.setWorkspaceContext(this.getWorkspaceId());
   }
 
   static watchDevelopmentBuild(extensionUri: vscode.Uri, output: vscode.OutputChannel): vscode.Disposable {
@@ -105,6 +124,7 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       const html = await this.getHtml(this.extensionUri, view.webview);
       if (this.disposed || this.view !== view) return;
       view.webview.html = html;
+      this.sendWorkspaceContext();
       this.output.appendLine('[Gor] Refreshed Chat Webview after frontend rebuild');
     } catch (error) {
       this.output.appendLine(`[Gor] Could not refresh Chat Webview: ${this.errorText(error)}`);
@@ -175,6 +195,9 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     if (!message || typeof message !== 'object') return;
     const requestId = typeof message.requestId === 'string' ? message.requestId : '';
     switch (message.type) {
+      case 'gor.workspaceContextReady':
+        this.sendWorkspaceContext();
+        break;
       case 'loadSessions':
         this.requestJson('loadSessions', requestId, 'GET', '/api/chat/sessions?userId=default%3Avscode', undefined);
         break;
@@ -273,7 +296,14 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       return;
     }
     const transport = url.protocol === 'https:' ? https : http;
-    const payload = Buffer.from(JSON.stringify({ sessionId, message, messages: [] }));
+    const workspaceId = this.getWorkspaceId();
+    const payload = Buffer.from(JSON.stringify({
+      sessionId,
+      message,
+      messages: [],
+      clientMode: 'vscode',
+      ...(workspaceId ? { workspaceId } : {}),
+    }));
     let finalized = false;
     const finish = (error?: string) => {
       if (finalized) return;

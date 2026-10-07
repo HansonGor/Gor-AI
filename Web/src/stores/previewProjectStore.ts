@@ -4,6 +4,7 @@ import { deleteFile, listFiles, readFile, writeFile } from '../preview/core/virt
 import { isEditablePreviewTextPath, normalizePreviewPath } from '../preview/core/pathUtils.ts';
 import type { PreviewFiles, PreviewProject, PreviewTemplate } from '../preview/core/types.ts';
 import { createSceneProjectFiles, validateSceneSpec } from '../modeling/sceneSpec.ts';
+import { reconcilePreviewProject } from '../preview/core/projectSnapshot.ts';
 
 const DEFAULT_TEMPLATE: PreviewTemplate = 'react';
 
@@ -17,11 +18,35 @@ function createProjectState(template: PreviewTemplate): PreviewProject {
   };
 }
 
+export function createBlankProjectState(template: PreviewTemplate): PreviewProject {
+  return {
+    id: `preview-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    name: template === 'react' ? 'New React Project' : 'New HTML Project',
+    template,
+    files: Object.create(null),
+    revision: 0,
+    origin: 'generated',
+  };
+}
+
+function createInactiveProjectState(): PreviewProject {
+  return {
+    id: '',
+    name: '',
+    template: DEFAULT_TEMPLATE,
+    files: Object.create(null),
+    revision: 0,
+  };
+}
+
 export interface PreviewProjectStoreState {
   project: PreviewProject;
   selectedFilePath: string | null;
   buildRunRevision: number;
+  buildRunGlbRevision: number;
   createProject: (template: PreviewTemplate) => void;
+  createBlankProject: (template: PreviewTemplate) => void;
+  clearProject: () => void;
   selectFile: (path: string | null) => void;
   readFile: (path: string) => string | undefined;
   writeFile: (path: string, content: string) => void;
@@ -54,7 +79,7 @@ export interface PreviewProjectStoreState {
     origin?: PreviewProject['origin'],
     uploadName?: string | null,
   ) => void;
-  requestBuildAndRun: () => void;
+  requestBuildAndRun: (exportGlb?: boolean) => void;
 }
 
 type Listener = () => void;
@@ -68,21 +93,29 @@ function emit(): void {
 
 function updateProject(project: PreviewProject, selectedFilePath: string | null, requestBuildAndRun = false): void {
   const sameProject = project.id === state.project.id;
+  const buildRunRevision = sameProject
+    ? state.buildRunRevision + (requestBuildAndRun ? 1 : 0)
+    : 0;
   state = {
     ...state,
     project,
     selectedFilePath,
-    buildRunRevision: sameProject
-      ? state.buildRunRevision + (requestBuildAndRun ? 1 : 0)
-      : 0,
+    buildRunRevision,
+    buildRunGlbRevision: sameProject ? state.buildRunGlbRevision : 0,
   };
   emit();
 }
 
-const actions: Omit<PreviewProjectStoreState, 'project' | 'selectedFilePath' | 'buildRunRevision'> = {
+const actions: Omit<PreviewProjectStoreState, 'project' | 'selectedFilePath' | 'buildRunRevision' | 'buildRunGlbRevision'> = {
   createProject(template) {
     const project = createProjectState(template);
     updateProject(project, listFiles(project.files)[0] ?? null);
+  },
+  createBlankProject(template) {
+    updateProject(createBlankProjectState(template), null);
+  },
+  clearProject() {
+    updateProject(createInactiveProjectState(), null);
   },
   selectFile(path) {
     if (path !== null && readFile(state.project.files, path) === undefined) return;
@@ -119,6 +152,12 @@ const actions: Omit<PreviewProjectStoreState, 'project' | 'selectedFilePath' | '
       if (normalizedPath !== path || typeof content !== 'string') throw new Error(`无效的源码文件：${path}`);
       normalizedFiles[path] = content;
     }
+    // The compact server snapshot may contain only SceneSpec. Rebuild the
+    // deterministic viewer on both refresh and recovery, before entry validation.
+    const restored = reconcilePreviewProject({ id: projectId ?? '', name: name ?? '', template, files: normalizedFiles }, [], true);
+    Object.assign(normalizedFiles, restored.files);
+    template = restored.template;
+    name = restored.name;
     if (!normalizedFiles['/index.html']) throw new Error('源码 ZIP 缺少 /index.html。');
     if (Object.keys(normalizedFiles).length > 100) throw new Error('源码 ZIP 文件过多。');
     const totalBytes = Object.values(normalizedFiles).reduce((total, content) => total + new TextEncoder().encode(content).byteLength, 0);
@@ -162,7 +201,7 @@ const actions: Omit<PreviewProjectStoreState, 'project' | 'selectedFilePath' | '
       const files = { ...state.project.files, ...createSceneProjectFiles(scene) };
       if (Object.keys(files).length > 40 || Object.values(files).some((content) => new TextEncoder().encode(content).byteLength > 100_000)) return false;
       if (Object.values(files).reduce((total, content) => total + new TextEncoder().encode(content).byteLength, 0) > 500_000) return false;
-      updateProject({ ...state.project, name: scene.name, files, revision: change.revision ?? currentRevision + 1 }, '/src/scene.json');
+      updateProject({ ...state.project, name: scene.name, template: 'html', files, revision: change.revision ?? currentRevision + 1 }, '/src/scene.json');
       return true;
     } catch {
       return false;
@@ -174,6 +213,7 @@ const actions: Omit<PreviewProjectStoreState, 'project' | 'selectedFilePath' | '
     if (!Number.isSafeInteger(change.contentRevision) || change.contentRevision < currentRevision) return false;
     if (!Number.isSafeInteger(change.serverRevision) || change.serverRevision < (state.project.serverRevision ?? -1)) return false;
     let files = state.project.files;
+    let reconciled: PreviewProject;
     try {
       for (const changed of change.changedFiles) {
         if (typeof changed.path !== 'string' || typeof changed.content !== 'string') return false;
@@ -181,6 +221,8 @@ const actions: Omit<PreviewProjectStoreState, 'project' | 'selectedFilePath' | '
         if (!isEditablePreviewTextPath(path) || new TextEncoder().encode(changed.content).byteLength > 100_000) return false;
         files = writeFile(files, path, changed.content);
       }
+      reconciled = reconcilePreviewProject({ ...state.project, files }, change.changedFiles.map((changed) => changed.path));
+      files = reconciled.files;
       if (Object.keys(files).length > 100 || Object.values(files).some((content) => new TextEncoder().encode(content).byteLength > 100_000)) return false;
       if (Object.values(files).reduce((total, content) => total + new TextEncoder().encode(content).byteLength, 0) > 5_000_000) return false;
     } catch {
@@ -193,6 +235,8 @@ const actions: Omit<PreviewProjectStoreState, 'project' | 'selectedFilePath' | '
     updateProject({
       ...state.project,
       files,
+      name: reconciled.name,
+      template: reconciled.template,
       revision: change.contentRevision,
       persistedRevision: change.contentRevision,
       serverRevision: change.serverRevision,
@@ -221,17 +265,22 @@ const actions: Omit<PreviewProjectStoreState, 'project' | 'selectedFilePath' | '
       ...(uploadName !== undefined ? { uploadName } : {}),
     }, state.selectedFilePath);
   },
-  requestBuildAndRun() {
-    state = { ...state, buildRunRevision: state.buildRunRevision + 1 };
+  requestBuildAndRun(exportGlb = false) {
+    const buildRunRevision = state.buildRunRevision + 1;
+    state = {
+      ...state,
+      buildRunRevision,
+      buildRunGlbRevision: exportGlb ? buildRunRevision : state.buildRunGlbRevision,
+    };
     emit();
   },
 };
 
-const initialProject = createProjectState(DEFAULT_TEMPLATE);
 state = {
-  project: initialProject,
-  selectedFilePath: listFiles(initialProject.files)[0] ?? null,
+  project: createInactiveProjectState(),
+  selectedFilePath: null,
   buildRunRevision: 0,
+  buildRunGlbRevision: 0,
   ...actions,
 };
 

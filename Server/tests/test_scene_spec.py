@@ -73,6 +73,7 @@ class SceneSpecTests(unittest.TestCase):
         }))
         parsed = json.loads(result)
         self.assertTrue(parsed["success"])
+        self.assertEqual(workspace.template, "html")
         self.assertEqual(parsed["sceneSpec"]["name"], "Car")
         self.assertEqual(json.loads(workspace.files["/src/scene.json"])["name"], "Car")
 

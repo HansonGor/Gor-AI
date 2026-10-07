@@ -135,6 +135,7 @@ async def execute_preview_tool(workspace: Any | None, name: str, args: dict) -> 
                 version,
             )
             if result.get("success"):
+                workspace.template = "html"
                 return json.dumps({
                     "success": True,
                     "sceneSpec": scene,

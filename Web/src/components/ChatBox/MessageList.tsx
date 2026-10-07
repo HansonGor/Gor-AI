@@ -3,8 +3,9 @@ import { useRef, useEffect, useCallback } from 'react';
 import MessageBubble from './MessageBubble';
 import type { MessageListProps } from '../../types';
 
-export default function MessageList({ messages, onPreviewFile, onPreviewProject, onPreviewAttachment }: MessageListProps) {
+export default function MessageList({ messages, currentPreviewProject, onPreviewFile, onPreviewProject, onPreviewAttachment }: MessageListProps) {
   const listRef = useRef<HTMLDivElement | null>(null);
+  const latestAssistantMessageId = [...messages].reverse().find((message) => message.role === 'assistant')?.id;
 
   // 只滚动消息容器，不影响页面整体布局
   const scrollToBottom = useCallback(() => {
@@ -27,6 +28,7 @@ export default function MessageList({ messages, onPreviewFile, onPreviewProject,
         <MessageBubble
           key={msg.id}
           message={msg}
+          currentPreviewProject={msg.id === latestAssistantMessageId ? currentPreviewProject : undefined}
           uploadedAttachments={msg.role === 'assistant' && messages[index - 1]?.role === 'user'
             ? messages[index - 1].attachments
             : undefined}

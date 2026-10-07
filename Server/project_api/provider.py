@@ -48,6 +48,29 @@ class ProjectProvider(Protocol):
         expected_version: int | str | None = None,
     ) -> dict[str, Any]: ...
 
+    async def create_file(
+        self,
+        project_ref: ProjectRef,
+        path: str,
+        content: str = "",
+    ) -> dict[str, Any]: ...
+
+    async def create_directory(self, project_ref: ProjectRef, path: str) -> dict[str, Any]: ...
+
+    async def delete_file(
+        self,
+        project_ref: ProjectRef,
+        path: str,
+        expected_version: int | str | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def delete_directory(
+        self,
+        project_ref: ProjectRef,
+        path: str,
+        recursive: bool = False,
+    ) -> dict[str, Any]: ...
+
     async def get_version(self, project_ref: ProjectRef) -> int | str: ...
 
     async def get_capabilities(self, project_ref: ProjectRef) -> dict[str, bool]: ...

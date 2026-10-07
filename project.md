@@ -1,5 +1,60 @@
 # Gor AI Agent 项目说明
 
+## 0. 开发约束与两端边界（2026-10-07）
+
+修改前先完整阅读本文及涉及模块的 README。根目录 `AGENTS.md` 是开发入口，以下约定必须落实到代码、测试和交付说明；现有代码不是违反约定的理由。
+
+### 先确定端，再选择适配器
+
+| 范围 | 操作对象 | 项目结果入口 | 禁止行为 |
+| --- | --- | --- | --- |
+| Web（含浏览器窄屏） | 会话所属的虚拟项目文件集 | Preview Worker 的 Preview / Code / Diff | 操作 VS Code 文件、用后端当前目录冒充项目、自动导出落盘 |
+| VS Code 插件 | 当前连接的 VS Code 工作区 | 实际工作区文件与共用 Diff | 初始化 Web 项目、调用 Preview 工具、自动开启 Preview Worker |
+| 公共能力 | 会话、消息、自然语言变更说明、UI 原语与 Diff | 两端通过 props / callbacks 按需接入 | 将某一端文件权限、项目状态或副作用写进纯 UI |
+
+- 请求明确某端时，只改该端能力；共享代码修改须检查两端调用者。可根据上下文判断范围；如果范围不明且会改变端特有行为，先提示用户确认。
+- 请求使用明确的 `clientMode: web / vscode`。Web 不发送遗留 workspaceId；插件等待真实工作区握手，未连接应报告原因，不退回 Web 项目或后端磁盘。
+- 创建请求建立新的 projectId 和独立文件集；编辑请求沿用目标项目，不能只切换 HTML/3D 标记，也不能把上一个项目的文件带入新项目。根据当前请求及必要对话上下文选择工具/skill，不能因过度节省 Token 让已授予的读写能力消失，也不能见到任何动词就无视否定、解释请求而执行写入。
+- 插件优先当前工作区；目录树未知时读取，已知且版本未冲突不重复读取，实际目录变化/冲突时刷新。路径解析与权限校验由扩展负责，不能由服务端 `D:\Gor` 或展示名称猜测。超出当前工作区的读取/写入需遵循扩展实际授权，不把向上查找理解成任意磁盘访问权限。
+
+### 虚拟导出与空间占用
+
+“虚拟文件”表示不自动在用户工程或开发机生成文件，不表示没有内存、数据库或缓存占用。
+
+| 数据 / 行为 | 当前存储方式 | 是否自动生成本地文件 |
+| --- | --- | --- |
+| Web React/HTML/3D 源码、编译输出、GLB 导出计算 | Virtual FS、Worker、内存 Blob / ArrayBuffer | 否 |
+| Web 可恢复源码快照 | PostgreSQL JSONB 和消息快照 | 否；占数据库容量 |
+| 新 Web GLB 虚拟产物 | PostgreSQL `session_generated_artifacts.artifact_bytes`（BYTEA），relative_path 为空 | 否；占数据库容量，若数据库部署本机仍有数据库磁盘占用 |
+| 浏览器会话缓存及 UI 偏好 | IndexedDB / localStorage | 浏览器可能写自己的缓存空间，不是用户工程文件 |
+| 用户主动点击下载/另存为 | 系统保存或浏览器下载 | 是，属于用户明确操作，不是自动导出 |
+| 原始上传附件、现有 Office/PDF 等工具输出、历史磁盘 GLB | 既有 `GOR_STORAGE_DIR` 流程 | 可能占服务器磁盘，本地启动服务时即本机磁盘；本次未统一改造这些独立管线 |
+
+- 默认 Web GLB 导出使用原始二进制 PUT 请求，避免 multipart 临时文件落盘；服务端在内存校验格式和 32 MB 上限，再与消息引用在同一数据库事务保存。预览响应 `Cache-Control: no-store`，不调用文件保存器。旧 multipart 接口仅兼容旧客户端，框架仍可能使用临时上传缓冲；它不再新建持久生成文件。
+- 保留已有磁盘产物的只读访问，不自动删除或迁移历史数据。新产物不写 `Server/storage/generated`。原有上传和 Office 管线不能被误称为完全虚拟。
+
+### 组件复用及必须保留的行为
+
+- 稳定 UI 接口在 `Web/src/components/chat`：页面壳、输入框、消息、`ProjectChanges` 等按需引入。Diff 是纯展示组件，两端复用；自然语言完成说明由 `Server/agent/project_reply.py` 共用。Web 虚拟产物 API 独立在 `Web/src/api/webProjectArtifacts.ts` 并拒绝插件调用；真实文件 IO 留在 VS Code Provider/扩展桥接。
+- 不强行把所有页面一次性重构。优先提取重复且边界明确的组件，保留现有样式；端特有行为通过能力或回调接入，禁止组件渲染时隐式读写文件或启动另一端 Worker。
+- 新建 Web 项目在离屏状态生成。完整源码同步、生成任务完成且所需产物保存成功后，才发布并展开/切换 Preview Worker；部分文件、失败、取消不能抢先切换。发布后真实构建失败仍显示诊断，不能把错误永久隐藏。
+- Preview 列表按首次创建顺序旧到新，新项目在最下面；编辑不改变创建位置。项目/产物按稳定 ID 去重；名称相同也可能是不同项目。
+- Preview、Code、源码包、产物下载必须属于同一选中项目/消息快照；不能使用此前选中 GLB 或全局最新文件集冒充目标源码。3D 使用真实 GLB，React 使用网页产物，不互换类型；GLB 名称最多一个 `.glb` 后缀。
+- 不恢复默认 React 模板，不发送不存在的默认项目快照。普通聊天不显示空 Worker；插件不挂载 Worker。旧消息可重新打开自己的产物，Worker 清除是软隐藏，不是物理删除。
+- 聊天气泡简述实际完成了什么、内容主题及查看入口；源码、逐行修改只放 Diff，不在回答中重复代码。未成功写入、保存或构建不得宣称完成。
+
+### 修改前后验收
+
+1. 写清本次端范围、关联模块、沿用规则和预期副作用；先找现有实现，不复制一套逻辑。
+2. 针对改动补测试：Web / 插件隔离、自动导出无文件 IO、项目创建/编辑/取消、快照源码配对、列表顺序、后缀和旧数据兼容。公共逻辑至少验证两个宿主。
+3. Web 执行 `npm run test:preview`、`npx tsc --noEmit`、`npm run build`；公共 UI 或插件修改再在 `vscode-extension` 执行 `npm test`、`npm run vscode:prepublish`。
+4. Server 使用虚拟环境 UTF-8 Python 执行涉及模块的 pytest。存储改动额外覆盖无目录创建/写入、虚拟二进制下载、大小/格式校验、消息事务关联及删除会话跳过空磁盘路径。
+5. 交付说明用通俗语言说明变化和实际验证范围；记录限制，不以测试通过承诺永不回归。更新本文应修正旧段落，不能保留互相冲突的现状说明。
+
+### 本次核对结果（2026-10-07）
+
+发现旧 GLB 自动导出写入 `Server/storage/generated`，与虚拟产物约定冲突，已改为内存校验和数据库 BYTEA。通过运行中的 Web `/api` 代理完成临时会话的 GLB 保存、二进制取回和历史消息读取，生成目录文件数量前后均为 156；测试会话已删除，用户历史文件未清理。单元测试另验证导出不调用目录创建及文件写入、拒绝无效/超限模型、历史磁盘产物兼容与虚拟产物删除。此次未将既有 Office/附件管线迁移为虚拟存储，也未声称完成所有模型实战和逐像素 UI 验收。
+
 ## 1. 项目简介
 
 Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然语言提问、查询实时信息、分析图片或上传文件，也可以让助手生成文档、视频或可交互的前端原型。与只返回文本的聊天机器人不同，Agent 能根据请求选择后端工具执行任务，并通过流式消息反馈进度和结果。
@@ -33,16 +88,16 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 | Preview Worker | Web Worker、esbuild-wasm、Virtual FS、受限 iframe、fflate、Three.js | 编译和运行虚拟项目、展示上传的 dist、文件树与源码浏览 |
 | Native | Expo SDK 57、React Native、react-native-webview、expo-location | 将 Web 应用嵌入移动端，并通过消息协议把定位请求交给系统能力 |
 | Server | Python、FastAPI、Pydantic、httpx、LangChain | Agent 循环、工具路由、SSE、文件/天气/会话等 API |
-| 数据与文件 | Supabase PostgreSQL、asyncpg、`GOR_STORAGE_DIR` | 保存会话消息、附件元数据、Preview 项目快照；文件内容保存到服务器持久目录 |
+| 数据与文件 | Supabase PostgreSQL、asyncpg、`GOR_STORAGE_DIR` | 会话、Preview JSONB 快照及 GLB 虚拟二进制在数据库；原始附件和现有 Office 等输出仍在服务器持久目录 |
 | 外部能力 | 火山方舟、搜索服务、高德、Jamendo、小云雀、Judge0、Embedding 服务 | 提供大模型、联网搜索、天气、音乐、视频、代码执行与向量检索 |
 
 ### 关键数据流
 
 1. Web 将消息提交至 `POST /api/chat`，服务端读取历史上下文并调用模型；工具调用由 Agent 执行，Token、工具状态和最终回答通过 SSE 返回。
-2. 会话和消息保存在 PostgreSQL。用户附件上传至服务器存储目录，消息保存附件 ID 和下载地址；助手生成文件由工具写入同一持久目录，消息保存其展示信息和下载 URL。
+2. 会话和消息保存在 PostgreSQL。Web 项目源码和新 GLB 导出为虚拟快照/数据库二进制，不自动落入本地目录；用户上传附件及现有文档等工具仍使用服务器持久目录，消息保存 ID 和下载 URL。
 3. Preview Project 是与真实磁盘工作区隔离的虚拟文件系统。浏览器负责编辑、编译和沙箱运行；项目快照可保存至服务端数据库，浏览器 IndexedDB 另存上传内容缓存。上传 ZIP/文件夹的原始内容由服务端附件接口提供跨设备取回能力。
 4. 移动端 Expo Go 扫描 Metro 二维码后启动 Native 容器；容器中的 WebView 加载开发机上的 Web 地址。手机与开发机需在同一 Wi-Fi，且 `Native/App.tsx` 的开发地址需与开发机当前局域网 IP 一致。
-5. VS Code 扩展把同一聊天页面打包为 Webview 资源，注册到 Gor Activity Bar 侧边栏；扩展通过 HTTP/SSE 使用聊天 API，并用 WebSocket 向服务端登记当前工作区元数据。当前工作区登记只传工作区名称和 URI，不上传或读取本地源码。
+5. VS Code 扩展把聊天页面打包为 Webview 资源；HTTP/SSE 负责对话，WebSocket 登记真实工作区并桥接 Project API 操作。模型按需读取目录/源码及执行 CRUD，扩展负责路径和工作区权限；不全量上传项目，不调用 Web Preview。
 
 ## 3. 页面与功能实现
 
@@ -79,7 +134,7 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 
 - `vscode-extension` 通过 `contributes.viewsContainers.activitybar` 注册 Gor 活动栏容器，通过 `contributes.views` 与 `WebviewViewProvider` 在侧边栏显示 `Gor Chat`；`Gor: Open Chat` 命令聚焦 Gor 侧边栏。内容复用 `Web/src` 的聊天页构建结果，不另写一套聊天 UI。
 - 插件 Webview 启用受限的本地资源根目录和 Content Security Policy；运行时将聊天 API、页面资源和图片地址映射到扩展 Webview 可访问的 URI。前端通过 VS Code 模式标识区分插件布局，插件会话使用 `default:vscode` 用户命名空间，与网页会话列表隔离。
-- 插件聊天使用 Gor Server 的 HTTP/SSE API；扩展 WebSocket 目前只登记活动工作区 ID、名称和 URI 元数据，服务端连接状态用于显示“Connected”。该登记不传文件内容，也不意味着已支持让 Agent 直接读写 VS Code 工作区。
+- 插件聊天使用 Gor Server 的 HTTP/SSE API；扩展 WebSocket 登记工作区并承接 `VSCodeProjectProvider` 读写请求。已接入目录/文件清单、搜索、读取、创建、覆盖、补丁、删除及目录操作，结果通过公共 Diff 展示；“Connected”本身不证明某次写入成功，需真实工具回执。会话 ID 可在用户询问时通过对话回复，无需专用 UI。
 - `npm run build:webview` / `npm run vscode:prepublish` 构建聊天页资源和扩展 TypeScript；开发态 `npm run watch:webview` 监听 Web 源码、重建扩展 Webview 资源，并通过构建信号刷新已打开的聊天视图。构建资源更新后，扩展宿主仍需运行或重载才能载入新的扩展代码。
 
 #### 联网检索与图像来源
@@ -107,22 +162,23 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 - **项目与产物按稳定 ID 隔离**：同一个可编辑 Preview Project 连续修改沿用同一个 `projectId` 并递增 `revision`；Worker 按项目 ID 合并更新，只展示该项目的一条最新入口，不因每轮局部 patch 另建项目。聊天消息保留本轮更新文件和 diff；彼此独立的项目或 Presentation 产物仍按各自 ID/消息快照隔离。隐藏 Worker 条目不销毁聊天消息中的重新打开入口。当前没有独立的项目版本时间线或任意历史版本回滚。
 - **预览产物格式提示**：Preview 文件树条目悬停时展示最终交付产物的扩展名，而非内部实现文件的扩展名。例如 React 应用预览标注 `.html`，由 SceneSpec 渲染并导出为模型的 3D 产物标注 `.glb`；普通文件则根据实际文件名/类型展示。新增产物类型时，应由快照元数据显式提供最终输出扩展名，避免从临时编译文件或源码文件名误推断。
 - ZIP/文件夹导入时识别源码项目或静态 dist。源码导入至 Virtual FS，可由 Web Worker 调用 esbuild-wasm 构建；构建结果在不授予 `allow-same-origin` 的 iframe 中运行。依赖受限于内置白名单，不支持用户安装任意 npm 包。
-- **Three.js 3D 场景**：项目依赖 `three` 与 `@types/three`。Agent 可通过 Preview 项目文件工具生成或修改场景源码，将 Three.js 作为受控运行时依赖打包；构建产物在隔离 iframe 中运行，用户可在 Preview 查看 3D 场景、在 Code 浏览对应源码。该能力是程序化几何/场景代码生成，不等同于生成或编辑 GLB、GLTF、OBJ 等独立模型文件，也不提供完整的 3D 建模器。
-- 项目快照保存在服务端 `session_preview_projects`；上传原始附件放在服务器存储，客户端 IndexedDB 用于本机快速恢复。生成文件也使用服务器持久目录。部署时须将 `GOR_STORAGE_DIR` 挂到持久卷；多实例应挂载共享存储。
-- **源码与产物的持久化机制**：当前采用“数据库保存可恢复的项目快照 / 文件系统保存原始二进制文件”的分层方式，不是把所有文件都塞进同一张数据库表。
+- **Three.js 3D 场景**：通过受限 `SceneSpec` 生成 `/src/scene.json`，浏览器固定渲染/导出器生成真实 GLB v2 二进制并保存为数据库虚拟产物。Preview 使用 GLB 模型查看器，Code 显示对应场景快照；内部 HTML 渲染支架不是最终模型文件。当前支持程序化几何，不是任意格式模型编辑器或完整建模软件。
+- 项目快照保存在 `session_preview_projects` 和消息快照；新 GLB 保存在数据库二进制列，不自动写服务器文件。原始附件和现有文档输出仍在服务器存储；IndexedDB 用于本机快速恢复。需要持久卷的是这些仍使用磁盘的管线，不是 Web 虚拟源码/GLB。
+- **源码与产物的持久化机制**：Web 源码使用 JSONB，Web GLB 使用 BYTEA；原始附件及现有文档等仍用文件系统。对象按所属会话和消息关联，不能混用存储方式或声称所有输出已完全虚拟化。
   - 助手生成或用户导入的可编辑虚拟项目，以会话为粒度保存到 PostgreSQL 的 `session_preview_projects`：`session_id` 唯一对应一份最新快照，`project` 使用 JSONB 保存项目名称、模板和 `{文件路径: 文件内容}` 文件集；同时记录来源 `origin`（`generated` / `uploaded-source`）、上传名称、递增版本 `revision` 和更新时间。前端在项目状态变化后调用 `PUT /api/chat/session/{session_id}/preview-project`；服务端校验文件路径与内容后 upsert。重新进入会话时通过同一路径的 GET 接口读取快照，恢复 Virtual FS，因此刷新或跨设备访问时不依赖浏览器内存中的源码状态。
   - 上传附件（包括 ZIP、普通文件及打包后的文件夹）先写入 `GOR_STORAGE_DIR` 下的上传目录；PostgreSQL `session_attachments` 只记录附件 ID、所属会话、名称、类型、相对路径、MIME 类型和大小。聊天消息保存附件引用，下载时服务端按会话与附件 ID 查元数据，再从存储目录读取文件。前端 IndexedDB 是本机快速恢复缓存，不是跨设备的权威数据源。
   - 助手生成的可下载文件（例如文档、表格、演示文稿）写入 `GOR_STORAGE_DIR` 下的生成文件目录，消息中保存展示信息和下载 URL；请求下载时由 `/api/download/{filename}` 从服务器文件目录返回。它与 Preview Project 的 JSONB 源码快照是两种不同的持久化对象：只有项目快照中实际存在的文件才可在 Code 中浏览，二进制附件或生成文件不会为了展示而自动转换/生成源码。
   - Preview 文件树的显示/隐藏属于会话界面状态；隐藏某个条目不等于删除服务端附件或源码快照。若用户从聊天消息再次打开该附件/产物，可重新加入当前 Preview 列表。删除会话时，服务端会清理关联的 `session_preview_projects` 快照；文件目录的持久性仍取决于 `GOR_STORAGE_DIR` 是否映射到持久卷。
-  - **边界说明**：`session_preview_projects` 当前是“每个会话一份最新项目快照”，`revision` 用于版本递增但没有保存完整的历史快照序列，不能据此回滚到任意旧版本。生成文件通过文件目录和消息引用持久化，也不等同于独立的、不可变的 `artifact_snapshot` 版本库。若未来需要历史版本、产物级隐藏状态跨设备同步或可靠回滚，可新增 `artifact_snapshots` / `artifact_files`（或版本表）及会话产物关联表，并在数据库事务中维护快照元数据与文件存储键。
-- Preview Project 与 `PROJECT_WORKSPACE_ROOT` 下的真实 Web 工作区是两套能力：默认 Agent 编辑的是虚拟项目；真实工作区工具仅在显式启用时提供，并执行路径校验。
+  - Web GLB 导出由 `/api/chat/session/{session_id}/generated-artifacts` 原始二进制 PUT 接口校验，数据库记录产物 ID、名称、MIME、大小、`artifact_bytes`；同一事务将引用关联到目标 assistant message。GET 从数据库返回二进制，旧 `relative_path` 记录仅兼容读取。删除会话清理数据库产物，空路径不得参与磁盘清理。
+  - **边界说明**：`session_preview_projects` 仍是每会话最新项目，历史消息另保留各自源码快照；不等同任意版本回滚系统。新 GLB 是独立 ID 的数据库产物，现有 Office 输出仍由文件目录和消息引用持久化；不能混称统一的版本库。
+- Preview Project 与真实磁盘工作区隔离。Web 请求只编辑虚拟项目，不能因配置 `PROJECT_WORKSPACE_ROOT` 就获得磁盘写权限；VS Code 请求操作扩展连接的当前工作区，不使用服务端进程根目录代替。
 
 #### 通用 Project API 与源码按需上下文
 
-- Agent 文件工具通过 `ProjectAPI`、`ProjectProvider`、`ProjectRef` 和 Provider Registry 抽象项目操作；当前接入的 Provider 是 Preview Project，负责把通用操作适配到现有 Preview 项目服务。Provider 接口预留版本查询和能力声明，可供后续其他项目源实现；VS Code 工作区 Provider 尚未实现。
+- Agent 文件工具通过 `ProjectAPI`、`ProjectProvider`、`ProjectRef` 和 Provider Registry 抽象项目操作；Preview Provider 处理 Web 虚拟项目，`VSCodeProjectProvider` 通过扩展桥接处理实际工作区。Provider 由显式客户端模式选择，不能互为隐式降级。
 - 当前 Preview 源码链路提供文件清单、代码搜索、按行范围读取、精确补丁、批量补丁和文件写入。默认先返回搜索命中及少量上下文，仅在定位不足时扩展读取；工具结果受结果数、行数、字符和 Token 预算限制，并输出 revision/version，避免每轮把项目所有源码发送给模型。
 - 文本文件采用通用 exact-text 匹配，不解析具体语言语法。补丁要求 `old_text` 唯一命中并校验预期 revision；目标不存在、不唯一或版本冲突时拒绝写入。批量补丁用于同一请求的多文件修改，随后沿用当前 Preview 的 diff、项目持久化与 UI 流程；二进制文件不走文本 patch。
-- Project API 是后端项目访问抽象，不等于本地磁盘权限。当前 Preview Provider 只操作服务端会话对应的 Virtual FS；真实工作区读写需要单独的 Provider、安全授权及路径/沙箱策略，不能仅因为抽象接口已存在就认为已接通 VS Code 工作区。
+- Project API 是访问抽象，不等于任意磁盘权限。Preview Provider 只操作会话 Virtual FS；VS Code Provider 必须有在线工作区桥接、有效版本和扩展端路径校验。未知目录先读取，版本冲突后刷新；实际读写失败须报告原因，不能在气泡编造完成。
 
 #### 新增项目类型 / 产物预览接入规范
 
@@ -240,8 +296,10 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 | 工程 | 目录 | 命令 | 默认地址/备注 |
 | --- | --- | --- | --- |
 | Web | `Web/` | `npm run dev` | `http://localhost:5173`；`/api` 代理到 `127.0.0.1:3001` |
-| Server | `Server/` | `python main.py` | 默认 `http://localhost:3001`；环境配置见 `Server/.env.example` |
+| Server | `Server/` | `.\venv\Scripts\python.exe -X utf8 main.py` | 默认 `http://localhost:3001`；沿用 Python UTF-8 后台启动，环境配置见 `Server/.env.example` |
 | VS Code 扩展 | `vscode-extension/` | `npm run vscode:prepublish`；开发调试在 VS Code 中按 F5 | 构建 VS Code Webview 与扩展；前端热构建可运行 `npm run watch:webview` |
 | Native | `Native/` | `npm start -- --lan` | Expo Go 扫描二维码；手机和开发机需连接同一 Wi-Fi |
 
 核心配置包括 `ARK_*`、`SUPABASE_DB_URL`、各搜索服务 Key、`AMAP_WEB_SERVICE_KEY`、`XIAOYUNQUE_*`、`JUDGE0_URL`、`PROJECT_WORKSPACE_ROOT` 与 `GOR_STORAGE_DIR`。真实密钥应保存在本地环境变量或未提交的 `.env` 文件中。
+
+后台启动使用 PowerShell `Start-Process`，工作目录设为 `Server`，运行上述虚拟环境 Python 并传 `-X utf8 main.py`，窗口隐藏，输出重定向日志；不要改用系统 Python。数据库字段兼容迁移由服务启动的 `init_db()` 执行，存储协议改动后需确认后端已重载并完成初始化；旧插件包需重建/重载后才能使用新公共组件。

@@ -3,6 +3,12 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useFeedback } from '../components/ui/feedback';
 import { sendChatMessage } from '../api/chat';
+import { saveGeneratedGlb } from '../api/webProjectArtifacts';
+import { validateSceneSpec, type SceneSpec } from '../modeling/sceneSpec.ts';
+import { saveSceneArtifact } from '../modeling/sceneArtifact.ts';
+import { isNewPreviewProjectRequest } from '../preview/core/creationIntent.ts';
+import { getChatClientMode } from '../utils/clientMode';
+import { createMessagePreviewSnapshot } from '../preview/core/projectSnapshot.ts';
 import { MODEL_CONFIG } from '../config';
 import { useVideoPolling } from './useVideoPolling';
 import type {
@@ -16,7 +22,9 @@ import type {
   SearchSource,
   SearchTrace,
 } from '../types';
-import { usePreviewProjectStore } from '../stores/previewProjectStore.ts';
+import { createBlankProjectState, usePreviewProjectStore } from '../stores/previewProjectStore.ts';
+import { canPublishStagedProject, stageProjectSources } from '../preview/core/stagedProject.ts';
+import { reconcilePreviewProject } from '../preview/core/projectSnapshot.ts';
 import {
   getSessionPreviewProject,
   PreviewRevisionAdvancedError,
@@ -24,6 +32,7 @@ import {
   saveSessionPreviewProject,
 } from '../api/previewProject';
 import { createPresentationSnapshot } from '../preview/core/presentationSnapshot.ts';
+import type { PreviewProject, PreviewTemplate } from '../preview/core/types.ts';
 
 const { QUOTA_WARNING_THRESHOLD } = MODEL_CONFIG;
 
@@ -31,6 +40,10 @@ function newMessageId(): string {
   return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function requestedPreviewTemplate(text: string): PreviewTemplate {
+  return /(?:html\b|3d|三维|模型|glb)/i.test(text) && !/react/i.test(text) ? 'html' : 'react';
 }
 
 interface PendingImage {
@@ -202,46 +215,88 @@ export function useMessage(sessionId: string | null) {
         content: m.content,
         images: m.images,
         attachments: m.attachments,
+        project_changes: m.projectChanges,
       }));
 
       const controller = new AbortController();
       abortRef.current = controller;
       let previewFilesChanged = false;
+      let sceneToExport: SceneSpec | null = null;
+      let completed = false;
+      let creationFailed = false;
+      let previousPreviewProject: PreviewProject | null = null;
+      let createdProjectId: string | null = null;
+      let stagedProject: PreviewProject | null = null;
+      let stagedProjectReady = false;
 
       try {
-        let previewProject = structuredClone(usePreviewProjectStore.getState().project);
-        if (
-          previewProject.serverRevision !== undefined
-          && (previewProject.revision ?? 0) !== (previewProject.persistedRevision ?? -1)
-        ) {
-          const origin = previewProject.origin ?? 'generated';
-          const saved = await saveSessionPreviewProject(
-            sessionId,
-            previewProject,
-            origin,
-            previewProject.uploadName ?? null,
-            previewProject.serverRevision,
-          );
-          usePreviewProjectStore.getState().markServerSaved(
-            previewProject.id,
-            previewProject.revision ?? 0,
-            saved.revision,
-            origin,
-            previewProject.uploadName ?? null,
-          );
-          previewProject = structuredClone(usePreviewProjectStore.getState().project);
-        }
-        const previewReference = previewProject.serverRevision !== undefined
-          ? {
-              previewProjectId: previewProject.id,
-              previewServerRevision: previewProject.serverRevision,
-              previewContentRevision: previewProject.revision ?? 0,
+        let previewReference: {
+          previewProjectId?: string;
+          previewServerRevision?: number;
+          previewContentRevision?: number;
+          previewProjectBootstrap?: PreviewProject;
+          previewProjectOrigin?: 'generated' | 'uploaded-source';
+          previewProjectUploadName?: string | null;
+          newPreviewProject?: boolean;
+        } = {};
+        if (getChatClientMode() === 'web') {
+          let previewProject = structuredClone(usePreviewProjectStore.getState().project);
+          if (previewProject.id && (
+            previewProject.serverRevision !== undefined
+            && (previewProject.revision ?? 0) !== (previewProject.persistedRevision ?? -1)
+          )) {
+            const origin = previewProject.origin ?? 'generated';
+            const saved = await saveSessionPreviewProject(
+              sessionId,
+              previewProject,
+              origin,
+              previewProject.uploadName ?? null,
+              previewProject.serverRevision,
+            );
+            usePreviewProjectStore.getState().markServerSaved(
+              previewProject.id,
+              previewProject.revision ?? 0,
+              saved.revision,
+              origin,
+              previewProject.uploadName ?? null,
+            );
+            previewProject = structuredClone(usePreviewProjectStore.getState().project);
+          }
+          if (isNewPreviewProjectRequest(visibleContent)) {
+            previousPreviewProject = previewProject;
+            if (previewProject.id && Object.keys(previewProject.files).length > 0) {
+              // Archive the previous project's latest source for the Worker list.
+              // Sources remain separate from prose/model history.
+              const archived = previewProject;
+              setMessages((previous) => {
+                let index = previous.length - 1;
+                while (index >= 0 && !(previous[index].role === 'assistant' && previous[index].previewChanges?.some((change) => change.projectId === archived.id))) index--;
+                if (index < 0) return previous;
+                return previous.map((message, position) => position === index ? {
+                  ...message,
+                  previewSnapshot: createMessagePreviewSnapshot(archived, message.id, message.previewChanges?.map((change) => change.path) ?? []),
+                } : message);
+              });
             }
-          : {
-              previewProjectBootstrap: previewProject,
-              previewProjectOrigin: previewProject.origin ?? 'generated' as const,
-              previewProjectUploadName: previewProject.uploadName ?? null,
-            };
+            previewProject = createBlankProjectState(requestedPreviewTemplate(visibleContent));
+            stagedProject = previewProject;
+            createdProjectId = previewProject.id;
+          }
+          if (previewProject.id) {
+            previewReference = previewProject.serverRevision !== undefined
+              ? {
+                  previewProjectId: previewProject.id,
+                  previewServerRevision: previewProject.serverRevision,
+                  previewContentRevision: previewProject.revision ?? 0,
+                }
+              : {
+                  previewProjectBootstrap: previewProject,
+                  previewProjectOrigin: previewProject.origin ?? 'generated',
+                  previewProjectUploadName: previewProject.uploadName ?? null,
+                  ...(createdProjectId ? { newPreviewProject: true, previewServerRevision: previousPreviewProject?.serverRevision } : {}),
+                };
+          }
+        }
         await sendChatMessage(
           {
             sessionId,
@@ -317,17 +372,31 @@ export function useMessage(sessionId: string | null) {
               setProjectRevision((revision) => revision + 1);
               updateLastAssistant((last) => ({
                 ...last,
-                projectChanges: [...(last.projectChanges ?? []), change],
+                projectChanges: [
+                  ...(last.projectChanges ?? []).filter((item) => item.path !== change.path),
+                  change,
+                ],
               }));
             },
             onPreviewFileChanged: (change: PreviewFileChange & { content: string }) => {
               const store = usePreviewProjectStore.getState();
               const isSceneSpec = change.path === '/src/scene.json';
+              if (stagedProject && change.projectId === stagedProject.id) {
+                stagedProject = stageProjectSources(stagedProject, [change], change.revision ?? (stagedProject.revision ?? 0) + 1);
+                previewFilesChanged = true;
+                if (isSceneSpec) sceneToExport = validateSceneSpec(JSON.parse(stagedProject.files['/src/scene.json']));
+                updateLastAssistant((last) => ({ ...last, previewChanges: [
+                  ...(last.previewChanges ?? []).filter((item) => item.path !== change.path),
+                  { projectId: change.projectId, path: change.path, diff: change.diff },
+                ] }));
+                return;
+              }
               const applied = isSceneSpec
                 ? store.applyAiSceneSpec(change)
                 : store.applyAiFileChange(change);
               if (!applied) return;
               previewFilesChanged = true;
+              if (isSceneSpec) sceneToExport = validateSceneSpec(JSON.parse(usePreviewProjectStore.getState().project.files['/src/scene.json']));
               setPreviewRevision((revision) => revision + 1);
               updateLastAssistant((last) => {
                 const previewChanges = [
@@ -341,6 +410,11 @@ export function useMessage(sessionId: string | null) {
               });
             },
             onPreviewProjectPersisted: (change) => {
+              if (stagedProject && change.projectId === stagedProject.id) {
+                stagedProject = { ...stagedProject, serverRevision: change.serverRevision, persistedRevision: change.contentRevision };
+                stagedProjectReady = true;
+                return;
+              }
               usePreviewProjectStore.getState().applyServerProjectRevision(
                 change.projectId,
                 change.contentRevision,
@@ -357,6 +431,36 @@ export function useMessage(sessionId: string | null) {
                 ],
               }));
               if (paths.length === 0) return;
+
+              if (stagedProject && change.projectId === stagedProject.id) {
+                try {
+                  const response = await readSessionPreviewProjectFiles(sessionId, change.projectId, paths, change.contentRevision);
+                  if (response.revision !== change.contentRevision || response.serverRevision < change.serverRevision
+                    || response.files.length !== paths.length || paths.some((path) => !response.files.some((file) => file.path === path))) {
+                    throw new Error('新项目的完整源码尚未同步成功。');
+                  }
+                  stagedProject = stageProjectSources(stagedProject, response.files, response.revision, response.serverRevision);
+                  stagedProjectReady = true;
+                  previewFilesChanged = true;
+                  if (paths.includes('/src/scene.json')) sceneToExport = validateSceneSpec(JSON.parse(stagedProject.files['/src/scene.json']));
+                  return response.payloadBytes;
+                } catch (error) {
+                  if (error instanceof PreviewRevisionAdvancedError) {
+                    const latest = await getSessionPreviewProject(sessionId);
+                    if (latest?.project.id === change.projectId) {
+                      stagedProject = reconcilePreviewProject({ ...latest.project, serverRevision: latest.revision,
+                        persistedRevision: latest.project.revision, origin: latest.origin, uploadName: latest.uploadName }, [], true);
+                      stagedProjectReady = true;
+                      previewFilesChanged = true;
+                      if (paths.includes('/src/scene.json')) sceneToExport = validateSceneSpec(JSON.parse(stagedProject.files['/src/scene.json']));
+                      return latest.payloadBytes;
+                    }
+                  }
+                  stagedProjectReady = false;
+                  updateLastAssistant((last) => ({ ...last, content: `${last.content}\n\n新项目源码同步未完成，当前预览保持不变。请刷新后重试。` }));
+                  return;
+                }
+              }
 
               const initialState = usePreviewProjectStore.getState();
               if (change.projectId !== initialState.project.id) {
@@ -408,6 +512,7 @@ export function useMessage(sessionId: string | null) {
                     latest.uploadName,
                   );
                   const recovered = usePreviewProjectStore.getState();
+                  if (paths.includes('/src/scene.json')) sceneToExport = validateSceneSpec(JSON.parse(recovered.project.files['/src/scene.json']));
                   if (selectedPath && recovered.project.files[selectedPath] !== undefined) recovered.selectFile(selectedPath);
                   const sourceBytes = Object.values(latest.project.files).reduce(
                     (total, content) => total + new TextEncoder().encode(content).byteLength,
@@ -455,6 +560,7 @@ export function useMessage(sessionId: string | null) {
                   throw new Error('源码没有应用到当前项目，请刷新页面加载服务器最新版本。');
                 }
                 previewFilesChanged = true;
+                if (paths.includes('/src/scene.json')) sceneToExport = validateSceneSpec(JSON.parse(usePreviewProjectStore.getState().project.files['/src/scene.json']));
                 setPreviewRevision((revision) => revision + 1);
                 const contentBytes = response.files.reduce(
                   (total, file) => total + new TextEncoder().encode(file.content).byteLength,
@@ -476,6 +582,7 @@ export function useMessage(sessionId: string | null) {
               }
             },
             onPreviewProjectConflict: (message) => {
+              creationFailed = true;
               updateLastAssistant((last) => ({
                 ...last,
                 content: `${last.content}\n\n⚠️ ${message}`,
@@ -545,7 +652,8 @@ export function useMessage(sessionId: string | null) {
               });
             },
             onDone: () => {
-              if (previewFilesChanged) {
+              completed = true;
+              if (previewFilesChanged && !stagedProject) {
                 console.info(`[PreviewSync] local_vfs_updated=true build_triggered=true`);
                 usePreviewProjectStore.getState().requestBuildAndRun();
               }
@@ -556,6 +664,7 @@ export function useMessage(sessionId: string | null) {
               }));
             },
             onError: (err: Error) => {
+              creationFailed = true;
               updateLastAssistant((last) => ({
                 ...last,
                 content: last.content + `\n\n错误：${err.message || '服务异常'}`,
@@ -566,6 +675,41 @@ export function useMessage(sessionId: string | null) {
           },
           controller.signal,
         );
+        // SSE has now persisted the assistant message. Export the exact scene
+        // received for this turn, never whichever project happens to be active.
+        if (completed && !creationFailed && sceneToExport && !controller.signal.aborted) {
+          try {
+            const file = await saveSceneArtifact(sceneToExport, (blob, name) => {
+              if (controller.signal.aborted) throw new DOMException('已取消模型导出', 'AbortError');
+              return saveGeneratedGlb(sessionId, blob, name, assistantMsg.id);
+            });
+            setMessages((previous) => previous.map((message) => message.id === assistantMsg.id ? {
+              ...message,
+              file,
+              files: [...(message.files ?? []).filter((item) => item.downloadUrl !== file.downloadUrl), file],
+            } : message));
+          } catch (error) {
+            if (controller.signal.aborted) return;
+            if (stagedProject) stagedProjectReady = false;
+            const detail = error instanceof Error ? error.message : '模型文件保存失败';
+            setMessages((previous) => previous.map((message) => message.id === assistantMsg.id ? {
+              ...message, content: `${message.content}\n\nGLB 导出失败：${detail}。场景源码已保留，可重试导出。`,
+            } : message));
+          }
+        }
+        // Publish only after SSE completion, full source sync and (for 3D) GLB save.
+        // A cancelled/failed request never replaces the visible project.
+        if (stagedProject && previousPreviewProject && canPublishStagedProject({
+          completed, ready: stagedProjectReady, changed: previewFilesChanged, aborted: controller.signal.aborted,
+          failed: creationFailed, activeProjectId: usePreviewProjectStore.getState().project.id,
+          previousProjectId: previousPreviewProject.id,
+        })) {
+          const store = usePreviewProjectStore.getState();
+          store.importProject(stagedProject.template, stagedProject.files, stagedProject.name,
+            stagedProject.id, stagedProject.revision, stagedProject.serverRevision, stagedProject.origin, stagedProject.uploadName);
+          setPreviewRevision((revision) => revision + 1);
+          store.requestBuildAndRun();
+        }
       } catch (err: any) {
         if (err.name !== 'AbortError') {
           console.error('[Message] 发送消息失败:', err);

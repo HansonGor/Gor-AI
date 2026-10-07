@@ -9,6 +9,7 @@ import './ChatBox.less';
 
 export default function ChatBox({
   messages,
+  currentPreviewProject,
   input,
   setInput,
   pendingImages,
@@ -67,7 +68,7 @@ export default function ChatBox({
         {messages.length === 0 ? (
           <WelcomeScreen onPromptClick={handleSend} />
         ) : (
-          <MessageList messages={messages} onPreviewFile={onPreviewFile} onPreviewProject={onPreviewProject} onPreviewAttachment={onPreviewAttachment} />
+          <MessageList messages={messages} currentPreviewProject={currentPreviewProject} onPreviewFile={onPreviewFile} onPreviewProject={onPreviewProject} onPreviewAttachment={onPreviewAttachment} />
         )}
       </div>
 

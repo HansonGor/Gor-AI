@@ -1,4 +1,4 @@
-"""Minimal in-memory WebSocket registration for Gor's VS Code extension."""
+"""VS Code workspace registration and small WebSocket RPC response router."""
 
 from datetime import datetime, timezone
 import json
@@ -7,6 +7,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from services.vscode_bridge import vscode_bridge
 
 
 logger = logging.getLogger("gor.vscode")
@@ -21,8 +22,12 @@ def _workspace_folders(value: Any) -> list[dict[str, str]]:
     if not isinstance(value, list):
         return []
     return [
-        {"name": str(folder.get("name", "")), "uri": str(folder.get("uri", ""))}
-        for folder in value
+        {
+            "id": str(folder.get("id", ""))[:40],
+            "name": str(folder.get("name", ""))[:255],
+            "uri": str(folder.get("uri", ""))[:4096],
+        }
+        for folder in value[:50]
         if isinstance(folder, dict)
     ]
 
@@ -41,13 +46,27 @@ async def vscode_workspace_socket(websocket: WebSocket) -> None:
                 logger.warning("VSCode WebSocket received invalid JSON")
                 continue
 
-            if not isinstance(message, dict) or message.get("type") != "workspace_connected":
+            if not isinstance(message, dict):
+                continue
+
+            if message.get("type") == "workspace_response":
+                vscode_bridge.handle_response(message)
+                continue
+            if message.get("type") == "workspace_tree_changed":
+                root = message.get("root")
+                if not isinstance(root, str) or not root.startswith("root-"):
+                    root = None
+                vscode_bridge.invalidate_workspace_tree(workspace_id or "", root)
+                continue
+            if message.get("type") != "workspace_connected":
                 continue
 
             workspace_name = str(message.get("workspaceName") or "")
             folders = _workspace_folders(message.get("workspaceFolders"))
             if workspace_id is None:
-                workspace_id = f"vscode-{uuid.uuid4().hex[:8]}"
+                workspace_id = f"vscode-{uuid.uuid4().hex}"
+
+            generation = vscode_bridge.register_workspace(workspace_id, websocket)
 
             active_workspaces[workspace_id] = {
                 "workspace_id": workspace_id,
@@ -55,6 +74,7 @@ async def vscode_workspace_socket(websocket: WebSocket) -> None:
                 "workspace_name": workspace_name,
                 "workspace_folders": folders,
                 "connected_at": datetime.now(timezone.utc).isoformat(),
+                "generation": generation,
             }
             logger.info("VSCode workspace connected: %s (%s)", workspace_name or "(unnamed)", workspace_id)
             await websocket.send_json({"type": "workspace_registered", "workspaceId": workspace_id})
@@ -64,5 +84,8 @@ async def vscode_workspace_socket(websocket: WebSocket) -> None:
         logger.exception("VSCode WebSocket connection failed")
     finally:
         if workspace_id is not None:
-            active_workspaces.pop(workspace_id, None)
+            vscode_bridge.disconnect_workspace(workspace_id, websocket)
+            current = active_workspaces.get(workspace_id)
+            if current and current.get("connection") is websocket:
+                active_workspaces.pop(workspace_id, None)
             logger.info("VSCode workspace disconnected: %s", workspace_id)

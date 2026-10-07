@@ -12,6 +12,7 @@ interface PreviewRuntimePanelProps {
   isSavingGlb?: boolean;
   buildDisabled: boolean;
   actionsHost?: HTMLElement | null;
+  sourcePending?: boolean;
 }
 
 export default function PreviewRuntimePanel({
@@ -22,14 +23,15 @@ export default function PreviewRuntimePanel({
   isSavingGlb = false,
   buildDisabled,
   actionsHost,
+  sourcePending = false,
 }: PreviewRuntimePanelProps) {
   const toolbarActions = (
     <div className="preview-runtime-summary preview-runtime-toolbar">
       <span
-        className={`preview-build-status ${buildState.status}`}
-        title={`Build: ${buildState.status === 'error' ? 'Build Error' : buildState.status}`}
+        className={`preview-build-status ${sourcePending ? 'ready' : buildState.status}`}
+        title={sourcePending ? '等待项目源码' : `Build: ${buildState.status === 'error' ? 'Build Error' : buildState.status}`}
       >
-        Build: {buildState.status === 'error' ? 'Error' : buildState.status}
+        {sourcePending ? '等待源码' : `Build: ${buildState.status === 'error' ? 'Error' : buildState.status}`}
       </span>
       <Button type="button" variant="outline" size="sm" onClick={onBuildAndRun} disabled={buildDisabled || isSavingGlb} title={isSavingGlb ? '正在生成并保存 GLB…' : '构建并运行当前项目'}>
         {isSavingGlb ? '正在生成 GLB…' : 'Build & Run'}
@@ -39,7 +41,7 @@ export default function PreviewRuntimePanel({
   return (
     <section className="preview-runtime-panel" aria-label="Sandbox Runtime">
       {actionsHost ? createPortal(toolbarActions, actionsHost) : toolbarActions}
-      {(buildState.workerError || buildState.diagnostics.length > 0) && (
+      {!sourcePending && (buildState.workerError || buildState.diagnostics.length > 0) && (
         <div className="preview-runtime-build-error" role="alert">
           {buildState.workerError && <strong>{buildState.workerError}</strong>}
           {buildState.diagnostics.map((diagnostic, index) => (
@@ -55,7 +57,7 @@ export default function PreviewRuntimePanel({
           ))}
         </div>
       )}
-      {state.error && (
+      {!sourcePending && state.error && (
         <div className="preview-runtime-error" role="alert">
           <strong>{state.error.message}</strong>
           <span>

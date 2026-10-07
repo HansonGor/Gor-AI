@@ -13,9 +13,174 @@ import { getSnapshotBackedHtmlArtifactUrls } from '../src/preview/core/snapshotA
 import { canonicalizePresentationFiles, createPresentationSnapshot, isPresentationSnapshotFile, restorePresentationSnapshot } from '../src/preview/core/presentationSnapshot.ts';
 import { createUploadSummaryRequest } from '../src/utils/uploadSummary.ts';
 import { createSceneProjectFiles, exportSceneGlb, isSceneRendererProject, validateSceneSpec } from '../src/modeling/sceneSpec.ts';
+import { saveSceneArtifact } from '../src/modeling/sceneArtifact.ts';
+import { saveGeneratedGlb } from '../src/api/webProjectArtifacts.ts';
+import { isNewPreviewProjectRequest } from '../src/preview/core/creationIntent.ts';
+import { glbFileName, hasGeneratedSceneArtifact, linkGeneratedFileToProject } from '../src/preview/core/artifactFormat.ts';
+import { canBuildPreviewSource } from '../src/preview/core/buildReadiness.ts';
+import { projectClientContext } from '../src/utils/clientMode.ts';
 import { motionFrames, transitionFrames, segmentCues, playMotion } from '../src/preview/core/presentationMotion.ts';
-import { usePreviewProjectStore } from '../src/stores/previewProjectStore.ts';
+import { createBlankProjectState, usePreviewProjectStore } from '../src/stores/previewProjectStore.ts';
+import { canPublishStagedProject, stageProjectSources } from '../src/preview/core/stagedProject.ts';
+import { previewArtifactCreationOrder, sortPreviewArtifactEntries, sourceSnapshotForTarget } from '../src/preview/core/artifactSelection.ts';
+import type { ChatMessage } from '../src/types.ts';
 import type { PresentationMotionCue, PresentationSchema } from '../src/types.ts';
+
+test('Web GLB export sends virtual bytes and plugin cannot invoke the Web artifact adapter', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const dataset = { gorClientMode: 'web' };
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: { documentElement: { dataset } } });
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), init: init! });
+    return Response.json({ success: true, file: { fileType: '3d', displayName: 'robot.glb', downloadUrl: '/virtual/1' } });
+  };
+  try {
+    const blob = new Blob(['virtual GLB bytes']);
+    const result = await saveGeneratedGlb('session/id', blob, 'robot.glb.glb', 'reply/id');
+    assert.equal(result.downloadUrl, '/virtual/1');
+    const { url, init } = calls[0];
+    assert.equal(init.method, 'PUT');
+    assert.equal(init.body, blob);
+    assert.equal(init.cache, 'no-store');
+    assert.equal((init.headers as Record<string, string>)['Content-Type'], 'model/gltf-binary');
+    assert.ok(url.startsWith('/api/chat/session/session%2Fid/generated-artifacts?'));
+    const query = new URL(url, 'http://localhost').searchParams;
+    assert.equal(query.get('name'), 'robot.glb');
+    assert.equal(query.get('message_id'), 'reply/id');
+    dataset.gorClientMode = 'vscode';
+    await assert.rejects(saveGeneratedGlb('s', blob, 'robot.glb'), /VS Code/);
+    assert.equal(calls.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument);
+    else Reflect.deleteProperty(globalThis, 'document');
+  }
+});
+
+test('GLB scene names, historical artifacts and tooltips retain exactly one suffix', () => {
+  for (const name of ['机器人', '机器人.glb', '机器人.GLB', '机器人.glb.glb', ' 机器人.glb .GLB  ']) {
+    assert.equal(glbFileName(name), '机器人.glb');
+    assert.equal(glbFileName(glbFileName(name)), '机器人.glb');
+    assert.equal(previewArtifactName({ name, files: { '/src/scene.json': JSON.stringify({ name }) } }, '.glb'), '机器人.glb');
+  }
+  assert.equal(glbFileName('robot.v2.glb'), 'robot.v2.glb');
+  assert.equal(glbFileName('.glb.glb'), '3D Model.glb');
+  assert.equal(previewArtifactTooltip('机器人.glb.glb', '.glb'), '机器人.glb');
+  const original = { fileType: '3d', displayName: 'robot.glb.glb', downloadUrl: '/artifacts/opaque-id', projectId: 'scene-a' };
+  const normalized = linkGeneratedFileToProject(original, ['scene-b']);
+  assert.equal(normalized.displayName, 'robot.glb');
+  assert.equal(normalized.downloadUrl, original.downloadUrl);
+  assert.equal(normalized.projectId, 'scene-a');
+  assert.equal(original.displayName, 'robot.glb.glb');
+});
+
+test('new projects stay off-screen through partial and complete source sync until explicitly published', () => {
+  const store = usePreviewProjectStore.getState();
+  store.createProject('react');
+  const old = usePreviewProjectStore.getState().project;
+  let staged = createBlankProjectState('react');
+  assert.notEqual(staged.id, old.id);
+  assert.equal(usePreviewProjectStore.getState().project, old);
+  staged = stageProjectSources(staged, [{ path: '/index.html', content: '<script type="module" src="/src/main.jsx"></script>' }], 1);
+  assert.equal(usePreviewProjectStore.getState().project, old);
+  staged = stageProjectSources(staged, [
+    { path: '/src/main.jsx', content: 'import App from "./App.jsx";' },
+    { path: '/src/App.jsx', content: 'export default function App() { return <h1>New Counter</h1>; }' },
+  ], 2, 3);
+  assert.equal(staged.name, 'New Counter');
+  assert.equal(staged.serverRevision, 3);
+  assert.equal(staged.persistedRevision, 2);
+  assert.equal(usePreviewProjectStore.getState().project, old);
+  assert.throws(() => stageProjectSources(staged, [], 1), /版本已过期/);
+  store.importProject(staged.template, staged.files, staged.name, staged.id, staged.revision, staged.serverRevision);
+  assert.equal(usePreviewProjectStore.getState().project.id, staged.id);
+  assert.notEqual(usePreviewProjectStore.getState().project.files, old.files);
+  store.clearProject();
+});
+
+test('new 3D scene stages its full renderer without opening an empty preview', () => {
+  const store = usePreviewProjectStore.getState();
+  store.clearProject();
+  const old = usePreviewProjectStore.getState().project;
+  const scene = validateSceneSpec({ version: 1, name: 'Robot', objects: [{ id: 'body', name: 'Body', geometry: 'box', size: [1, 1, 1], position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], color: '#8b5cf6', metalness: 0, roughness: 1, copy_offsets: [] }] });
+  const staged = stageProjectSources(createBlankProjectState('html'), [{ path: '/src/scene.json', content: JSON.stringify(scene) }], 1, 1);
+  assert.equal(staged.name, 'Robot');
+  assert.equal(isSceneRendererProject(staged.files), true);
+  assert.equal(usePreviewProjectStore.getState().project, old);
+  assert.equal(Object.keys(old.files).length, 0);
+});
+
+test('new project publication waits for completion, source/artifacts and rejects cancellation/failure/session changes', () => {
+  const ready = { completed: true, ready: true, changed: true, aborted: false, failed: false, activeProjectId: 'old', previousProjectId: 'old' };
+  assert.equal(canPublishStagedProject(ready), true);
+  for (const override of [{ completed: false }, { ready: false }, { changed: false }, { aborted: true }, { failed: true }, { activeProjectId: 'another-session' }]) {
+    assert.equal(canPublishStagedProject({ ...ready, ...override }), false);
+  }
+});
+
+test('Worker orders current React, archived React and GLB by creation, not artifact kind or last edit', () => {
+  const first = createMessagePreviewSnapshot({ id: 'first-react', name: 'Demo', template: 'react', files: createReactTemplate() }, 'm1', []);
+  const messages = [
+    { id: 'm1', role: 'assistant', content: '', created_at: '2026-10-07T10:00:00Z', previewSnapshot: first },
+    { id: 'm2', role: 'assistant', content: '', created_at: '2026-10-07T10:01:00Z', previewChanges: [{ projectId: 'scene', path: '/src/scene.json', diff: '' }], file: { fileType: '3d', displayName: 'Scene.glb', downloadUrl: '/scene.glb', projectId: 'scene' } },
+    { id: 'm3', role: 'assistant', content: '', created_at: '2026-10-07T10:02:00Z', previewChanges: [{ projectId: 'shopping', path: '/src/App.jsx', diff: '' }] },
+    { id: 'm4', role: 'assistant', content: '', created_at: '2026-10-07T10:03:00Z', previewSnapshot: { ...first, messageId: 'm4', revision: 2 } },
+  ] as ChatMessage[];
+  const order = previewArtifactCreationOrder(messages);
+  const entries = [{ key: 'project:shopping' }, { key: 'project-snapshot:m4' }, { key: 'generated:/scene.glb' }];
+  assert.deepEqual(sortPreviewArtifactEntries(entries, order).map((entry) => entry.key), ['project-snapshot:m4', 'generated:/scene.glb', 'project:shopping']);
+  assert.equal(order['project:first-react'], order['project-snapshot:m4']);
+  assert.equal(entries[0].key, 'project:shopping'); // Caller order is not mutated.
+});
+
+test('Code uses only the selected target source; stale GLB must not replace current React source', () => {
+  const glb = createMessagePreviewSnapshot({ id: 'scene', name: 'Scene', template: 'html', files: { '/index.html': '<h1>old scene</h1>' } }, 'm2', []);
+  const react = createMessagePreviewSnapshot({ id: 'react', name: 'Shopping', template: 'react', files: createReactTemplate() }, 'm3', []);
+  assert.equal(sourceSnapshotForTarget('project', react, glb), undefined);
+  assert.equal(sourceSnapshotForTarget('project-snapshot', react, glb), react);
+  assert.equal(sourceSnapshotForTarget('generated', react, glb), glb);
+  assert.equal(sourceSnapshotForTarget('uploaded-dist', react, glb), undefined);
+  assert.equal(sourceSnapshotForTarget('project-snapshot', null, glb), undefined);
+});
+
+test('Web and plugin declare distinct project providers; optional feature negation still generates projects', () => {
+  assert.deepEqual(projectClientContext('web', 'stale-vscode-workspace'), { clientMode: 'web' });
+  assert.deepEqual(projectClientContext('vscode', 'workspace-1'), { clientMode: 'vscode', workspaceId: 'workspace-1' });
+  assert.equal(isNewPreviewProjectRequest('生成一个最简单的react-demo，只展示一个标题，不需要其他功能'), true);
+  assert.equal(isNewPreviewProjectRequest('新建一个3D模型，不用复杂材质'), true);
+  assert.equal(isNewPreviewProjectRequest('不要创建react项目'), false);
+  assert.equal(isNewPreviewProjectRequest('不需要生成3D模型'), false);
+});
+
+test('new React/3D projects wait for source commits, while completed invalid projects still report build errors', () => {
+  const store = usePreviewProjectStore.getState();
+  for (const template of ['react', 'html', 'react', 'html'] as const) {
+    store.createBlankProject(template);
+    const blank = usePreviewProjectStore.getState().project;
+    assert.equal(canBuildPreviewSource(blank.files), false);
+    const partial = { '/index.html': '<script type="module" src="/missing.js"></script>' };
+    assert.equal(canBuildPreviewSource(partial, true), false);
+    // Once generation is over, real missing-entry diagnostics must not be masked.
+    assert.equal(canBuildPreviewSource(partial, false), true);
+    assert.equal(canBuildPreviewSource(createReactTemplate(), true), false);
+    assert.equal(canBuildPreviewSource(createReactTemplate(), false), true);
+  }
+  store.clearProject();
+});
+
+test('exported GLB replaces only its linked scene entry, not same-name independent projects', () => {
+  const file = { fileType: '3d', displayName: 'robot.glb', downloadUrl: '/artifacts/robot' };
+  const linked = linkGeneratedFileToProject(file, ['scene-a', 'scene-a']);
+  assert.equal(linked.projectId, 'scene-a');
+  assert.equal(hasGeneratedSceneArtifact('scene-a', [linked]), true);
+  assert.equal(hasGeneratedSceneArtifact('scene-b', [linked]), false);
+  assert.equal(hasGeneratedSceneArtifact('scene-a', []), false);
+  assert.equal(linkGeneratedFileToProject(file, ['scene-a', 'scene-b']).projectId, undefined);
+  assert.equal(linkGeneratedFileToProject({ ...file, projectId: 'scene-b' }, ['scene-a']).projectId, 'scene-b');
+  assert.equal(hasGeneratedSceneArtifact('scene-a', [{ ...linked, displayName: 'robot.html', fileType: 'html' }]), false);
+});
 
 test('motion player consumes snapshot clocks and cancels all animations without touching layout scale', () => {
   const cue: PresentationMotionCue = { target: 'headline', effect: 'rise', trigger: 'withPrevious', start: .08, delay: .08, duration: .42, order: 1, clickIndex: 0, direction: 'up', distance: 'short' };
@@ -211,6 +376,15 @@ test('fixed exporter creates a GLB v2 binary from a validated low-poly SceneSpec
   let blob: Blob;
   try {
     blob = await exportSceneGlb(scene);
+    const file = await saveSceneArtifact({ ...scene, name: 'Test Model.glb.glb' }, async (artifact, name) => {
+      assert.equal(name, 'Test Model.glb');
+      assert.equal(artifact.type, 'model/gltf-binary');
+      const header = new DataView(await artifact.arrayBuffer());
+      assert.equal(header.getUint32(0, true), 0x46546c67);
+      assert.equal(header.getUint32(4, true), 2);
+      return { fileType: '3d', displayName: name, downloadUrl: '/generated/model.glb' };
+    });
+    assert.equal(file.fileType, '3d');
   } finally {
     if (readerDescriptor) Object.defineProperty(globalThis, 'FileReader', readerDescriptor);
     else Reflect.deleteProperty(globalThis, 'FileReader');
@@ -384,6 +558,17 @@ test('reset restores a fresh default template', () => {
   assert.deepEqual(reset, initial);
 });
 
+test('Preview store starts and clears without an implicit starter project', () => {
+  const store = usePreviewProjectStore.getState();
+  store.clearProject();
+  assert.equal(usePreviewProjectStore.getState().project.id, '');
+  assert.deepEqual(usePreviewProjectStore.getState().getFilePaths(), []);
+
+  usePreviewProjectStore.getState().createBlankProject('react');
+  assert.ok(usePreviewProjectStore.getState().project.id);
+  assert.deepEqual(usePreviewProjectStore.getState().getFilePaths(), []);
+});
+
 test('store orchestrates Core and exposes cloneable project files', () => {
   const store = usePreviewProjectStore.getState();
   store.createProject('react');
@@ -484,6 +669,110 @@ test('message snapshots separate a React app from stale 3D scene files in the sh
   assert.equal(weatherSnapshot.name, 'Guangzhou Weather');
   assert.match(weatherSnapshot.files['/index.html'], /src="\/src\/main\.tsx"/);
   assert.match(weatherSnapshot.files['/src/App.tsx'], /Guangzhou Weather/);
+});
+
+test('a valid scene renderer stays a GLB artifact when the message change-path list is incomplete', () => {
+  const scene = validateSceneSpec({
+    version: 1,
+    name: '简易机器人',
+    objects: [{ id: 'body', name: '主体', geometry: 'box', size: [1, 1, 1], position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], color: '#8b5cf6', metalness: 0, roughness: 1, copy_offsets: [] }],
+  });
+  const project = {
+    id: 'scene-project',
+    name: scene.name,
+    template: 'react' as const,
+    files: createSceneProjectFiles(scene),
+  };
+
+  const snapshot = createMessagePreviewSnapshot(project, 'scene-turn', []);
+
+  assert.equal(snapshot.name, scene.name);
+  assert.equal(snapshot.template, 'html');
+  assert.equal(previewSnapshotExtension(snapshot), '.glb');
+  assert.equal(isSceneRendererProject(snapshot.files), true);
+});
+
+test('a scene generation build request is marked for automatic GLB export', () => {
+  const store = usePreviewProjectStore.getState();
+  store.createBlankProject('react');
+  store.requestBuildAndRun(true);
+  const afterSceneGeneration = usePreviewProjectStore.getState();
+  assert.equal(afterSceneGeneration.buildRunGlbRevision, afterSceneGeneration.buildRunRevision);
+
+  afterSceneGeneration.requestBuildAndRun();
+  const afterNormalBuild = usePreviewProjectStore.getState();
+  assert.notEqual(afterNormalBuild.buildRunGlbRevision, afterNormalBuild.buildRunRevision);
+});
+
+test('compact scene commits hydrate the actual batch-sync pipeline and survive refresh', () => {
+  const scene = validateSceneSpec({
+    version: 1, name: '简易场景',
+    objects: [{ id: 'body', name: 'Body', geometry: 'box', size: [1, 1, 1], position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], color: '#8b5cf6', metalness: 0, roughness: 1, copy_offsets: [] }],
+  });
+  const store = usePreviewProjectStore.getState();
+  // Reproduce both an empty project and the previous Todo mixed into the VFS.
+  for (const withOldReact of [false, true]) {
+    if (withOldReact) store.createProject('react');
+    else store.createBlankProject('react');
+    const id = usePreviewProjectStore.getState().project.id;
+    assert.equal(store.applyAiProjectCommit({ projectId: id, changedFiles: [{ path: '/src/scene.json', content: JSON.stringify(scene) }], contentRevision: 1, serverRevision: 2 }), true);
+    const project = usePreviewProjectStore.getState().project;
+    assert.equal(project.name, scene.name);
+    assert.equal(project.template, 'html');
+    assert.equal(isSceneRendererProject(project.files), true);
+    assert.match(project.files['/index.html'], /src="\/src\/main\.ts"/);
+    const snapshot = createMessagePreviewSnapshot(project, 'scene-turn', ['/src/App.tsx', '/src/main.tsx', '/src/scene.json']);
+    assert.equal(snapshot.outputExtension, '.glb');
+    assert.equal(snapshot.files['/src/App.tsx'], undefined);
+  }
+  store.importProject('html', { '/src/scene.json': JSON.stringify(scene) }, 'New React Project', 'restored-scene', 1, 2);
+  assert.equal(isSceneRendererProject(usePreviewProjectStore.getState().project.files), true);
+  assert.equal(usePreviewProjectStore.getState().project.name, scene.name);
+  // Repair legacy scene-only React snapshots without requiring a default template.
+  store.importProject('react', { '/src/scene.json': JSON.stringify(scene) }, 'Legacy', 'legacy', 1, 2);
+  assert.equal(usePreviewProjectStore.getState().project.template, 'html');
+  const before = usePreviewProjectStore.getState().project;
+  assert.equal(store.applyAiProjectCommit({ projectId: before.id, changedFiles: [{ path: '/src/scene.json', content: '{}' }], contentRevision: 2, serverRevision: 3 }), false);
+  assert.equal(usePreviewProjectStore.getState().project, before);
+  assert.equal(store.applyAiProjectCommit({ projectId: before.id, changedFiles: [
+    { path: '/src/App.jsx', content: 'export default function App() { return <h1>React Todo Demo</h1>; }' },
+    { path: '/src/main.jsx', content: "import React from 'react'; import { createRoot } from 'react-dom/client'; import App from './App.jsx'; createRoot(document.getElementById('root')).render(<App />);" },
+  ], contentRevision: 2, serverRevision: 3 }), true);
+  const react = usePreviewProjectStore.getState().project;
+  assert.equal(isSceneRendererProject(react.files), false);
+  assert.equal(react.template, 'react');
+  assert.match(react.files['/index.html'], /src="\/src\/main\.jsx"/);
+  assert.equal(createMessagePreviewSnapshot(react, 'react-turn', ['/src/App.jsx', '/src/main.jsx']).outputExtension, '.html');
+  assert.equal(previewArtifactName(react, '.html'), 'React Todo Demo.html');
+  store.importProject(react.template, react.files, react.name, react.id, 2, 3);
+  assert.equal(isSceneRendererProject(usePreviewProjectStore.getState().project.files), false);
+  store.clearProject();
+});
+
+test('new React and 3D requests create independent blank project identities without carrying old files', () => {
+  for (const request of ['生成一份简单的react-demo', '新建一个React项目', '生成一个简单的3d模型', '创建一个3D项目']) assert.equal(isNewPreviewProjectRequest(request), true, request);
+  for (const request of ['修改这个React项目', '继续完善当前项目', '给当前页面生成一个按钮', '不要生成react项目', '怎么创建3D模型']) assert.equal(isNewPreviewProjectRequest(request), false, request);
+  const store = usePreviewProjectStore.getState();
+  store.createBlankProject('react');
+  const reactId = usePreviewProjectStore.getState().project.id;
+  store.applyAiProjectCommit({ projectId: reactId, changedFiles: Object.entries(createReactTemplate()).map(([path, content]) => ({ path, content })), contentRevision: 1, serverRevision: 1 });
+  const archivedReact = createMessagePreviewSnapshot(usePreviewProjectStore.getState().project, 'react-message', ['/src/App.tsx', '/src/main.tsx']);
+  store.createBlankProject('html');
+  const sceneId = usePreviewProjectStore.getState().project.id;
+  assert.notEqual(sceneId, reactId);
+  assert.deepEqual(Object.keys(usePreviewProjectStore.getState().project.files), []);
+  assert.equal(archivedReact.outputExtension, '.html');
+  assert.equal(archivedReact.files['/src/scene.json'], undefined);
+  const scene = validateSceneSpec({ version: 1, name: 'Scene', objects: [{ id: 'body', name: 'Body', geometry: 'box', size: [1, 1, 1], position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], color: '#8b5cf6', metalness: 0, roughness: 1, copy_offsets: [] }] });
+  store.applyAiProjectCommit({ projectId: sceneId, changedFiles: [{ path: '/src/scene.json', content: JSON.stringify(scene) }], contentRevision: 1, serverRevision: 2 });
+  const archivedScene = createMessagePreviewSnapshot(usePreviewProjectStore.getState().project, 'scene-message', ['/src/scene.json']);
+  assert.equal(archivedScene.outputExtension, '.glb');
+  assert.equal(archivedScene.files['/src/App.tsx'], undefined);
+  store.createBlankProject('react');
+  assert.notEqual(usePreviewProjectStore.getState().project.id, sceneId);
+  assert.deepEqual(Object.keys(usePreviewProjectStore.getState().project.files), []);
+  assert.equal(archivedScene.outputExtension, '.glb');
+  store.clearProject();
 });
 
 test('preview artifact tooltips expose the final output extension for current and future file types', () => {

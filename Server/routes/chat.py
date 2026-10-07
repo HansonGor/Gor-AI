@@ -5,7 +5,7 @@ SSE 流式聊天路由
 import asyncio
 import json
 import re
-from typing import AsyncGenerator, Dict, Any
+from typing import AsyncGenerator, Dict, Any, Literal
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
@@ -26,6 +26,7 @@ from db.supabase_chat import (
     save_message,
 )
 from services.context_engine import context_engine, estimate_tokens
+from project_api.vscode_context import create_current_vscode_project_api
 
 router = APIRouter()
 
@@ -46,7 +47,11 @@ class ChatRequest(BaseModel):
     previewProjectOrigin: str = "generated"
     previewProjectUploadName: str | None = None
     workspaceEdit: bool = False
+    clientMode: Literal['web', 'vscode'] | None = None
+    # Opaque extension-issued workspace id; workspace operations still require a live bridge.
+    workspaceId: str | None = Field(default=None, max_length=120)
     assistantMessageId: str | None = Field(default=None, max_length=80)
+    newPreviewProject: bool = False
 
 
 @router.post("/chat")
@@ -93,10 +98,16 @@ async def chat(request: Request, body: ChatRequest):
             preview_project_row_revision = None
             preview_project_origin = "generated"
             try:
-                saved_project = await get_session_preview_project(session_id)
-                bootstrap = body.previewProjectBootstrap or body.previewProject
+                # VS Code chat has its own ProjectRef and must never bootstrap or
+                # restore the browser's in-memory default Preview template.
+                plugin_workspace_request = (
+                    body.clientMode == "vscode"
+                    or (body.clientMode is None and bool(body.workspaceId and body.workspaceId.strip()))
+                )
+                saved_project = None if plugin_workspace_request else await get_session_preview_project(session_id)
+                bootstrap = None if plugin_workspace_request else (body.previewProjectBootstrap or body.previewProject)
 
-                if body.previewProjectId:
+                if body.previewProjectId and not plugin_workspace_request:
                     if not saved_project:
                         raise ValueError("PREVIEW_PROJECT_NOT_FOUND")
                     saved_project_data = saved_project.get("project") or {}
@@ -116,7 +127,24 @@ async def chat(request: Request, body: ChatRequest):
                     bootstrap_workspace = PreviewProjectWorkspace.from_request(bootstrap)
                     if bootstrap_workspace is None:
                         raise ValueError("Preview Project 格式无效。")
-                    if saved_project:
+                    if body.newPreviewProject:
+                        project_name = bootstrap.get("name")
+                        if not isinstance(project_name, str) or not project_name.strip() or len(project_name) > 80:
+                            raise ValueError("项目名称无效。")
+                        if bootstrap_workspace.files or bootstrap_workspace.revision != 0:
+                            raise ValueError("新项目必须从空白源码开始。")
+                    if saved_project and body.newPreviewProject:
+                        # Stage a genuinely new, empty project. The previous
+                        # project remains canonical until generation succeeds.
+                        if body.previewServerRevision != saved_project.get("revision"):
+                            raise ValueError("PREVIEW_PROJECT_REVISION_CONFLICT")
+                        if bootstrap_workspace.project_id == (saved_project.get("project") or {}).get("id"):
+                            raise ValueError("新项目必须使用独立的项目 ID。")
+                        canonical_project = {"id": bootstrap_workspace.project_id, "name": bootstrap.get("name", "New Project"),
+                                             "template": bootstrap_workspace.template, "files": {}, "revision": 0}
+                        preview_project_row_revision = saved_project["revision"]
+                        preview_project_origin = "generated"
+                    elif saved_project:
                         # An old client may still send the complete project. Never
                         # trust it to overwrite newer server state; only accept a
                         # matching explicit reference to the existing canonical row.
@@ -262,7 +290,8 @@ async def chat(request: Request, body: ChatRequest):
                     context_summary = None
                     selected_messages = prior_messages[-29:]
                 history_messages = [
-                    {"role": m["role"], "content": m["content"], "images": m.get("images")}
+                    {"role": m["role"], "content": m["content"], "images": m.get("images"),
+                     **({"project_changes": m["project_changes"]} if plugin_workspace_request and m.get("project_changes") else {})}
                     for m in selected_messages
                 ]
                 history_messages.append(current_message)
@@ -338,6 +367,7 @@ async def chat(request: Request, body: ChatRequest):
             full_assistant_content = ""
             full_assistant_files = []
             full_preview_changes = {}
+            full_workspace_changes = {}
             preview_project_needs_commit = False
             preview_commit_payload_bytes = 0
             # 本轮真实联网搜索来源（来自 search_sources 事件，全部来自真实 Tool Result）
@@ -352,6 +382,11 @@ async def chat(request: Request, body: ChatRequest):
                 nonlocal full_search_sources, full_search_trace, preview_project_needs_commit
                 if event.get("type") == "token" and event.get("content"):
                     full_assistant_content += event["content"]
+                if plugin_workspace_request and event.get("type") == "project_file_changed" and event.get("path"):
+                    full_workspace_changes[event["path"]] = {
+                        "path": event["path"], "diff": event.get("diff", ""),
+                        "workspaceId": body.workspaceId,
+                    }
                 if event.get("type") == "file_ready" and event.get("downloadUrl"):
                     file_record = {
                         "fileType": event.get("fileType", ""),
@@ -415,6 +450,9 @@ async def chat(request: Request, body: ChatRequest):
 
             # 5. 创建取消信号
             cancel_event = asyncio.Event()
+            vscode_project_context = create_current_vscode_project_api(body.workspaceId) if plugin_workspace_request else None
+            if body.workspaceId and vscode_project_context:
+                print(f"[SSE] VS Code ProjectRef provider=vscode project={vscode_project_context[1].project_id}")
 
             # 启动 Agent 执行（后台任务）
             agent_task = asyncio.create_task(
@@ -424,9 +462,12 @@ async def chat(request: Request, body: ChatRequest):
                     cancel_event,  # signal
                     [token_callback],
                     preview_workspace,
-                    body.workspaceEdit,
+                    False,
                     latest_presentation_schema,
                     context_summary,
+                    vscode_project_context,
+                    plugin_workspace_request,
+                    session_id,
                 )
             )
 
@@ -459,6 +500,34 @@ async def chat(request: Request, body: ChatRequest):
                         "files": preview_workspace.files,
                         "revision": preview_workspace.revision,
                     }
+                    if "/src/scene.json" in full_preview_changes and preview_workspace.template == "html":
+                        scene = json.loads(preview_workspace.files["/src/scene.json"])
+                        final_project["name"] = scene.get("name") or final_project["name"]
+                    elif any(path in full_preview_changes for path in ("/src/App.jsx", "/src/App.tsx", "/src/main.jsx", "/src/main.tsx")):
+                        final_project["template"] = "react"
+                        app_source = preview_workspace.files.get("/src/App.jsx", "") or preview_workspace.files.get("/src/App.tsx", "")
+                        heading = re.search(r"<h1\b[^>]*>([^<{]+)</h1>", app_source, re.I)
+                        if heading:
+                            final_project["name"] = heading.group(1).strip()[:80]
+                        elif preview_workspace.template == "html":
+                            final_project["name"] = "React Project"
+                        # Switching out of a compact scene must also persist the
+                        # real React entry; otherwise refresh resurrects the scene shell.
+                        if "/src/scene.json" in preview_workspace.files:
+                            entry = next((path for path in reversed(full_preview_changes) if path in ("/src/main.jsx", "/src/main.tsx")), None)
+                            if entry is None:
+                                entry = next((path for path in ("/src/main.jsx", "/src/main.tsx") if path in preview_workspace.files), None)
+                            if entry:
+                                index = preview_workspace.files.get("/index.html", '<!doctype html><html><head><meta charset="UTF-8"></head><body><div id="root"></div></body></html>')
+                                script = re.compile(r'(<script\b[^>]*\bsrc\s*=\s*[\"\'])[^\"\']+([\"\'][^>]*>)', re.I)
+                                if script.search(index):
+                                    index = script.sub(lambda match: match.group(1) + entry + match.group(2), index, count=1)
+                                else:
+                                    module_script = f'<script type="module" src="{entry}"></script>'
+                                    index = index.replace('</body>', module_script + '</body>') if '</body>' in index else index + module_script
+                                index = re.sub(r'<title\b[^>]*>[\s\S]*?</title>', lambda _: '<title>' + final_project["name"].replace('<', '').replace('>', '') + '</title>', index, flags=re.I)
+                                preview_workspace.files["/index.html"] = index
+                                full_preview_changes["/index.html"] = {"projectId": preview_workspace.project_id, "path": "/index.html", "diff": preview_workspace.diff_from_initial("/index.html")}
                     committed = await update_session_preview_project_if_revision(
                         session_id,
                         final_project,
@@ -671,6 +740,7 @@ async def chat(request: Request, body: ChatRequest):
                         message_id=body.assistantMessageId,
                         search_sources=cited_sources or None,
                         search_trace=full_search_trace,
+                        project_changes=list(full_workspace_changes.values()) or None,
                     )
                     print(
                         f"[PreviewContextFilter] persistence=assistant_message "

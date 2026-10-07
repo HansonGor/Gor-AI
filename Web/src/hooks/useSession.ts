@@ -1,6 +1,7 @@
 // 会话管理 Hook
 // 负责会话的创建、查询、切换、删除等操作
 import { useState, useCallback, useRef } from 'react';
+import { getChatClientMode } from '../utils/clientMode';
 import { useFeedback } from '../components/ui/feedback';
 import {
   createSession,
@@ -18,7 +19,7 @@ function getSessionUserId(): string {
   // The web app keeps its existing account namespace. The VS Code Webview uses
   // a separate user_id so both clients can share the API/database without
   // mixing their session lists.
-  return document.documentElement.dataset.gorClientMode === 'vscode'
+  return getChatClientMode() === 'vscode'
     ? `${CHAT_CONFIG.DEFAULT_USER_ID}:vscode`
     : CHAT_CONFIG.DEFAULT_USER_ID;
 }
@@ -92,6 +93,7 @@ export function useSession() {
           files: m.role === 'assistant' ? m.attachments || undefined : undefined,
           file: m.role === 'assistant' ? m.attachments?.[m.attachments.length - 1] || undefined : undefined,
           previewChanges: m.preview_changes || m.previewChanges || undefined,
+          projectChanges: m.project_changes || m.projectChanges || undefined,
           previewSnapshot: (() => {
             const snapshot = m.preview_snapshot || m.previewSnapshot;
             if (!snapshot || typeof snapshot !== 'object' || !snapshot.files || typeof snapshot.files !== 'object') return undefined;
@@ -105,7 +107,7 @@ export function useSession() {
               template: snapshot.template === 'html' ? 'html' : 'react',
               files: snapshot.files as Record<string, string>,
               revision: typeof snapshot.revision === 'number' ? snapshot.revision : 0,
-            }, messageId, changes.flatMap((change) => typeof change.path === 'string' ? [change.path] : []));
+            }, messageId, snapshot.outputExtension === '.glb' ? ['/src/scene.json'] : changes.flatMap((change) => typeof change.path === 'string' ? [change.path] : []));
           })(),
           isStreaming: false,
           tokenUsage:

@@ -1,5 +1,5 @@
 ﻿// 输入区域
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react';
 import { Upload, Send, Square, X, FileArchive, FolderUp, Files, Plus, Info } from 'lucide-react';
 import { CHAT_CONFIG } from '../../config';
 import type { InputAreaProps } from '../../types';
@@ -34,6 +34,15 @@ export default function InputArea({
   const [archiveStatus, setArchiveStatus] = useState('');
   const [archiveName, setArchiveName] = useState('');
   const [importDialogOpen, setImportDialogOpen] = useState(false);
+
+  const resizeTextarea = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    const contentHeight = textarea.scrollHeight;
+    textarea.style.height = `${Math.min(contentHeight, INPUT_MAX_HEIGHT)}px`;
+    textarea.style.overflowY = contentHeight > INPUT_MAX_HEIGHT ? 'auto' : 'hidden';
+  }, []);
 
   const closeImportDialog = () => setImportDialogOpen(false);
 
@@ -83,13 +92,29 @@ export default function InputArea({
     archiveControllerRef.current = null;
   }, []);
 
+  useLayoutEffect(() => {
+    resizeTextarea();
+  }, [input, resizeTextarea]);
+
   useEffect(() => {
-    const ta = textareaRef.current;
-    if (ta) {
-      ta.style.height = 'auto';
-      ta.style.height = Math.min(ta.scrollHeight, INPUT_MAX_HEIGHT) + 'px';
+    const textarea = textareaRef.current;
+    const panel = textarea?.closest('.chat-composer-panel');
+    if (!textarea || !panel) return;
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', resizeTextarea);
+      return () => window.removeEventListener('resize', resizeTextarea);
     }
-  }, [input]);
+
+    let previousWidth = panel.getBoundingClientRect().width;
+    const observer = new ResizeObserver(([entry]) => {
+      const nextWidth = entry?.contentRect.width ?? panel.getBoundingClientRect().width;
+      if (Math.abs(nextWidth - previousWidth) < 1) return;
+      previousWidth = nextWidth;
+      resizeTextarea();
+    });
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [resizeTextarea]);
 
   useEffect(() => {
     if (!importDialogOpen) return;

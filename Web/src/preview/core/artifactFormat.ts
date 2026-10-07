@@ -1,5 +1,12 @@
 import type { GeneratedFile, PreviewProjectSnapshot } from '../../types.ts';
 
+/** Scene names may already be filenames; keep exactly one canonical GLB suffix. */
+export function glbFileName(name: string): string {
+  const base = name.trim().replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/(?:\.glb\s*)+$/i, '').trim().slice(0, 80) || '3D Model';
+  return `${base}.glb`;
+}
+
 function normalizeExtension(extension: string | undefined): string | null {
   if (!extension) return null;
   const normalized = extension.trim().toLowerCase();
@@ -40,7 +47,7 @@ export function previewArtifactName(
   const normalizedExtension = normalizeExtension(extension) ?? '.html';
   let sceneTitle = '';
   const sceneSource = project.files['/src/scene.json'];
-  if (sceneSource) {
+  if (sceneSource && normalizedExtension === '.glb') {
     try {
       const scene = JSON.parse(sceneSource) as { name?: unknown };
       if (typeof scene.name === 'string') sceneTitle = scene.name;
@@ -66,6 +73,7 @@ export function previewArtifactName(
     }
   }
 
+  if (normalizedExtension === '.glb') return glbFileName(contentTitle || cleanArtifactTitle(project.name) || 'Preview');
   const fallback = cleanArtifactTitle(project.name).replace(/\.[^.]+$/, '');
   const title = (contentTitle || fallback || 'Preview').replace(/\.[^.]+$/, '');
   return `${title}${normalizedExtension}`;
@@ -130,7 +138,19 @@ export function generatedFileExtension(file: GeneratedFile): string | null {
     ?? (file.fileType === '3d' ? '.glb' : file.fileType === 'html' ? '.html' : null);
 }
 
+/** Link legacy exported files to their originating message, never by filename. */
+export function linkGeneratedFileToProject(file: GeneratedFile, projectIds: string[]): GeneratedFile {
+  if (file.fileType === '3d') file = { ...file, displayName: glbFileName(file.displayName) };
+  const ids = [...new Set(projectIds.filter(Boolean))];
+  return file.projectId || ids.length !== 1 ? file : { ...file, projectId: ids[0] };
+}
+
+export function hasGeneratedSceneArtifact(projectId: string, files: GeneratedFile[]): boolean {
+  return files.some((file) => file.projectId === projectId && generatedFileExtension(file) === '.glb');
+}
+
 export function previewArtifactTooltip(name: string, extension: string | null): string {
+  if (extension === '.glb' && fileExtension(name) === '.glb') return glbFileName(name);
   return extension ? `${name} · ${extension}` : name;
 }
 

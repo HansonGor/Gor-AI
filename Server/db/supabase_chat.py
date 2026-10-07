@@ -175,12 +175,17 @@ async def init_db():
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
                 name TEXT NOT NULL,
-                relative_path TEXT NOT NULL,
+                relative_path TEXT,
+                artifact_bytes BYTEA,
                 content_type TEXT NOT NULL,
                 size BIGINT NOT NULL DEFAULT 0,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
         """)
+        # Web project exports are virtual database artifacts. Keep old disk-backed
+        # records readable, but new artifacts do not create server filesystem files.
+        await conn.execute("ALTER TABLE session_generated_artifacts ADD COLUMN IF NOT EXISTS artifact_bytes BYTEA")
+        await conn.execute("ALTER TABLE session_generated_artifacts ALTER COLUMN relative_path DROP NOT NULL")
         # ----- 兼容旧表：确保新增字段存在 -----
         # 如果表是从旧版迁移而来，这些字段可能缺失，这里做补充
         await conn.execute("""
@@ -200,6 +205,9 @@ async def init_db():
         """)
         await conn.execute("""
             ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS preview_changes JSONB;
+        """)
+        await conn.execute("""
+            ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS project_changes JSONB;
         """)
         await conn.execute("""
             ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS preview_snapshot JSONB;
@@ -325,21 +333,44 @@ async def update_session_preview_project_if_revision(
     project: dict,
     expected_revision: int,
 ) -> dict | None:
-    """Commit an Agent turn only if the canonical project has not changed meanwhile."""
+    """Commit by CAS; archive the previous project's source when creating a new ID."""
     serialized_project = json.dumps(project, ensure_ascii=False, separators=(",", ":"))
     pool = await get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """UPDATE session_preview_projects
-               SET project = $3::jsonb, revision = revision + 1, updated_at = NOW()
-               WHERE session_id = $1 AND revision = $2
-               RETURNING revision, updated_at""",
-            session_id,
-            expected_revision,
-            serialized_project,
-        )
-        if row:
-            await conn.execute("UPDATE chat_sessions SET updated_at = NOW() WHERE id = $1", session_id)
+        async with conn.transaction():
+            previous_row = await conn.fetchrow(
+                "SELECT project FROM session_preview_projects WHERE session_id = $1 AND revision = $2 FOR UPDATE",
+                session_id, expected_revision,
+            )
+            if not previous_row:
+                return None
+            previous = previous_row["project"]
+            if isinstance(previous, str):
+                previous = json.loads(previous)
+            new_identity = previous.get("id") != project.get("id")
+            row = await conn.fetchrow(
+                """UPDATE session_preview_projects
+                   SET project = $3::jsonb, revision = revision + 1, updated_at = NOW(),
+                       origin = CASE WHEN $4 THEN 'generated' ELSE origin END,
+                       upload_name = CASE WHEN $4 THEN NULL ELSE upload_name END
+                   WHERE session_id = $1 AND revision = $2
+                   RETURNING revision, updated_at""",
+                session_id, expected_revision, serialized_project, new_identity,
+            )
+            if row and new_identity and previous.get("files"):
+                message = await conn.fetchrow(
+                    """SELECT id, client_message_id FROM chat_messages
+                       WHERE session_id = $1 AND role = 'assistant' AND preview_changes @> $2::jsonb
+                       ORDER BY id DESC LIMIT 1 FOR UPDATE""",
+                    session_id, json.dumps([{"projectId": previous.get("id")}]),
+                )
+                if message:
+                    snapshot = {**previous, "projectId": previous["id"],
+                                "messageId": message["client_message_id"] or str(message["id"]),
+                                "outputExtension": ".glb" if previous.get("template") == "html" and "/src/scene.json" in previous["files"] else ".html"}
+                    await conn.execute("UPDATE chat_messages SET preview_snapshot = $1::jsonb WHERE id = $2", json.dumps(snapshot, ensure_ascii=False), message["id"])
+            if row:
+                await conn.execute("UPDATE chat_sessions SET updated_at = NOW() WHERE id = $1", session_id)
     if not row:
         return None
     return {"revision": row["revision"], "updatedAt": row["updated_at"].isoformat()}
@@ -374,24 +405,31 @@ async def get_session_attachment(session_id: str, attachment_id: str) -> dict | 
 
 
 async def save_session_generated_artifact(
-    artifact_id: str, session_id: str, name: str, relative_path: str,
-    content_type: str, size: int, file_reference: dict,
+    artifact_id: str, session_id: str, name: str, relative_path: str | None,
+    content_type: str, size: int, file_reference: dict, *, message_id: str | None = None,
+    artifact_bytes: bytes | None = None,
 ) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
             if not await conn.fetchval("SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE id = $1)", session_id):
                 raise ValueError("会话不存在")
-            assistant = await conn.fetchrow(
-                "SELECT id, attachments FROM chat_messages WHERE session_id = $1 AND role = 'assistant' ORDER BY id DESC LIMIT 1 FOR UPDATE",
-                session_id,
-            )
+            if message_id:
+                assistant = await conn.fetchrow(
+                    "SELECT id, attachments FROM chat_messages WHERE session_id = $1 AND role = 'assistant' AND client_message_id = $2 FOR UPDATE",
+                    session_id, message_id,
+                )
+            else:
+                assistant = await conn.fetchrow(
+                    "SELECT id, attachments FROM chat_messages WHERE session_id = $1 AND role = 'assistant' ORDER BY id DESC LIMIT 1 FOR UPDATE",
+                    session_id,
+                )
             if not assistant:
                 raise ValueError("找不到可关联产物的助手消息，请先完成一次模型生成。")
             await conn.execute(
-                """INSERT INTO session_generated_artifacts (id, session_id, name, relative_path, content_type, size)
-                   VALUES ($1, $2, $3, $4, $5, $6)""",
-                artifact_id, session_id, name, relative_path, content_type, size,
+                """INSERT INTO session_generated_artifacts (id, session_id, name, relative_path, content_type, size, artifact_bytes)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                artifact_id, session_id, name, relative_path, content_type, size, artifact_bytes,
             )
             try:
                 existing = json.loads(assistant["attachments"]) if assistant["attachments"] else []
@@ -413,7 +451,7 @@ async def get_session_generated_artifact(session_id: str, artifact_id: str) -> d
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id, name, relative_path, content_type, size FROM session_generated_artifacts WHERE session_id = $1 AND id = $2",
+            "SELECT id, name, relative_path, content_type, size, artifact_bytes FROM session_generated_artifacts WHERE session_id = $1 AND id = $2",
             session_id, artifact_id,
         )
     return dict(row) if row else None
@@ -492,7 +530,7 @@ async def load_messages(session_id: str) -> list:
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT id, client_message_id, session_id, role, content, images, attachments, preview_changes, preview_snapshot,
+            """SELECT id, client_message_id, session_id, role, content, images, attachments, preview_changes, preview_snapshot, project_changes,
                       search_sources, search_trace, created_at,
                       prompt_tokens, completion_tokens, total_tokens
                FROM chat_messages WHERE session_id = $1 ORDER BY created_at ASC, id ASC""",
@@ -514,6 +552,11 @@ async def load_messages(session_id: str) -> list:
                     json.loads(row["preview_changes"])
                     if isinstance(row.get("preview_changes"), str)
                     else row.get("preview_changes")
+                ),
+                "project_changes": (
+                    json.loads(row["project_changes"])
+                    if isinstance(row.get("project_changes"), str)
+                    else row.get("project_changes")
                 ),
                 "preview_snapshot": (
                     json.loads(row["preview_snapshot"])
@@ -571,6 +614,7 @@ async def save_message(
     message_id: Optional[str] = None,
     search_sources: Optional[list] = None,
     search_trace: Optional[dict] = None,
+    project_changes: Optional[list] = None,
 ) -> int:
     """
     保存单条消息，同时刷新会话的 updated_at 时间
@@ -593,14 +637,14 @@ async def save_message(
         if token_usage:
             # AI 回复：记录 Token 消耗
             saved_id = await conn.fetchval(
-                """INSERT INTO chat_messages (session_id, role, content, images, attachments, preview_changes, preview_snapshot, search_sources, search_trace, prompt_tokens, completion_tokens, total_tokens, client_message_id)
-                   VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12, $13)
+                """INSERT INTO chat_messages (session_id, role, content, images, attachments, preview_changes, preview_snapshot, search_sources, search_trace, prompt_tokens, completion_tokens, total_tokens, client_message_id, project_changes)
+                   VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12, $13, $14::jsonb)
                    ON CONFLICT (session_id, client_message_id) WHERE client_message_id IS NOT NULL
                    DO UPDATE SET content = EXCLUDED.content, images = EXCLUDED.images, attachments = EXCLUDED.attachments,
                      preview_changes = EXCLUDED.preview_changes, preview_snapshot = EXCLUDED.preview_snapshot,
                      search_sources = EXCLUDED.search_sources, search_trace = EXCLUDED.search_trace,
                      prompt_tokens = EXCLUDED.prompt_tokens, completion_tokens = EXCLUDED.completion_tokens,
-                     total_tokens = EXCLUDED.total_tokens
+                     total_tokens = EXCLUDED.total_tokens, project_changes = EXCLUDED.project_changes
                    RETURNING id""",
                 session_id, role, content,
                 json.dumps(images) if images else None,
@@ -613,16 +657,17 @@ async def save_message(
                 token_usage.get("completion_tokens", 0),
                 token_usage.get("total_tokens", 0),
                 message_id,
+                json.dumps(project_changes, ensure_ascii=False) if project_changes else None,
             )
         else:
             # 用户消息或不带 Token 数据：仅插入基本字段
             saved_id = await conn.fetchval(
-                """INSERT INTO chat_messages (session_id, role, content, images, attachments, preview_changes, preview_snapshot, search_sources, search_trace, client_message_id)
-                   VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10)
+                """INSERT INTO chat_messages (session_id, role, content, images, attachments, preview_changes, preview_snapshot, search_sources, search_trace, client_message_id, project_changes)
+                   VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11::jsonb)
                    ON CONFLICT (session_id, client_message_id) WHERE client_message_id IS NOT NULL
                    DO UPDATE SET content = EXCLUDED.content, images = EXCLUDED.images, attachments = EXCLUDED.attachments,
                      preview_changes = EXCLUDED.preview_changes, preview_snapshot = EXCLUDED.preview_snapshot,
-                     search_sources = EXCLUDED.search_sources, search_trace = EXCLUDED.search_trace
+                     search_sources = EXCLUDED.search_sources, search_trace = EXCLUDED.search_trace, project_changes = EXCLUDED.project_changes
                    RETURNING id""",
                 session_id, role, content,
                 json.dumps(images) if images else None,
@@ -632,6 +677,7 @@ async def save_message(
                 json.dumps(search_sources, ensure_ascii=False) if search_sources else None,
                 json.dumps(search_trace, ensure_ascii=False) if search_trace else None,
                 message_id,
+                json.dumps(project_changes, ensure_ascii=False) if project_changes else None,
             )
         # 更新会话的最后活动时间
         await conn.execute(
@@ -708,6 +754,8 @@ async def delete_session(session_id: str) -> None:
                 pass
     from storage import GENERATED_ROOT
     for row in generated_rows:
+        if not row["relative_path"]:
+            continue
         relative = Path(row["relative_path"])
         if relative.is_absolute() or ".." in relative.parts:
             continue

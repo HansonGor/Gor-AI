@@ -88,6 +88,8 @@ export interface PreviewProjectSnapshot {
   };
 }
 
+export type PreviewProjectLabel = Pick<PreviewProjectSnapshot, 'id' | 'name' | 'template' | 'outputExtension'>;
+
 export type PresentationMotionEffect =
   | 'none'
   | 'appear'
@@ -306,6 +308,7 @@ export interface SidebarProps {
 
 export interface ChatBoxProps {
   messages: ChatMessage[];
+  currentPreviewProject?: PreviewProjectLabel;
   input: string;
   setInput: (value: string) => void;
   pendingImages: Array<{ name: string; base64: string }>;
@@ -353,6 +356,7 @@ export interface InputAreaProps {
 
 export interface MessageListProps {
   messages: ChatMessage[];
+  currentPreviewProject?: PreviewProjectLabel;
   onPreviewFile?: (file: GeneratedFile) => void;
   onPreviewProject?: (
     file?: GeneratedFile,
@@ -364,6 +368,7 @@ export interface MessageListProps {
 }
 export interface MessageBubbleProps {
   message: ChatMessage;
+  currentPreviewProject?: PreviewProjectLabel;
   uploadedAttachments?: UploadedAttachment[];
   onPreviewFile?: (file: GeneratedFile) => void;
   onPreviewProject?: (

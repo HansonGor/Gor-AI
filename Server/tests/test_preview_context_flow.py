@@ -191,7 +191,7 @@ class PreviewContextFlowTest(unittest.TestCase):
         self.assertEqual([call["reason"] for call in usage["calls"]], ["simple_patch_generation"])
         self.assertEqual(workspace.revision, 4)
         streamed_text = "".join(event.get("content", "") for event in events if event.get("type") == "token")
-        self.assertIn("Preview Worker 正在验证构建", streamed_text)
+        self.assertIn("展开 Diff 查看细节", streamed_text)
         estimated_prompt_tokens = sum(
             estimate_tokens(str(getattr(message, "content", ""))) + 4
             for message in model.prompts[0]
