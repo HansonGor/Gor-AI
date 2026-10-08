@@ -1,5 +1,5 @@
 ﻿// 单条消息气泡
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import {
   Box,
   ChevronRight,
@@ -240,6 +240,7 @@ export default function MessageBubble({
   onPreviewProject,
   onPreviewAttachment,
 }: MessageBubbleProps) {
+  const logoGradientId = useId().replace(/:/g, '');
   const isUser = message.role === 'user';
   const images = message.images ?? [];
   const hasImages = isUser && images.length > 0;
@@ -301,9 +302,6 @@ export default function MessageBubble({
     : '';
   const visibleUserContent = message.content === attachmentOnlyLabel ? '' : displayContent;
   const showExecutionTimeline = !isUser && Boolean(message.isStreaming && message.executionPhase);
-  const streamIntro = /search|搜索|检索/i.test(message.executionToolName ?? '')
-    ? '好的，我会围绕你的问题查找相关资料，并整理重点内容…'
-    : '好的，我先处理你的请求，再为你整理清晰的结果…';
 
   return (
     <div
@@ -316,29 +314,26 @@ export default function MessageBubble({
             : `bubble-assistant max-w-[88%] border border-white/[0.08] bg-white/[0.06] text-[#f5f5f7] shadow-sm lg:w-full lg:max-w-[860px] ${showExecutionTimeline ? 'bubble-assistant-streaming' : ''}`
         }`}
       >
-        {showExecutionTimeline && (
-          <>
-            <div className="assistant-stream-brand">
-              <span className="assistant-stream-brand-mark">
-                <svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-                  <defs>
-                    <radialGradient id="gor-star-core" cx="50%" cy="50%" r="55%">
-                      <stop offset="0%" stopColor="#ffffff" />
-                      <stop offset="42%" stopColor="#ecddff" />
-                      <stop offset="78%" stopColor="#b78cff" />
-                      <stop offset="100%" stopColor="#8b5cf6" />
-                    </radialGradient>
-                  </defs>
-                  <path
-                    d="M16 0.8 C17.9 9.2 24.6 14.6 31.2 16 C24.6 17.4 17.9 22.8 16 31.2 C14.1 22.8 7.4 17.4 0.8 16 C7.4 14.6 14.1 9.2 16 0.8 Z"
-                    fill="url(#gor-star-core)"
-                  />
-                </svg>
-              </span>
-              <strong>Gor</strong>
-            </div>
-            {!displayContent && <p className="assistant-stream-intro">{streamIntro}</p>}
-          </>
+        {!isUser && (
+          <div className="assistant-stream-brand">
+            <span className="assistant-stream-brand-mark">
+              <svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+                <defs>
+                  <radialGradient id={logoGradientId} cx="50%" cy="50%" r="55%">
+                    <stop offset="0%" stopColor="#ffffff" />
+                    <stop offset="42%" stopColor="#ecddff" />
+                    <stop offset="78%" stopColor="#b78cff" />
+                    <stop offset="100%" stopColor="#8b5cf6" />
+                  </radialGradient>
+                </defs>
+                <path
+                  d="M16 0.8 C17.9 9.2 24.6 14.6 31.2 16 C24.6 17.4 17.9 22.8 16 31.2 C14.1 22.8 7.4 17.4 0.8 16 C7.4 14.6 14.1 9.2 16 0.8 Z"
+                  fill={`url(#${logoGradientId})`}
+                />
+              </svg>
+            </span>
+            <strong>Gor</strong>
+          </div>
         )}
 
         {hasImages && (

@@ -35,19 +35,10 @@ class ProjectAPITest(unittest.TestCase):
         self.assertIsNotNone(current)
         api, ref = current
 
-        # The request-scoped registry serves both the current Preview project and
-        # the independently resolved VS Code provider without mixing their refs.
-        vscode_capabilities = asyncio.run(api.get_capabilities(ProjectRef("vscode-registry-check", "vscode")))
-        self.assertTrue(vscode_capabilities["listFiles"])
-        self.assertTrue(vscode_capabilities["patch"])
-        self.assertTrue(vscode_capabilities["batchPatch"])
-        self.assertTrue(vscode_capabilities["write"])
-        self.assertTrue(vscode_capabilities["createFile"])
-        self.assertTrue(vscode_capabilities["createDirectory"])
-        self.assertTrue(vscode_capabilities["deleteFile"])
-        self.assertTrue(vscode_capabilities["deleteDirectory"])
-        self.assertFalse(vscode_capabilities["recursiveDelete"])
-        self.assertFalse(vscode_capabilities["build"])
+        # A Web request registers only its current virtual Provider, not a second
+        # host which could turn a malformed ref into a workspace operation.
+        with self.assertRaises(ProjectAPIError):
+            asyncio.run(api.get_capabilities(ProjectRef("vscode-registry-check", "vscode")))
 
         preview_capabilities = asyncio.run(api.get_capabilities(ref))
         self.assertFalse(preview_capabilities["createFile"])

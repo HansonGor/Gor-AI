@@ -164,6 +164,7 @@ class PreviewContextFlowTest(unittest.TestCase):
             events = []
             with (
                 patch("agent.agent.model_with_simple_preview_edit", model),
+                patch("agent.agent.get_model_for_tools", return_value=model) as bound_model,
                 patch("agent.agent.TYPING_DELAY_MS", 0),
             ):
                 await run_agent(
@@ -172,6 +173,8 @@ class PreviewContextFlowTest(unittest.TestCase):
                     callbacks=[usage_callback],
                     preview_workspace=workspace,
                 )
+                bound_names = set(bound_model.call_args.args[0])
+                self.assertTrue({"web_search", "search_images", "batch_patch_project_files"} <= bound_names)
             return workspace, model, usage_callback.get_usage(), events
 
         workspace, model, usage, events = asyncio.run(exercise())

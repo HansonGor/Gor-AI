@@ -13,13 +13,20 @@
           margin: 0;
         }
 
-        body,
-        #root {
+        /* A fallback canvas, not an overlay on the project's own background. */
+        html {
           background: #171923;
         }
 
+        /* Keep app margins inside the root instead of shifting the document. */
+        body,
+        #root {
+          display: flow-root;
+          background: transparent;
+        }
+
         body {
-          overflow: hidden;
+          overflow: auto;
         }
       </style>
       <script type="module" crossorigin src="./assets/preview-runtime-BXy7jA9F.js"></script>

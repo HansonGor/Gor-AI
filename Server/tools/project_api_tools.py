@@ -15,7 +15,7 @@ def _adapter_only(name: str) -> str:
 
 @tool
 def list_project_files(root: str | None = None) -> str:
-    """List the cached files and directories in the attached VS Code workspace. On multi-root workspaces, pass a root id/name from the root-required response."""
+    """List files in the current project. Directory/cache support depends on its Provider. root selects a VS Code workspace root, never a disk path."""
     return _adapter_only("list_project_files")
 
 
@@ -48,8 +48,9 @@ def patch_project_file(
     new_text: str,
     expected_file_version: int | None = None,
     root: str | None = None,
+    expected_version: int | None = None,
 ) -> str:
-    """Replace one exact, unique text fragment in an existing project text file. Use old_text from the latest search/read result and pass its fileVersion as expected_file_version. Does not create or save files."""
+    """Replace one unique exact fragment from a fresh search/read. expected_version is the Web project version or VS Code fileVersion. expected_file_version is a compatibility alias; no automatic disk save."""
     return _adapter_only("patch_project_file")
 
 
@@ -57,8 +58,9 @@ def patch_project_file(
 def batch_patch_project_files(
     patches: list[dict],
     root: str | None = None,
+    expected_version: int | None = None,
 ) -> str:
-    """Apply several exact-text patches atomically. Every patch needs path, old_text, new_text, and expected_file_version from the latest read. All patches validate before one WorkspaceEdit; any failure changes nothing. Does not create or save files."""
+    """Apply exact patches atomically, each with path, old_text and new_text. Web requires the latest project expected_version at batch level; VS Code needs each patch's latest file expected_version (legacy expected_file_version accepted). Failure changes nothing."""
     return _adapter_only("batch_patch_project_files")
 
 
@@ -68,20 +70,21 @@ def write_project_file(
     content: str,
     expected_file_version: int | None = None,
     root: str | None = None,
+    expected_version: int | None = None,
 ) -> str:
-    """Replace the whole content of an existing text file using its latest fileVersion. Read the current file first; this does not create or automatically save a file."""
+    """Write full text according to current Provider rules. Web upserts a virtual file; VS Code replaces an existing editor document without saving. Read existing content first. expected_version comes from the latest project/file read; expected_file_version is a legacy alias."""
     return _adapter_only("write_project_file")
 
 
 @tool
 def create_project_file(path: str, content: str = "", root: str | None = None) -> str:
-    """Create a new text file in the attached project workspace. The path must be workspace-relative; an existing file is never overwritten."""
+    """Create a new text file only when the current Provider supports createFile. Existing files are never overwritten; paths are project-relative."""
     return _adapter_only("create_project_file")
 
 
 @tool
 def create_project_directory(path: str, root: str | None = None) -> str:
-    """Create a directory in the attached project workspace. The path must be workspace-relative."""
+    """Create a project-relative directory only when the current Provider supports createDirectory."""
     return _adapter_only("create_project_directory")
 
 
@@ -90,12 +93,13 @@ def delete_project_file(
     path: str,
     expected_file_version: int | None = None,
     root: str | None = None,
+    expected_version: int | None = None,
 ) -> str:
-    """Delete one explicitly requested file from the attached project workspace. Dirty open files are protected; pass the latest fileVersion when available."""
+    """Delete one explicitly requested file if deleteFile is supported. Use its latest expected_version; expected_file_version is a legacy alias. Provider permissions and dirty-document protection remain enforced."""
     return _adapter_only("delete_project_file")
 
 
 @tool
 def delete_project_directory(path: str, root: str | None = None) -> str:
-    """Delete one explicitly requested empty directory from the attached project workspace. Deletion is never recursive."""
+    """Delete one explicitly requested empty project directory if deleteDirectory is supported. Never recursive."""
     return _adapter_only("delete_project_directory")

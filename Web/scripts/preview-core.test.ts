@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
 import { unzipSync, strFromU8, strToU8, zipSync } from 'fflate';
 import { createPreviewArchive, createPreviewDistArchive, previewArchiveName, previewDistArchiveName } from '../src/preview/core/exportProject.ts';
 import { importPreviewArchive, importPreviewDirectory } from '../src/preview/core/importArchive.ts';
@@ -25,6 +26,17 @@ import { canPublishStagedProject, stageProjectSources } from '../src/preview/cor
 import { previewArtifactCreationOrder, sortPreviewArtifactEntries, sourceSnapshotForTarget } from '../src/preview/core/artifactSelection.ts';
 import type { ChatMessage } from '../src/types.ts';
 import type { PresentationMotionCue, PresentationSchema } from '../src/types.ts';
+
+test('Web preview canvas does not mask project backgrounds, collapse app margins or clip scrolling', () => {
+  const html = readFileSync(new URL('../preview-runtime.html', import.meta.url), 'utf8');
+  const css = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+  assert.match(css, /html\s*\{\s*background:\s*#171923;/, 'theme fallback belongs to html only');
+  assert.match(css, /body,\s*#root\s*\{\s*display:\s*flow-root;\s*background:\s*transparent;/);
+  assert.match(css, /body\s*\{\s*overflow:\s*auto;/);
+  assert.doesNotMatch(css, /overflow:\s*hidden/);
+  assert.match(css, /html,\s*body,\s*#root\s*\{\s*width:\s*100%;\s*height:\s*100%;\s*margin:\s*0;/,
+    'retain the viewport height chain required by full-height scenes');
+});
 
 test('Web GLB export sends virtual bytes and plugin cannot invoke the Web artifact adapter', async () => {
   const originalFetch = globalThis.fetch;
@@ -478,6 +490,8 @@ test('folder import recognizes dist projects, skips dependency folders, and crea
 });
 import { build } from 'esbuild-wasm';
 import { getPreviewEntryPoint } from '../src/preview/core/entryPoint.ts';
+import { BABEL_PREVIEW_ENTRY } from '../src/preview/core/htmlScripts.ts';
+import { preparePreviewCompilation } from '../src/preview/runtime/compiler/babelHtmlAdapter.ts';
 import { PreviewRuntimeController } from '../src/preview/runtime/runtimeController.ts';
 import { buildFileTree } from '../src/preview/core/fileTree.ts';
 import { isEditablePreviewTextPath, normalizePreviewPath, resolvePreviewPath, validatePreviewPath } from '../src/preview/core/pathUtils.ts';
@@ -1089,6 +1103,65 @@ ReactDOM.createRoot(document.getElementById('root')!).render(React.createElement
   await assert.rejects(compile({ '/bad.ts': `import 'three/addons/controls/OrbitControls.js';` }, '/bad.ts'), /not allowed/);
   await assert.rejects(compile({ '/bad.ts': 'const broken = ;' }, '/bad.ts'), /Unexpected/);
   await assert.rejects(compile(files, '/missing.ts'), /Cannot resolve/);
+});
+
+test('legacy Babel React HTML compiles ordered components, global runtime and linked CSS without changing source', async () => {
+  const project = { id: 'babel-react', name: 'React Demo', template: 'react' as const, revision: 1, files: {
+    '/index.html': `<link rel="stylesheet" href="./src/styles.css">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script type="text/babel" src="./src/Counter.jsx"></script>
+<script type="text/babel" src="./src/App.jsx"></script>
+<script type="text/babel" src="./src/main.jsx"></script>`,
+    '/src/Counter.jsx': `const { useState } = React; function Counter() { const [count] = useState(2); return <p>{count}</p>; } window.Counter = Counter;`,
+    '/src/App.jsx': `const { useState } = React; function App() { const [title] = useState('Demo'); return <main>{title}<Counter /></main>; } window.App = App;`,
+    '/src/main.jsx': `ReactDOM.createRoot(document.getElementById('root')).render(<App />);`,
+    '/src/styles.css': `body { background: #123456; }`,
+  } };
+  const original = structuredClone(project.files);
+  const snapshot = createMessagePreviewSnapshot(project, 'message-babel', Object.keys(project.files));
+  assert.equal(snapshot.files['/index.html'], original['/index.html'], 'snapshot must not replace CDN script with main.jsx');
+  assert.equal(getPreviewEntryPoint(project), BABEL_PREVIEW_ENTRY);
+  const input = preparePreviewCompilation(snapshot.files, getPreviewEntryPoint(project));
+  const result = await build({ entryPoints: [BABEL_PREVIEW_ENTRY], bundle: true, write: false,
+    outdir: '/out', format: 'iife', platform: 'browser', jsx: 'automatic',
+    plugins: [createVirtualFsPlugin(() => input)], logLevel: 'silent' });
+  assert.match(result.outputFiles?.find(file => file.path.endsWith('.css'))?.text ?? '', /#123456/);
+  const output = result.outputFiles?.find(file => file.path.endsWith('.js'))?.text ?? '';
+  assert.doesNotMatch(output, /unpkg\.com|babel\.min\.js/, 'no CDN or Babel script is loaded');
+  let rendered: any;
+  const jsx = (type: any, props: any) => ({ type, props });
+  const context: any = { document: { getElementById: () => ({}) }, __GOR_PREVIEW_RUNTIME__: {
+    React: { useState: (value: any) => [value] }, ReactDOM: {},
+    ReactDOMClient: { createRoot: () => ({ render: (element: any) => { rendered = element.type(); } }) },
+    jsxRuntime: { jsx, jsxs: jsx },
+  } };
+  context.window = context;
+  runInNewContext(output, context);
+  assert.equal(rendered.type, 'main');
+  assert.equal(context.Counter().props.children, 2);
+  assert.deepEqual(project.files, original);
+  assert.equal(snapshot.files[BABEL_PREVIEW_ENTRY], undefined, 'compiler scaffolding is not user source');
+});
+
+test('entry fallback uses existing JSX and preserves explicit missing module diagnostics', () => {
+  const project = { id: 'jsx', name: 'JSX', template: 'react' as const,
+    files: { '/index.html': '<div id="root"></div>', '/src/main.jsx': '' } };
+  assert.equal(getPreviewEntryPoint(project), '/src/main.jsx');
+  project.files['/index.html'] = '<script type="module" src="/src/missing.tsx"></script>';
+  assert.equal(getPreviewEntryPoint(project), '/src/missing.tsx');
+  assert.equal(preparePreviewCompilation(project.files, '/src/main.jsx'), project.files);
+});
+
+test('Babel adapter handles inline JSX and rejects external source, traversal, missing files and name collisions', async () => {
+  const inline = preparePreviewCompilation({ '/index.html': '<script type="text/babel">window.App = () => <p>ok</p>;</script>' }, BABEL_PREVIEW_ENTRY);
+  assert.match(inline['/__gor_babel_inline_0.jsx'], /window.App/);
+  for (const src of ['https://example.com/main.jsx', '//example.com/main.jsx', '../private.jsx']) {
+    assert.throws(() => preparePreviewCompilation({ '/index.html': `<script type="text/babel" src="${src}"></script>` }, BABEL_PREVIEW_ENTRY));
+  }
+  assert.throws(() => preparePreviewCompilation({ '/index.html': '<script type="text/babel">ok()</script>', [BABEL_PREVIEW_ENTRY]: 'user code' }, BABEL_PREVIEW_ENTRY), /conflicts/);
+  const files = preparePreviewCompilation({ '/index.html': '<script type="text/babel" src="/src/missing.jsx"></script>' }, BABEL_PREVIEW_ENTRY);
+  await assert.rejects(build({ entryPoints: [BABEL_PREVIEW_ENTRY], bundle: true, write: false,
+    plugins: [createVirtualFsPlugin(() => files)], logLevel: 'silent' }), /Cannot resolve/);
 });
 
 test('runtime reload, reset and dispose discard old scene identity and listeners', () => {

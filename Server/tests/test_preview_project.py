@@ -245,11 +245,12 @@ class PreviewProjectToolTest(unittest.TestCase):
         model = FakeSimpleBatchModel()
         from agent.token_callback import TokenCountCallback
         token_callback = TokenCountCallback()
-        with patch("agent.agent.model_with_simple_preview_edit", model):
+        with patch("agent.agent.get_model_for_tools", return_value=model) as binding:
             asyncio.run(run_agent(
                 [{"role": "user", "content": "把 React Demo 改成 Gor Demo"}], events.append,
                 callbacks=[token_callback], preview_workspace=workspace,
             ))
+        self.assertTrue({"web_search", "search_images"} <= set(binding.call_args.args[0]))
         self.assertEqual(model.calls, 1)
         self.assertTrue(model.assert_fast_context)
         self.assertIn("Gor Demo", workspace.files["/src/App.tsx"])

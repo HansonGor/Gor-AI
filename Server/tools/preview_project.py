@@ -7,6 +7,8 @@ from langchain_core.tools import tool
 
 from project_api.preview_context import create_current_preview_project_api
 from project_api.types import ProjectAPIError
+from project_api.operations import PREVIEW_TOOL_ALIASES
+from tools.project_dispatch import dispatch_project_tool
 from tools.scene_spec import apply_scene_command
 
 
@@ -82,40 +84,19 @@ async def execute_preview_tool(workspace: Any | None, name: str, args: dict) -> 
         return '{"success":false,"error":"当前 Preview Project 无法解析。"}'
     project_api, project_ref = current
     try:
-        if name == "list_preview_files":
-            result = await project_api.list_files(project_ref)
-            if isinstance(result, dict) and result.get("success"):
+        if name in PREVIEW_TOOL_ALIASES:
+            operation = {"list_preview_files": "list", "search_preview_code": "search",
+                         "read_preview_file": "read", "write_preview_file": "write",
+                         "patch_preview_file": "patch", "batch_patch_preview_files": "batch_patch"}[name]
+            try:
+                result = await dispatch_project_tool(current, name, args)
+            except ProjectAPIError as exc:
+                result = {"success": False, "code": exc.code, "error": exc.message}
+                if exc.code == "VERSION_CONFLICT":
+                    result["version"] = workspace.revision
+            if name == "list_preview_files" and isinstance(result, dict) and result.get("success"):
                 result = {**result, "template": workspace.template}
-            return _preview_tool_response(result, "list")
-        if name == "search_preview_code":
-            result = await project_api.search_code(
-                project_ref, args.get("query", ""), args.get("path"), args.get("max_results", 20)
-            )
-            return _preview_tool_response(result, "search")
-        if name == "read_preview_file":
-            result = await project_api.read_file(
-                project_ref, args.get("path", ""), args.get("start_line"), args.get("end_line")
-            )
-            return _preview_tool_response(result, "read")
-        if name == "write_preview_file":
-            result = await project_api.write_file(
-                project_ref, args.get("path", ""), args.get("content", "")
-            )
-            return _preview_tool_response(result, "write")
-        if name == "patch_preview_file":
-            result = await project_api.patch_file(
-                project_ref,
-                args.get("path", ""),
-                args.get("old_text", ""),
-                args.get("new_text", ""),
-                args.get("expected_revision"),
-            )
-            return _preview_tool_response(result, "patch")
-        if name == "batch_patch_preview_files":
-            result = await project_api.apply_patches(
-                project_ref, args.get("patches", []), args.get("expected_revision")
-            )
-            return _preview_tool_response(result, "batch_patch")
+            return _preview_tool_response(result, operation)
         if name == "set_3d_scene":
             current_result = await project_api.read_file(project_ref, "/src/scene.json")
             current_scene = None

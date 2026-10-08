@@ -35,10 +35,10 @@ class ContextEngineTests(unittest.IsolatedAsyncioTestCase):
                 conversation_summary="较早确认：保留深色主题。",
             )
         self.assertIsInstance(model.messages[0], SystemMessage)
-        self.assertIsInstance(model.messages[1], SystemMessage)
-        self.assertIn("保留深色主题", model.messages[1].content)
-        self.assertEqual(model.messages[2].content, "最近的原文")
-        self.assertEqual(model.messages[3].content, "现在继续")
+        summary_index = next(i for i, item in enumerate(model.messages)
+                             if isinstance(item, SystemMessage) and "保留深色主题" in item.content)
+        self.assertEqual(model.messages[summary_index + 1].content, "最近的原文")
+        self.assertEqual(model.messages[summary_index + 2].content, "现在继续")
 
     async def test_short_session_keeps_existing_thirty_message_window(self):
         rows = [message(i, f"message {i}") for i in range(1, 35)]

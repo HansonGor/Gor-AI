@@ -13,7 +13,8 @@ def test_project_operations_use_current_provider_and_shared_source_free_summary(
     for request in ['新建一个3D模型', '生成一个简单react-demo', '创建一个文件 src/test.jsx', '改回原来的标题']:
         web = route_request(request, has_preview=True)
         assert web.tool_names, request
-        assert not set(web.tool_names) & {'write_project_file', 'create_project_file', 'delete_project_file'}, request
+        assert not set(web.tool_names) & {'create_project_file', 'delete_project_file'}, request
+        assert not any('_preview_' in name for name in web.tool_names)
         plugin = route_request(request, has_preview=True, vscode_client_mode=True, vscode_workspace_id='ws')
         assert plugin.tool_names, request
         assert 'set_3d_scene' not in plugin.tool_names
@@ -47,304 +48,145 @@ def test_vscode_session_id_answer_uses_request_identity_without_workspace_or_mod
     assert '无法准确获取' in ''.join(event.get('content', '') for event in events)
 
 
-def test_static_question_gets_no_tools():
+COMMON = {"web_search", "search_images", "request_tools"}
+GENERATORS = {"create_word", "create_excel", "create_pdf", "create_ppt", "generate_xiaoyunque_video"}
+PREVIEW_FILES = {"list_project_files", "search_project_code", "read_project_file",
+                 "write_project_file", "patch_project_file", "batch_patch_project_files"}
+PLUGIN_FILES = PREVIEW_FILES | {"create_project_file", "create_project_directory",
+                                "delete_project_file", "delete_project_directory"}
+WEB_DEFAULTS = COMMON | GENERATORS | PREVIEW_FILES | {"set_3d_scene"}
+PLUGIN_DEFAULTS = COMMON | GENERATORS | PLUGIN_FILES
+UNREGISTERED_DEFAULTS = COMMON | GENERATORS | {"list_project_files", "search_project_code", "read_project_file"}
+
+
+def test_static_chat_keeps_search_and_images_without_loading_task_prompts():
     route = route_request("revision 是什么？")
     assert route.profile == "chat"
-    assert route.tool_names == ()
+    assert set(route.tool_names) == COMMON
+    assert not route.requires_web_search
 
 
-def test_vscode_followups_use_recent_user_edit_context_without_replaying_unrelated_history():
+def test_vscode_followups_preserve_authorization_context_with_default_tools():
     history = [
         {"role": "user", "content": "把 src/App.jsx 的标题从 React Demo 改成待办清单"},
         {"role": "assistant", "content": "本轮没有工具，你可以手动修改这个标题。"},
     ]
     for text in ["就按上面的改", "按这个来", "好，执行", "继续", "好的", "改回原来的", "再大一点"]:
         route = route_request(text, vscode_workspace_id="vscode-current", conversation_context=history)
-        assert "write_project_file" in route.tool_names, text
+        assert set(route.tool_names) == PLUGIN_DEFAULTS
+        assert route.profile == "vscode_project_edit"
         assert "历史助手" in route.system_prompt
     for text in ["你好", "不用改了", "先不要执行", "怎么改回原来的？", "今天怎么样"]:
         route = route_request(text, vscode_workspace_id="vscode-current", conversation_context=history)
-        assert "write_project_file" not in route.tool_names, text
-    assert route_request("好的", vscode_workspace_id="vscode-current").tool_names == ()
+        assert set(route.tool_names) == PLUGIN_DEFAULTS
+        assert "vscode_project_edit" not in route.profile
     unrelated = history + [{"role": "user", "content": "讲个笑话"}]
-    assert route_request("好的", vscode_workspace_id="vscode-current", conversation_context=unrelated).tool_names == ()
-    # CRUD continuations inherit their target/category, not just generic writes.
-    for task, tool in [("创建 src/New.jsx 文件", "create_project_file"), ("删除 src/Old.jsx 文件", "delete_project_file"), ("创建 src/demo 文件夹", "create_project_directory")]:
-        route = route_request("按上面的来", vscode_workspace_id="vscode-current", conversation_context=[{"role": "user", "content": task}])
-        assert tool in route.tool_names
-    # Stale browser project state cannot steal the extension's tools.
-    route = route_request("把页面标题改回来", has_preview=True, vscode_workspace_id="vscode-current")
-    assert "write_project_file" in route.tool_names
-    assert "write_preview_file" not in route.tool_names
+    assert route_request("好的", vscode_workspace_id="vscode-current", conversation_context=unrelated).profile == "chat"
 
 
-def test_web_search_is_not_bound_to_other_tools():
-    route = route_request("帮我查一下 Python 3.14 的最新发布信息")
-    assert route.tool_names == ("web_search",)
-    assert "联网检索" in route.system_prompt
+def test_weather_and_search_intents_keep_their_existing_instructions():
+    web = route_request("帮我查一下 Python 3.14 的最新发布信息")
+    assert set(web.tool_names) == COMMON | {"web_reader"}
+    assert "联网检索" in web.system_prompt
+    assert "web_reader" in web.system_prompt
+    weather = route_request("查一下广州今天的天气")
+    assert set(weather.tool_names) == COMMON | {"get_weather"}
+    assert weather.profile == "weather"
 
 
-def test_weather_does_not_also_bind_web_search():
-    route = route_request("查一下广州今天的天气")
-    assert route.tool_names == ("get_weather",)
+def test_preview_tasks_receive_supported_defaults_without_legacy_or_disk_tools():
+    for request in ["把 Preview 页面标题改成清单", "生成一个React demo", "新建一个3D模型",
+                    "把当前 3D 模型改成紫色", "把当前 3D 场景导出为 GLB", "你好"]:
+        route = route_request(request, has_preview=True)
+        assert set(route.tool_names) == WEB_DEFAULTS
+    assert "3D 模型任务" in route_request("帮我建一个 3D 模型", has_preview=True).system_prompt
+    assert "不要重新生成或修改场景" in route_request("把当前 3D 场景导出为 GLB", has_preview=True).system_prompt
 
 
-def test_preview_edit_only_gets_preview_tools():
-    route = route_request("把 Preview 页面标题改成清单", has_preview=True)
-    assert set(route.tool_names) == {
-        "batch_patch_preview_files",
-        "list_preview_files",
-        "patch_preview_file",
-        "read_preview_file",
-        "search_preview_code",
-        "write_preview_file",
-    }
-    assert "web_search" not in route.tool_names
-    assert "create_ppt" not in route.tool_names
-
-
-def test_web_3d_model_requests_select_scene_tool_without_preview_keyword():
-    route = route_request("帮我生成一个低多边形地球 3D 模型", has_preview=True)
-    assert route.tool_names == ("set_3d_scene",)
-    assert "3D 模型任务" in route.system_prompt
-
-    glb_request = route_request("帮我创建一个可以导出 GLB 的 3D 模型", has_preview=True)
-    assert glb_request.tool_names == ("set_3d_scene",)
-    assert route_request("帮我建一个 3D 模型", has_preview=True).tool_names == ("set_3d_scene",)
-
-    edit_request = route_request("把当前 3D 模型改成紫色", has_preview=True)
-    assert set(edit_request.tool_names) == {"list_preview_files", "read_preview_file", "set_3d_scene"}
-
-    export_only = route_request("把当前 3D 场景导出为 GLB", has_preview=True)
-    assert export_only.tool_names == ()
-    assert "不要重新生成或修改场景" in export_only.system_prompt
-
-    # The VS Code extension has no Preview Worker; 3D Preview routing is web-only.
-    plugin_route = route_request(
-        "帮我生成一个低多边形地球 3D 模型",
-        has_preview=True,
-        vscode_client_mode=True,
-    )
-    assert "set_3d_scene" not in plugin_route.tool_names
-
-
-def test_document_generation_uses_matching_format_only():
-    route = route_request("请把以下内容生成 Word 文档")
-    assert route.tool_names == ("create_word",)
-
-
-def test_local_project_tools_require_explicit_authorization():
-    text = "修改当前项目的按钮颜色"
-    assert route_request(text, allow_workspace_edit=False).tool_names == ()
-    route = route_request(text, allow_workspace_edit=True)
-    assert set(route.tool_names) == {
-        "create_project_file",
-        "edit_project_file",
-        "read_project_file",
-        "search_project_files",
-    }
-
-
-def test_local_project_read_is_read_only_and_permission_gated():
-    text = "帮我查看本地项目源码"
-    assert route_request(text, allow_workspace_edit=False).tool_names == ()
-    route = route_request(text, allow_workspace_edit=True)
-    assert route.tool_names == ("read_project_file", "search_project_files")
-
-
-def test_presentation_context_forces_presentation_tool():
-    route = route_request("继续优化这份演示文稿", presentation_context={"title": "demo"})
-    assert "create_ppt" in route.tool_names
-    assert len(route.system_prompt) < len(SYSTEM_PROMPT)
+def test_explicit_document_format_rule_remains_outside_project_modes():
+    assert set(route_request("请把以下内容生成 Word 文档").tool_names) == COMMON | {"create_word"}
+    assert set(route_request("帮我制作一个简单的标题正文型 PPT").tool_names) == COMMON | {"create_ppt"}
+    assert "Motion Schema" in route_request("帮我制作一个简单的标题正文型 PPT").system_prompt
+    assert set(route_request("标题再大点", presentation_context={"title": "old deck"}).tool_names) == COMMON | {"create_ppt"}
+    assert set(route_request("你好", presentation_context={"title": "old deck"}).tool_names) == COMMON
+    assert len(route_request("继续优化这份演示文稿", presentation_context={"title": "demo"}).system_prompt) < len(SYSTEM_PROMPT)
     assert "Preview Project 源码工具" not in PRESENTATION_PROMPT
 
 
-def test_simple_presentation_uses_the_unified_presentation_tool():
-    route = route_request("帮我制作一个简单的标题正文型 PPT")
-    assert route.tool_names == ("create_ppt",)
-    assert route.profile == "presentation"
-    assert "Motion Schema" in route.system_prompt
+def test_server_disk_access_still_requires_explicit_legacy_authorization():
+    assert set(route_request("修改当前项目的按钮颜色").tool_names) == COMMON
+    authorized = route_request("修改当前项目的按钮颜色", allow_workspace_edit=True)
+    assert set(authorized.tool_names) == COMMON | {
+        "create_project_file", "edit_project_file", "read_project_file", "search_project_files",
+    }
+    assert set(route_request("帮我查看本地项目源码", allow_workspace_edit=True).tool_names) == COMMON | {
+        "read_project_file", "search_project_files",
+    }
 
 
-def test_unrelated_presentation_history_does_not_enable_tools():
-    route = route_request("你好，今天怎么样？", presentation_context={"title": "old deck"})
-    assert route.tool_names == ()
+def test_project_inspection_preserves_readonly_instructions_but_does_not_hide_supported_tools():
+    for question in ["这个项目有哪些主要文件？", "帮我找到 App.tsx 里的计数器代码",
+                     "PetTransportDetail.jsx 你能看到这里面的代码是干嘛的不",
+                     "你能读到我本地文件吗", "能读下这个项目是干嘛的不"]:
+        route = route_request(question, vscode_workspace_id="workspace")
+        assert set(route.tool_names) == PLUGIN_DEFAULTS
+        assert "只读" in route.system_prompt
+    route = route_request("你能读到我本地文件吗", vscode_workspace_id="workspace")
+    assert "不要把完整文件列表倾倒给用户" in route.system_prompt
 
 
-def test_short_presentation_revision_uses_recent_schema_without_web_tools():
-    route = route_request("标题再大点", presentation_context={"title": "old deck"})
-    assert route.tool_names == ("create_ppt",)
+def test_workspace_unregistered_only_offers_state_checks_and_generators():
+    for question in ["你能读到我本地文件吗", "把计数器改成计次器", "新建 /src/New.tsx"]:
+        route = route_request(question, vscode_client_mode=True)
+        assert set(route.tool_names) == UNREGISTERED_DEFAULTS
+        assert "工作区尚未成功注册" in route.system_prompt
 
 
-def test_question_about_local_latest_code_does_not_route_to_web():
-    route = route_request("后台是否启用最新代码")
-    assert route.tool_names == ()
+def test_natural_edit_and_crud_requests_keep_existing_instructions_with_full_defaults():
+    for request in [
+        "把计数器改成计次器", "将待办清单改回原来标题", "把标题恢复成原来的标题",
+        "还原待办清单的原标题", "Vite + React 18 · 一个简单的待办清单改成待办清单",
+        "帮我再 page 增加个页面关于代办列表", "新建 /src/components/Header.tsx",
+        "帮我创建一个 TodoList 应用", "新建 /src/components/Header.tsx 并在 App.tsx 中使用",
+        "创建目录 /src/components/demo", "删除 /src/OldComponent.tsx", "删除空目录 /src/old",
+        "删掉 OldWidget.tsx", "删掉页面上的旧按钮",
+    ]:
+        route = route_request(request, vscode_workspace_id="workspace")
+        assert set(route.tool_names) == PLUGIN_DEFAULTS, request
+        assert route.profile == "vscode_project_edit", request
+        assert "不要再向用户请求手动确认" in route.system_prompt
+        assert "默认用 write_project_file 直接覆盖" in route.system_prompt
+        assert "绝不递归删除" in route.system_prompt
+    how_to = route_request("怎么把当前页面标题改成待办清单？", vscode_workspace_id="workspace")
+    assert "vscode_project_edit" not in how_to.profile
+    assert set(how_to.tool_names) == PLUGIN_DEFAULTS
 
 
-def test_current_recommendations_get_web_only():
-    route = route_request("推荐几家东京餐厅")
-    assert route.tool_names == ("web_search",)
+def test_stale_preview_cannot_supply_scene_or_legacy_tools_to_plugin():
+    route = route_request("把页面标题改回来", has_preview=True, vscode_workspace_id="workspace")
+    assert set(route.tool_names) == PLUGIN_DEFAULTS
+    assert "set_3d_scene" not in route.tool_names
+    assert not any("_preview_" in name for name in route.tool_names)
+
+
+def test_provider_capabilities_filter_the_default_surface():
+    route = route_request("你好", has_preview=True, project_capabilities={"listFiles": True, "rangeRead": True})
+    assert set(route.tool_names) == COMMON | GENERATORS | {"list_project_files", "read_project_file"}
+    route = route_request("你好", vscode_workspace_id="workspace", project_capabilities={"write": True})
+    assert set(route.tool_names) == COMMON | GENERATORS | {"write_project_file"}
+
+
+def test_other_specialist_rules_stay_opt_in():
+    for question in ["你好", "revision 是什么？", "这个页面能再漂亮点吗"]:
+        route = route_request(question, has_preview=True)
+        assert not set(route.tool_names) & {"get_weather", "vector_search", "execute_python"}
+    assert "execute_python" in route_request("运行这段 Python 代码").tool_names
+    assert "vector_search" in route_request("查询我上传的文档").tool_names
 
 
 def test_execution_layer_enforces_selected_tool_allowlist():
     result = asyncio.run(execute_tool("get_weather", {"city": "广州"}, allowed_tool_names=set()))
     assert "未开放工具" in result
-
-
-def test_vscode_project_requests_get_only_readonly_project_tools():
-    workspace_id = "vscode-test-workspace"
-    route = route_request("这个项目有哪些主要文件？", vscode_workspace_id=workspace_id)
-    assert route.tool_names == ("list_project_files",)
-    assert "只读" in route.system_prompt
-    assert not ({"edit_project_file", "create_project_file", "patch_preview_file"} & set(route.tool_names))
-
-    search_route = route_request("帮我找到 App.tsx 里的计数器代码", vscode_workspace_id=workspace_id)
-    assert set(search_route.tool_names) == {"search_project_code", "read_project_file"}
-    file_question = route_request(
-        "PetTransportDetail.jsx 你能看到这里面的代码是干嘛的不",
-        vscode_workspace_id=workspace_id,
-    )
-    assert set(file_question.tool_names) == {"list_project_files", "read_project_file"}
-    access_question = route_request(
-        "你能读到我本地文件吗",
-        vscode_workspace_id=workspace_id,
-    )
-    assert access_question.tool_names == ("list_project_files",)
-    assert "不要把完整文件列表倾倒给用户" in access_question.system_prompt
-    project_question = route_request(
-        "能读下这个项目是干嘛的不",
-        vscode_workspace_id=workspace_id,
-    )
-    assert set(project_question.tool_names) == {
-        "list_project_files", "search_project_code", "read_project_file",
-    }
-    assert route_request("你好", vscode_workspace_id=workspace_id).tool_names == ()
-
-
-def test_vscode_local_file_access_question_reports_missing_workspace_registration():
-    route = route_request("你能读到我本地文件吗", vscode_client_mode=True)
-    assert route.tool_names == ("list_project_files",)
-    assert "工作区尚未成功注册" in route.system_prompt
-
-
-def test_vscode_counter_rename_routes_to_project_read_and_write_tools():
-    route = route_request("把计数器改成计次器", vscode_workspace_id="vscode-current")
-    assert set(route.tool_names) == {
-        "search_project_code", "read_project_file", "patch_project_file",
-        "batch_patch_project_files", "write_project_file",
-    }
-    assert "expected_file_version" in route.system_prompt
-    assert "不要再向用户请求手动确认" in route.system_prompt
-    assert "默认用 write_project_file 直接覆盖" in route.system_prompt
-    assert route_request("你好", vscode_workspace_id="vscode-current").tool_names == ()
-
-    unregistered = route_request("把计数器改成计次器", vscode_client_mode=True)
-    assert unregistered.tool_names == ()
-    assert "工作区桥接未就绪" in unregistered.system_prompt
-
-
-def test_vscode_edit_intent_uses_connected_workspace_without_explicit_file_words():
-    workspace_id = "vscode-react-demo"
-    route = route_request(
-        "Vite + React 18 · 一个简单的待办清单改成待办清单",
-        vscode_workspace_id=workspace_id,
-    )
-    assert route.profile == "vscode_project_edit"
-    assert {
-        "search_project_code", "read_project_file", "patch_project_file",
-        "batch_patch_project_files", "write_project_file",
-    }.issubset(set(route.tool_names))
-
-    add_page = route_request(
-        "帮我再 page 增加个页面关于代办列表",
-        vscode_workspace_id=workspace_id,
-    )
-    assert add_page.profile == "vscode_project_edit"
-    assert {
-        "create_project_file", "create_project_directory", "search_project_code",
-        "read_project_file", "patch_project_file", "write_project_file",
-    }.issubset(set(add_page.tool_names))
-
-    # A question about how to make a change remains a normal informational turn.
-    how_to = route_request("怎么把当前页面标题改成待办清单？", vscode_workspace_id=workspace_id)
-    assert how_to.tool_names == ()
-
-
-def test_vscode_crud_tools_require_explicit_create_or_delete_intent():
-    workspace_id = "vscode-crud"
-    create_file = route_request("新建 /src/components/Header.tsx", vscode_workspace_id=workspace_id)
-    assert set(create_file.tool_names) == {"create_project_file", "create_project_directory"}
-    assert "create_project_file" in create_file.system_prompt
-
-    create_app = route_request("帮我创建一个 TodoList 应用", vscode_workspace_id=workspace_id)
-    assert set(create_app.tool_names) == {"create_project_file", "create_project_directory"}
-
-    create_and_use = route_request(
-        "新建 /src/components/Header.tsx 并在 App.tsx 中使用",
-        vscode_workspace_id=workspace_id,
-    )
-    assert {"create_project_file", "search_project_code", "read_project_file", "patch_project_file"}.issubset(
-        set(create_and_use.tool_names)
-    )
-
-    create_dir = route_request("创建目录 /src/components/demo", vscode_workspace_id=workspace_id)
-    assert create_dir.tool_names == ("create_project_directory",)
-
-    delete_file = route_request("删除 /src/OldComponent.tsx", vscode_workspace_id=workspace_id)
-    assert delete_file.tool_names == ("delete_project_file",)
-
-    delete_dir = route_request("删除空目录 /src/old", vscode_workspace_id=workspace_id)
-    assert delete_dir.tool_names == ("delete_project_directory",)
-    assert "绝不递归删除" in delete_dir.system_prompt
-
-    unregistered = route_request("新建 /src/New.tsx", vscode_client_mode=True)
-    assert unregistered.tool_names == ()
-
-
-def test_vscode_action_verbs_select_matching_workspace_tools():
-    workspace_id = "vscode-action-verbs"
-    code_tools = {
-        "search_project_code", "read_project_file", "patch_project_file",
-        "batch_patch_project_files", "write_project_file",
-    }
-
-    # Natural-language restore/update verbs must take the same write route as “改成”.
-    for request in (
-        "将待办清单改回原来标题",
-        "把标题恢复成原来的标题",
-        "还原待办清单的原标题",
-    ):
-        route = route_request(request, vscode_workspace_id=workspace_id)
-        assert route.profile == "vscode_project_edit"
-        assert code_tools.issubset(set(route.tool_names))
-
-    create = route_request("新建 /src/components/Badge.tsx", vscode_workspace_id=workspace_id)
-    assert set(create.tool_names) == {"create_project_file", "create_project_directory"}
-
-    read = route_request("读一下 App.tsx", vscode_workspace_id=workspace_id)
-    assert set(read.tool_names) == {"list_project_files", "read_project_file"}
-
-    search = route_request("查找计数器在哪里定义", vscode_workspace_id=workspace_id)
-    assert set(search.tool_names) == {"search_project_code", "read_project_file"}
-
-    delete_path = route_request("删除 /src/OldWidget.tsx", vscode_workspace_id=workspace_id)
-    assert delete_path.tool_names == ("delete_project_file",)
-
-    # If only a basename is provided, expose discovery tools alongside delete so
-    # the agent can resolve a unique workspace-relative path instead of guessing.
-    delete_basename = route_request("删掉 OldWidget.tsx", vscode_workspace_id=workspace_id)
-    assert set(delete_basename.tool_names) == {
-        "list_project_files", "search_project_code", "read_project_file", "delete_project_file",
-    }
-
-    # Removing a UI element is a source edit, not deletion of a project file.
-    remove_button = route_request("删掉页面上的旧按钮", vscode_workspace_id=workspace_id)
-    assert code_tools.issubset(set(remove_button.tool_names))
-    assert "delete_project_file" not in remove_button.tool_names
-
-    # A how-to question is still informational and must not activate writes.
-    how_to = route_request("怎么把当前页面标题改成待办清单？", vscode_workspace_id=workspace_id)
-    assert how_to.tool_names == ()
 
 
 def test_vscode_unregistered_edit_stops_before_model_can_offer_manual_source(monkeypatch):

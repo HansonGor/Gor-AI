@@ -1,12 +1,15 @@
 import { createSceneProjectFiles, isSceneRendererProject, validateSceneSpec } from '../../modeling/sceneSpec.ts';
 import type { PreviewProject, PreviewTemplate } from './types.ts';
 import type { PreviewProjectSnapshot } from '../../types.ts';
+import { hasBabelScripts } from './htmlScripts.ts';
 
 const REACT_SOURCE_PATHS = ['/src/App.tsx', '/src/App.jsx', '/src/App.ts', '/src/App.js'];
 const REACT_ENTRY_PATHS = ['/src/main.tsx', '/src/main.jsx', '/src/main.ts', '/src/main.js'];
 
 function pointHtmlAtEntry(indexHtml: string, entryPath: string): string {
-  const scriptTag = /(<script\b[^>]*\bsrc\s*=\s*["'])[^"']+(["'][^>]*>)/i;
+  // Babel HTML needs all ordered scripts; never rewrite its first CDN script.
+  if (hasBabelScripts(indexHtml)) return indexHtml;
+  const scriptTag = /(<script\b(?=[^>]*\btype\s*=\s*["']module["'])[^>]*\bsrc\s*=\s*["'])[^"']+(["'][^>]*>)/i;
   if (scriptTag.test(indexHtml)) return indexHtml.replace(scriptTag, `$1${entryPath}$2`);
   const moduleScript = `<script type="module" src="${entryPath}"></script>`;
   return /<\/body>/i.test(indexHtml)

@@ -7,7 +7,7 @@ from functools import lru_cache
 from langchain_openai import ChatOpenAI
 from config import config
 from tools.index import WORKSPACE_TOOLS
-from tools.preview_project import batch_patch_preview_files
+from tools.project_api_tools import batch_patch_project_files
 
 
 def get_llm():
@@ -38,7 +38,7 @@ model_without_tools = get_llm()
 # Literal Preview edits already have exact source snippets and a current revision
 # from the programmatic preflight. Keep this model's tool surface intentionally
 # narrow so it cannot start a redundant search/read or invoke unrelated tools.
-model_with_simple_preview_edit = get_llm().bind_tools([batch_patch_preview_files])
+model_with_simple_preview_edit = get_llm().bind_tools([batch_patch_project_files])
 
 
 @lru_cache(maxsize=32)

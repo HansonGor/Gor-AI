@@ -6,6 +6,9 @@ from langchain_core.tools import tool
 
 from tools.weather import get_weather
 from tools.web_search import web_search
+from tools.web_reader import web_reader
+from tools.github_code import search_github_code
+from tools.capability_request import request_tools
 from tools.document import create_word, create_excel, create_pdf
 from tools.presentation import create_ppt
 from tools.image_search import search_images
@@ -35,8 +38,11 @@ from tools.scene_spec import set_3d_scene
 
 # 工具列表（按名称排序）
 TOOLS = [
+    request_tools,
     get_weather,
     web_search,
+    web_reader,
+    search_github_code,
     search_images,
     create_word,
     create_excel,
@@ -45,12 +51,7 @@ TOOLS = [
     generate_xiaoyunque_video,
     vector_search,
     execute_python,
-    *PREVIEW_TOOLS,
     set_3d_scene,
-]
-
-# Real Web source tools remain available only through the explicit workspace-edit route.
-WORKSPACE_TOOLS = TOOLS + [
     list_project_files,
     search_project_code,
     read_project_file,
@@ -61,6 +62,12 @@ WORKSPACE_TOOLS = TOOLS + [
     create_project_directory,
     delete_project_file,
     delete_project_directory,
+]
+
+# Legacy Preview names are compatibility adapters, not the model's default surface.
+# Real disk tools remain confined to the explicitly authorized legacy route.
+WORKSPACE_TOOLS = TOOLS + [
+    *PREVIEW_TOOLS,
     search_project_files,
     edit_project_file,
 ]

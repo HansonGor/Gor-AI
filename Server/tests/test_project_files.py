@@ -165,8 +165,9 @@ class AgentChangeEventTest(unittest.IsolatedAsyncioTestCase):
             )
             visible = "".join(event.get("content", "") for event in events if event.get("type") == "token")
             self.assertEqual(visible, "新版本已生成。")
-            self.assertEqual(model.messages[2].content, "之前的用户可见答复。")
-            self.assertIn("<presentation-schema-data>", model.messages[3].content)
+            history_index = next(i for i, item in enumerate(model.messages)
+                                 if item.content == "之前的用户可见答复。")
+            self.assertIn("<presentation-schema-data>", model.messages[history_index + 1].content)
             self.assertEqual(model.messages[-2].content, "把封面颜色改深")
         finally:
             agent_module.get_model_for_tools = previous_model

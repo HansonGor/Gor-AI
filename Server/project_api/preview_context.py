@@ -4,7 +4,6 @@ from typing import Any
 
 from project_api.api import ProjectAPI
 from project_api.providers.preview import PreviewProjectProvider
-from project_api.providers.vscode import VSCodeProjectProvider
 from project_api.registry import ProjectProviderRegistry
 from project_api.resolver import resolve_current_project_ref
 from project_api.types import ProjectRef
@@ -20,5 +19,4 @@ def create_current_preview_project_api(workspace: Any) -> tuple[ProjectAPI, Proj
     provider = PreviewProjectProvider(PreviewProjectService(workspace))
     registry = ProjectProviderRegistry()
     registry.register("preview", provider)
-    registry.register("vscode", VSCodeProjectProvider())
     return ProjectAPI(registry), project_ref

@@ -51,7 +51,14 @@
 4. Server 使用虚拟环境 UTF-8 Python 执行涉及模块的 pytest。存储改动额外覆盖无目录创建/写入、虚拟二进制下载、大小/格式校验、消息事务关联及删除会话跳过空磁盘路径。
 5. 交付说明用通俗语言说明变化和实际验证范围；记录限制，不以测试通过承诺永不回归。更新本文应修正旧段落，不能保留互相冲突的现状说明。
 
-### 本次核对结果（2026-10-07）
+### 提交前核对与验收（2026-10-09）
+
+- 本批包含公共工具协商、独立 GitHub 搜索、资讯正文与来源整理、聊天字号/品牌展示，以及 Web React 入口和预览背景兼容修复；Web Virtual FS 与 VS Code 当前工作区边界保持不变，具体规则见下文对应模块。
+- Server 离线验收：`venv\Scripts\python.exe -X utf8 -m pytest tests --ignore=tests/test_project_generation_db.py --ignore=tests/test_context_engine_db.py -q --tb=short`，350 项通过、1 项跳过、36 子测试通过。两个真实数据库集成测试文件未执行。
+- Web：`npm run test:preview` 67 项通过；`node --test scripts/markdown-styles.test.mjs scripts/message-bubble-brand.test.mjs` 5 项通过；TypeScript 检查和 Web 构建通过。VS Code：`npm test` 17 项通过，`npm run vscode:prepublish` 通过。构建仍有既有大 chunk 和插件图片路径提示。
+- 离线测试与构建不代表所有真实模型、外部搜索服务、数据库集成及 VS Code 宿主均已人工验收。Git 提交包含当前全部非忽略代码、文档、测试及已跟踪插件资源；不强行纳入 `.env`、依赖、运行日志或用户存储产物。
+
+### 历史核对结果（2026-10-07）
 
 发现旧 GLB 自动导出写入 `Server/storage/generated`，与虚拟产物约定冲突，已改为内存校验和数据库 BYTEA。通过运行中的 Web `/api` 代理完成临时会话的 GLB 保存、二进制取回和历史消息读取，生成目录文件数量前后均为 156；测试会话已删除，用户历史文件未清理。单元测试另验证导出不调用目录创建及文件写入、拒绝无效/超限模型、历史磁盘产物兼容与虚拟产物删除。此次未将既有 Office/附件管线迁移为虚拟存储，也未声称完成所有模型实战和逐像素 UI 验收。
 
@@ -117,7 +124,24 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 
 #### 对话上下文与 Agent 调用控制
 
-- 普通聊天、搜索、天气、文档、演示文稿、Preview 编辑和真实工作区操作由规则路由到不同的提示词与最小相关工具集；闲聊不携带 Preview 或文件生成等无关工具。用户意图不明确时优先普通回答，不以工具调用代替解释。
+- **工具可发现性与按需调用（2026-10-08，公共能力）**：所有聊天模式每轮默认传入 `web_search` 与 `search_images`，包括闲聊、简短追问、文档和项目编辑；它们不是兜底工具。Web Preview / VS Code 模式同时默认提供当前 Provider 支持的公共项目工具，以及 Word、Excel、PPT、PDF、视频内容生成工具；是否调用由模型根据本轮需求及上下文决定，不再因动作词未命中或 SIMPLE_EDIT 快速路径裁掉这些工具。工具可用不等于必须执行或取得任意写入授权；Provider 能力、连接状态、版本校验与用户要求仍须遵守。天气、Python 执行、私有知识库等其他工具继续按原意图规则开放。
+- **模型主导的工具协商（2026-10-08，已接入公共 Agent）**：用户发消息 → 提供当前宿主默认工具和简短能力目录 → LLM 按上下文拆分复合任务并选择工具 → 默认工具不足时调用 `request_tools` 申请补充已有能力 → 系统校验后补充下一轮模型绑定的工具，再由 LLM 继续执行 → 根据实际结果简述完成项、限制和查看入口。补充能力不依赖再次命中一组严格关键词，不以节省 Token 为由直接拒绝；完整已登记任务能力可发现，完整 Schema / 专门规则按需加载。此实现不修改已有提示词卡片原文，也不改变其他工具的默认触发规则。
+  - `request_tools(tool_names, reason, subtask?)` 默认提供给所有模式；可一次申请多个工具名或能力组。返回新增、已提供、不可提供的工具及具体原因；已提供 Schema 和相同专门规则不重复加载，同轮缓存失败原因。每次最多申请 24 项，原因与子任务限制长度，不携带源码或凭据；无效/取消申请不扩充工具。同一个模型调用批次不能使用刚申请的新工具，必须收到申请结果后在下一轮调用。工具申请不代替任务执行，返回 `task_executed=false`，不能声称任务已经完成。
+  - 系统只从已登记工具中补充，校验当前宿主、Provider 能力、项目上下文和用户“不联网”等约束；实际连接、权限与版本仍由 Provider 执行时校验。不自动安装新工具、申请新权限或跨端降级。缺少 GitHub/视频/知识库配置时返回具体原因；凭据有效性和外部服务故障由实际调用结果确认，不能把配置存在说成服务一定可用。补充的专门规则复用已有卡片，旧“GitHub 由 web_search 内部执行”的卡片仍不注入。
+  - 工具无法提供时沿用默认处理：用现有允许工具继续完成可完成的部分；目标缺少必要信息时只询问缺失信息，缺少关键能力时如实说明未完成项及可行下一步。不能编造成功、把网页实现冒充 GLB、把源码贴满气泡，或要求用户重复开通实际已连接的能力。整理结果时区分完成、部分完成、失败与取消，按工具回执简述，并指向 Preview / Code / Diff 或实际附件。
+  - 复合搜索可以组合新闻、GitHub 和普通搜索工具，前一轮结果表明还需其他检索能力时可申请补充；不是只允许一次选一个 Skill。生成或复合请求不因第一次写文件成功就提前结束，模型继续消费工具结果、完成剩余步骤；只有程序已验证的单一文本替换保留无需最终模型调用的快速路径。“把旧文案改成新文案，再查询/生成……”等复合句不走单一替换路径，避免把后半句写进文件或漏掉后续任务；引号中的连接词仍可作为文字替换。气泡保持无源码摘要，额外子任务区分实际确认完成、失败和仅调用，未提供能力追加具体限制；结果或附件查看入口保留。
+  - `“创建简单 react-demo 和 3D 模型”` 的目标仍是两个独立项目 ID 和文件集，分别绑定源码、产物和状态，只有准备完整的项目才可发布。但当前单次 Agent 仍只绑定一个 Preview Workspace：能力目录明确标记 `independent_projects` 不可用，申请返回分轮创建说明；执行层阻止向 React 项目新增独立 SceneSpec、向 SceneSpec 项目新增 React 入口或同批混写。失败不改原文件；历史混合快照的既有文件和无关样式仍可编辑，不清理旧产物。插件仅在授权工作区处理源码，不能为完成复合任务加载 Web Preview 或自动 GLB 导出。单次工具成功不能代表所有子任务成功。
+  - 节省 Token 的顺序是复用能力目录与已加载 Schema、按需加载专门规则、复用有效目录树/搜索结果、读取必要源码范围及避免重复调用；不能删掉默认工具、跳过复合子任务或在能力不足时默默结束。保留取消、循环上限和重复失败保护，但它们用于防失控而非一刀切缩减用户能力。
+  - `[ToolNegotiationAudit]` 已记录 `requested_tools`、`added_tools`、`already_available`、`unavailable_tools`、`denial_reasons` 与 `subtask`；真实调用仍由工具事件及 Routing Audit 表示，不把工具已加载记成已经使用。回归见 `Server/tests/test_tool_negotiation.py`：两端补充后真实重新绑定、多工具执行、缺少凭据、重复申请、取消、跨端拒绝、同批未绑定调用拒绝、生成写入后继续申请、混写拒绝和旧快照兼容。
+  - **剩余限制**：通用工具协商已实现；同轮独立创建多个 Web 项目尚未实现。后者还需多子任务项目上下文、消息快照与发布流程，不能仅靠增加工具 Schema 宣称完成。本次明确拒绝混写，不代表多项目发布功能已验收。
+- **联网 skill 与能力保底（2026-10-08，Web / 插件共用）**：发布新模型、新版本、近期动态等时效性问法与短句追问按当前用户内容及最近用户主题识别，注入联网规则和真实 `web_search` 工具，并传入当日 Asia/Shanghai 日期。历史助手声称“没有联网工具”不能影响本轮能力。时效性路由先搜索再回答；模型未调用工具却返回记忆答案或错误否认联网时，阻止该答复，最多提醒重试一次，仍不执行则明确报告未完成查询。来源由实际工具结果通过 `search_sources` 返回，搜索失败/无结果不得说成“没有新发布”。
+- **Skill Router 与 Search Planner（Web / VS Code 共用）**：搜索和回答语言跟随用户；新闻地域独立判断为国内、国际、全球或指定地区，默认未限定地域的新闻采用国内+国际来源池。新鲜度参与检索排序，不设固定 3 天截止，也不因超过 3 天就排除仍能回答问题的材料；查询词按用户语言加入当前日期锚点，但不附加固定时间窗。最终按实际发布日期由新到旧呈现，最新在最前；区分发布时间与事件时间，没有可核实发布日期的内容不标为今日/最新。来源按话题选择：官网、官方发布页、政府/监管/央行/国际组织等一手来源优先用于核实事实，但不是唯一来源；还应检索相关主流媒体、行业/技术媒体、专业博客或产品生态配套网站。尤其查询当前产品/模型版本时，即使官方发布页较早，也要尝试相关独立来源交叉核对；若精选来源池没有独立报道，可放宽到普通搜索发现来源。全球/多地区结果按区域、媒体类别和发布方去重限流，缺少目标区域时自动定向补搜。最多 8 条是返回上限，不是目标数量；明确的 `site:` 仍是硬限制，不扩展域名。
+- **新闻/最新版本正文核验与成稿格式（Web / VS Code 共用）**：新闻及“当前/最新版本、近期发布”检索按 `web_search → web_reader → 综合回答` 完成；`web_search` 按用户语言补本地日期，不限定固定新闻时效窗口；优先话题官网、官方发布页、政府/监管/央行/国际组织等一手来源核实事实，并从相关主流媒体、行业/技术媒体、专业博客或产品生态配套网站中选择独立材料补充。新近发布只作为排序信号；当前型号/有效公告即使发布时间较早仍可作为证据，准确区分发布时间与事件时间。Reader 只读本轮搜索返回的精确 URL，选择最相关的 3–5 篇（不足时按实际数量，不凑数），尽量兼顾一手来源和相关独立来源，提取正文和可用元数据，引用沿用 `[S#]`。正文相关可信但缺发布日期时仍可引用，只省略日期，不添加未经证实的时效修饰，也不向用户解释缺失原因；不把旧闻包装成近期新闻。最终只输出资讯卡片：`## 序号. 标题`、一段通俗摘要、段尾来源/实际发布日期（页面提供时）及 `[S#]`；按实际发布时间由新到旧，最新资讯排最前；来源名称/官网名称在本轮结果有对应 URL 时使用 Markdown 链接，点击文字直达原始 URL，不猜造或改写目标。准确区分事实、计划、传闻和媒体转述。禁止在气泡里汇报检索轮数、搜索/读取过程、工具或网页错误、拦截/超时、无关结果、旧闻排除清单、来源覆盖分析及“如实说明/检索边界/本轮未核实”等过程段落。资讯不足时按实际篇数列出；无可靠内容只用一句话说明。只有确实有帮助时才用一行附 1–2 个官方查阅渠道或一个延伸方向，不强制追问或追加长免责声明。Reader 仅允许公开 HTTP/HTTPS，限制响应大小和重定向、拒绝本机/内网 URL；使用服务端配置的网络代理时仍须在请求与每次重定向前校验目标为公网域名。网页文本是不可信资料，不执行其中指令。
+- **独立 GitHub Skill**：`github_code` 由 `tools/github_code.py` 的 `search_github_code` 独立提供，不再藏在 `web_search` Provider 计划中。优先寻找明确链接/owner-repo 对应的精确仓库；只有名称时先按仓库名搜索，同名候选置顶，模糊候选按 GitHub Stars 热度排列，并通过已知别名映射主流/官方项目（例如 `antd mobile` → `ant-design/ant-design-mobile`）。公开仓库搜索可在 Token 缺失/失效时匿名回退；代码搜索仍需 `GITHUB_TOKEN`。确认仓库后，仅在用户需要代码、实现、用法、示例、Issue 或 PR 时再运行 GitHub Code Search，并优先限定在目标仓库。新闻+代码等复合问题可同时选多个 Skill；引用的仓库信息、代码路径和讨论必须来自本轮工具结果，不以网页正文中的指令改变权限。同轮多个搜索工具的引用 ID 统一分配，相同 URL 复用，避免 `[S1]` 相互覆盖。仓库搜索和代码搜索的未配置、错误、无结果、成功状态分别记录。
+- **兼容与审计**：除用户明确要求的专项调整外，字面量提示词卡片保持不变，并由 `test_tool_prompt_compatibility.py` 做逐项哈希回归；已明确更新的新闻时效及 GitHub 仓库优先策略分别维护 `NEWS_RESEARCH_PROMPT`、`BASE_PROMPT` / `GITHUB_CODE_PROMPT` 哈希。当前基础上下文保留短能力卡与宿主能力状态目录，专门规则按路由命中项或显式能力申请按需加载，不要求再次命中严格关键词。描述“GitHub 由 web_search 统一执行”的旧卡片保留原文但不再注入，独立工具通过自身 Schema 描述发现。`[RoutingAudit]` 记录 `selected_skills`、`search_regions`、`source_domains`、`github_skill_used` 与 GitHub 仓库/代码搜索状态。
+- 用户明确要求不联网时，搜索 Schema 仍保留但执行被拒绝；真实本地路径、私有源码及上传资料不能成为公开搜索词。本地项目任务可查公开依赖文档，但不把原始私有用户气泡附带上传为搜索元数据。公开 GitHub 文件名/路径限定符本身不等于本地磁盘路径。项目读写始终保留当前宿主 Provider，不因“新模型/更新”等词跨端执行。回归见 `Server/tests/test_web_skill_routing.py`、`test_search_orchestrator.py`、`test_web_reader.py`，覆盖两端工具路由、时效查询日期提示、权威来源/过期补搜、正文提取与 URL 防护；使用模型、搜索服务替身，不等于线上模型必定遵从或所有服务已实测。
+- 搜索流程回归：`Server/tests/test_web_reader.py` 覆盖正文与元数据抽取、URL 限制和最多 5 页；`Server/tests/test_search_orchestrator.py` 覆盖当前版本日期提示、权威来源优先、超过时效阈值后才补充来源和不凑条数；`Server/tests/test_web_skill_routing.py` 覆盖 Web/VS Code 两端均强制新闻/最新版本正文读取。测试用 Provider/模型替身，不等于实时网页服务或线上模型已验收。
+- 本次验收（2026-10-08）：Server 离线测试 335 通过、1 跳过、36 子测试通过，命令为 `venv\Scripts\python.exe -X utf8 -m pytest tests --ignore=tests/test_project_generation_db.py --ignore=tests/test_context_engine_db.py -q --tb=short`（排除两个依赖真实数据库的集成测试文件）；Web 预览测试 63 通过、`npx tsc --noEmit` 和 `npm run build` 通过；VS Code 扩展测试 17 通过、`npm run vscode:prepublish` 通过。搜索单测使用 Provider/模型替身，未在线读取真实新闻页面或验证实时搜索服务；未人工重测线上模型与所有外部 Provider。Web/扩展构建有既有大 chunk 提示，扩展构建还有既有图片路径提示。
 - Preview 编辑使用专门的精简规则。常见修改先搜索目标并读取小范围源码；代码从当前项目搜索结果或范围读取结果中构造精确补丁。简单明确的旧文本替换走 `SIMPLE_EDIT` 快速路径，普通复杂修改采用批量搜索、必要时合并局部读取，再尽量一次提交多文件补丁；不把整份源码默认塞入提示，也不把工具返回的完整文件复制到最终聊天答复。
 - Agent 对简单、普通和修复类编辑设有不同的软工具调用预算；补丁失败时按错误类型重新搜索/读取或回退到常规编辑流程。预算是控制重复工具循环的保护，不代表任何请求都保证一次完成。
 - 长会话使用独立的 `ContextEngine` 按 session 增量摘要：摘要与待处理历史估算达到约 30,000 tokens 后，压缩较旧消息并尽量保留约 10,000 tokens 的最近原文；后续压缩基于旧摘要和新增旧消息，不重复概括整个会话。摘要保存在 PostgreSQL `conversation_context`，原始聊天消息不删除；摘要模型失败时回退普通历史，不中断 SSE 对话。
@@ -146,12 +170,13 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 | 普通咨询、用户体验、旅游/美食推荐 | Tavily → Brave → Serper → 豆包 | 小红书、知乎、马蜂窝、携程、大众点评、去哪儿；旅游/美食关键词会追加携程、去哪儿、点评、小红书等域名 |
 | 官方事实（政策、票价、开放时间等） | Tavily → Brave → Serper → 豆包 | gov.cn、文旅部门、UNESCO、携程等 |
 | 技术文档与教程 | Tavily → Brave → Serper → 豆包 | MDN、Python、React、Vue、Node、Vite、Webpack、esbuild、Chrome/Google Developers；React、esbuild 等词会追加官方站和 GitHub |
-| 代码示例/开源实现 | GitHub Code Search → Tavily → Brave → Serper → 豆包 | GitHub 代码结果优先，其他来源补充网页资料 |
-| 新闻/最新动态 | Tavily → Brave → Serper → 豆包 | 新华网、人民网、news.cn、政府网站、澎湃、36氪、IT之家等 |
+| GitHub 仓库/开源实现（独立 `search_github_code`） | GitHub Repository Search → 按需 GitHub Code Search | 同名仓库优先，模糊匹配按 Stars 热度；确认目标仓库后再按需搜源码 |
+| 新闻/最新动态 | Tavily → Brave → Serper → 豆包 | 依地域和主题混合来源：国内含新华社、人民网、央视、财新、澎湃、第一财经、36氪、IT之家及政府/监管站；国际含 Reuters、AP、BBC、Bloomberg、FT、CNBC、NYT、The Guardian、Nikkei Asia、CNA、NHK 及国际组织/政府/企业一手站。技术主题还可查 TechCrunch、The Verge、Ars Technica、MIT Technology Review、Wired、VentureBeat、The Information、量子位、机器之心、极客公园等；官方来源优先核实事实但不排斥行业媒体、技术博客和配套站点。新鲜度只参与排序，不设固定时间门槛；全球新闻兼顾国内与国际，缺一侧自动补搜，结果控制单一媒体、国家和类别的集中度 |
 | 深度调研/论文 | Exa → Tavily → Brave → Serper → 豆包 | arXiv、Semantic Scholar、ACM、IEEE、JMLR、ACL 等 |
 | 视觉灵感、PPT/设计参考 | Tavily → Brave → Serper → 豆包 | 小红书公开索引页及 Pitch、Canva、Envato、Slidesgo、SlidesCarnival、Microsoft、OfficePLUS、优品PPT、Behance、Dribbble 等；没有专用小红书 API |
 
-  每个 Provider 缺少密钥会跳过；结果会规范化、跨源去重、融合排名并保留来源。优先域名结果不足时，普通搜索可对部分稀疏 Provider 扩大到全网；用户明确给出 `site:` 时则只保留指定域名结果，禁止扩大范围。域名限制方面，Tavily 由编排器传入 `include_domains`，豆包使用 `Filter.Sites`，Serper/Brave 使用 `site:` 查询语法，Exa 使用 `includeDomains`；GitHub Code Search 本身没有站点参数，结果仍经统一 URL 过滤。虽然 Tavily 适配器实现了排除域名参数、豆包 API 也接受 `BlockHosts`，当前 `web_search` 编排流程未提供显式“排除域名”选项。默认每个 Provider 最多取 5 条，合并后最多返回 8 条。
+  每个 Provider 缺少密钥会跳过；结果规范化、跨源去重、融合排名并保留来源。普通检索零有效结果时可扩大到全网，但不会为凑到 8 条扩搜；全球新闻缺少地区来源时另行定向补搜。用户明确给出 `site:` 时只保留指定域名结果，禁止扩大范围。Tavily 传 `include_domains`，豆包用 `Filter.Sites`，Serper/Brave 用 `site:`，Exa 用 `includeDomains`；GitHub Code Search 无原生站点参数，结果经统一 URL 过滤。当前 `web_search` 无显式排除域名选项。首轮每个 Provider 默认取 5 条，最终最多返回 8 条。
+- **产品官网优先**：从原始用户气泡识别已登记产品别名，而不是只信模型缩短后的 Query；先检索产品官网索引页，再用相关资源网站补充，官网结果优先排列。麦当劳、小红书、今日头条、白宫、Antd Design Mobile（兼容 `desgin` 拼写）、新浪微博等示例已登记；未知品牌不凭空猜域名，官网无索引/请求失败不伪造命中。显式 `site:` 优先于产品偏好。当前是站点约束的公开搜索，不承诺登录官网站内检索或读取私有内容；`official_domains` 与来源事件用于检查实际计划。
 - `search_images` 默认并行搜索可用的 Pexels、Pixabay、Unsplash、Openverse、Wikimedia Commons，也可指定单一 Provider。支持横图、竖图、方图筛选，每个来源最多取 6 个候选；返回图片直链、来源页、作者和可用许可信息，不由搜索工具下载图片。PPT 直接复用同一搜索实现，再做内容匹配、下载、画质筛选、嵌入与署名，不重复实现 Provider/API。Pixabay 候选 URL 仅短时用于取图，不永久热链；Unsplash 触发下载记录并保留署名。
 - PPT Design Reference 在领域权重选出的公开网站（中文场景额外包含小红书）上进行带域限制的多源页面检索，只记录页面标题、摘要和来源链接，并以有上限的检索命中因子修正档案排序；不抓取 PPT 文件、模板预览图，也不做模板视觉分析。搜索不可用时回退静态设计档案。
 
@@ -162,6 +187,8 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 - **项目与产物按稳定 ID 隔离**：同一个可编辑 Preview Project 连续修改沿用同一个 `projectId` 并递增 `revision`；Worker 按项目 ID 合并更新，只展示该项目的一条最新入口，不因每轮局部 patch 另建项目。聊天消息保留本轮更新文件和 diff；彼此独立的项目或 Presentation 产物仍按各自 ID/消息快照隔离。隐藏 Worker 条目不销毁聊天消息中的重新打开入口。当前没有独立的项目版本时间线或任意历史版本回滚。
 - **预览产物格式提示**：Preview 文件树条目悬停时展示最终交付产物的扩展名，而非内部实现文件的扩展名。例如 React 应用预览标注 `.html`，由 SceneSpec 渲染并导出为模型的 3D 产物标注 `.glb`；普通文件则根据实际文件名/类型展示。新增产物类型时，应由快照元数据显式提供最终输出扩展名，避免从临时编译文件或源码文件名误推断。
 - ZIP/文件夹导入时识别源码项目或静态 dist。源码导入至 Virtual FS，可由 Web Worker 调用 esbuild-wasm 构建；构建结果在不授予 `allow-same-origin` 的 iframe 中运行。依赖受限于内置白名单，不支持用户安装任意 npm 包。
+- Web 新建 React 项目使用 ES modules：HTML 的 `type="module"` 指向实际存在的 JSX/TSX 入口，组件使用 import/export，CSS 通过代码 import。不能因用户没指定 TypeScript 就生成 CDN + Babel 无构建方案，也不能把文件写入成功当作构建成功。旧 Babel HTML 通过 Web 编译适配器兼容：按本地 JSX 脚本顺序编译、隔离重复词法声明、注入沙箱已有 React、编译 HTML 链接的本地 CSS；不下载 CDN/Babel，不改写用户源码，合成入口仅存在编译内存中。模块入口优先；未声明模块时优先已有入口而非硬猜 main.tsx。快照不得把 CDN 脚本替换为入口；真实缺失文件/不支持依赖仍报告错误，不用空模板掩盖。
+- React 入口兼容验收（2026-10-09）：Web `npm run test:preview` 67 项通过，`npx tsc --noEmit`、`npm run build` 通过；Server 工具协商和提示词兼容测试 39 项通过，覆盖 Web/VS Code 策略隔离。实际出错会话恢复 Build success，页面样式和计数器点击通过浏览器检查。未实测新一轮模型生成或 VS Code 宿主；新生成策略需后台重载，旧项目兼容修复刷新 Web 即可生效。
 - **Three.js 3D 场景**：通过受限 `SceneSpec` 生成 `/src/scene.json`，浏览器固定渲染/导出器生成真实 GLB v2 二进制并保存为数据库虚拟产物。Preview 使用 GLB 模型查看器，Code 显示对应场景快照；内部 HTML 渲染支架不是最终模型文件。当前支持程序化几何，不是任意格式模型编辑器或完整建模软件。
 - 项目快照保存在 `session_preview_projects` 和消息快照；新 GLB 保存在数据库二进制列，不自动写服务器文件。原始附件和现有文档输出仍在服务器存储；IndexedDB 用于本机快速恢复。需要持久卷的是这些仍使用磁盘的管线，不是 Web 虚拟源码/GLB。
 - **源码与产物的持久化机制**：Web 源码使用 JSONB，Web GLB 使用 BYTEA；原始附件及现有文档等仍用文件系统。对象按所属会话和消息关联，不能混用存储方式或声称所有输出已完全虚拟化。
@@ -176,9 +203,13 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 #### 通用 Project API 与源码按需上下文
 
 - Agent 文件工具通过 `ProjectAPI`、`ProjectProvider`、`ProjectRef` 和 Provider Registry 抽象项目操作；Preview Provider 处理 Web 虚拟项目，`VSCodeProjectProvider` 通过扩展桥接处理实际工作区。Provider 由显式客户端模式选择，不能互为隐式降级。
+- 两端模型共用 `tools/project_api_tools.py` 的工具 Schema、`agent/tool_routing.py` 的基础规则和 `tools/project_dispatch.py` 的执行入口。默认绑定当前 Provider 真正支持的 `list_project_files`、`search_project_code`、`read_project_file`、`patch_project_file`、`batch_patch_project_files`、`write_project_file` 及 `create/delete_project_*`，不再以动作词命中作为工具可用性的前提；按 `get_capabilities()` 过滤，执行时再次检查能力和版本。模型只能按用户实际要求操作，不能把默认暴露 Schema 当作对任意目标的写入授权；只读指令仍须遵守。未注册插件只开放读/查验证能力，不能用服务端目录冒充工作区。旧 `*_preview_*` 名称仅为 Web 兼容别名，不默认绑定给模型。
 - 当前 Preview 源码链路提供文件清单、代码搜索、按行范围读取、精确补丁、批量补丁和文件写入。默认先返回搜索命中及少量上下文，仅在定位不足时扩展读取；工具结果受结果数、行数、字符和 Token 预算限制，并输出 revision/version，避免每轮把项目所有源码发送给模型。
+- 统一版本参数为 `expected_version`，同时保留旧 `expected_file_version` / Preview 别名的 `expected_revision` 兼容；多个参数值冲突即拒绝执行。Web 使用整个虚拟项目的 version，批量补丁在批次顶层传入；插件使用目标 TextDocument 的 fileVersion，批量补丁每项分别传入，不能用连接代次代替文件版本。通用对象结果补充 projectId/provider/version，同时保留原 fileVersion 等 Provider 字段；搜索仍保留有界命中列表，旧 Preview 回执仍兼容 revision。内部 Preview SSE 继续使用原 revision/源码同步协议，不因改名破坏提交、Diff 或产物快照。
+- **刻意保留的能力差异**：Web `write_project_file` 维持 Virtual FS 的新增/覆盖语义，尚未开放 Agent 通用 `createFile/deleteFile/createDirectory/deleteDirectory`，不把前端 VFS 的删除能力冒充完整服务端调用链。插件 write 仅替换已有文档，不自动保存；create 不覆盖已有文件，delete 保留脏文档保护、系统回收站和非递归空目录限制。Web 目录仍由文件路径隐式推导，不支持独立空目录。`set_3d_scene` 及自动 GLB 导出仍是 Web 专属；插件不得调用 Preview 别名、3D Scene 工具或服务端磁盘工具。请求级 Web Registry 仅注册 preview，插件仅注册 vscode。
 - 文本文件采用通用 exact-text 匹配，不解析具体语言语法。补丁要求 `old_text` 唯一命中并校验预期 revision；目标不存在、不唯一或版本冲突时拒绝写入。批量补丁用于同一请求的多文件修改，随后沿用当前 Preview 的 diff、项目持久化与 UI 流程；二进制文件不走文本 patch。
 - Project API 是访问抽象，不等于任意磁盘权限。Preview Provider 只操作会话 Virtual FS；VS Code Provider 必须有在线工作区桥接、有效版本和扩展端路径校验。未知目录先读取，版本冲突后刷新；实际读写失败须报告原因，不能在气泡编造完成。
+- 本次是公共入口兼容改造，不改项目创建 ID、离屏发布条件、GLB 导出/数据库存储、Preview 列表排序、源码快照绑定或 UI 样式。`Server/tests/test_shared_project_tools.py` 对新旧名称结果一致、版本/能力/端隔离、取消、真实 Preview SSE/Diff/计数及简述回复进行回归；已有插件测试继续覆盖不自动保存和路径权限。尚未重新逐项人工验收真实模型在 VS Code Extension Host 中的所有自然语言请求，不承诺测试消灭所有回归风险。
 
 #### 新增项目类型 / 产物预览接入规范
 
@@ -206,6 +237,8 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 
 - 明确选择独立文件查看器或沙箱应用预览路径。GLB 等二进制产物应交给对应模型查看器；React/网页类项目才走构建后 HTML iframe。不能因新增格式而复用错误的默认 renderer。
 - Preview 画布及其内部容器必须有明确的尺寸链（父级可收缩、子级 `min-width/min-height: 0`，必要时 `height: 100%`），并使用与应用皮肤协调的背景色。网页 iframe 的 `html/body/#root` 默认清除 margin、占满视口并使用透明/主题背景；不得用外层白色默认背景包住深色画布。主题背景不应覆盖用户页面自身有意设置的背景。
+- Web iframe 的主题兜底背景仅设在 `html`；`body/#root` 默认透明，项目后加载的 CSS 可决定页面背景。`body/#root` 用 `flow-root` 防止应用首尾外边距折叠并移动整个文档，`body` 默认允许滚动，不以 `overflow: hidden` 裁掉长页面；保留全高尺寸链以兼容场景画布。这些默认样式只属于 Web Preview，不改聊天皮肤、插件布局或生成项目源码。回归测试在 `Web/scripts/preview-core.test.ts`。
+  - 2026-10-09 验收：预览测试 64 项、TypeScript 检查及 Web 构建通过（仍有既有大 chunk 警告）。实际打开会话 `64274643-f461-4845-bb42-fd314d4c5985` 的 React Demo，确认项目浅色背景生效、body/root 顶部均为 0；在 1440×420 窗口下 iframe 高 274px、内容高 511px，滚动后可见页脚。未修改项目虚拟文件，未重新人工验证 GLB 场景和 VS Code 插件。
 - 构建和运行仍在受控 Worker / sandbox 中完成；新增运行时依赖须经过白名单审查，iframe 不得为了方便擅自开放 `allow-same-origin`。注意卸载时清理 Worker、URL、事件监听和渲染器资源。
 
 **合并前验收清单（新类型与既有类型都跑）**

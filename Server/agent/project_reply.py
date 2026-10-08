@@ -6,6 +6,26 @@ PROJECT_REPLY_PROMPT = """项目操作完成后，用通俗易懂的一两句话
 源码、代码块和逐行差异只放到 Diff；聊天回复不要重复源码，也不要只罗列文件路径。
 只描述工具确认成功的操作；失败或未执行的步骤要如实说明。读和查按用户问题简洁解释，不倾倒完整源码。"""
 
+ADDITIONAL_TASK_LABELS = {
+    'web_search': '联网检索', 'web_reader': '网页正文读取', 'search_github_code': 'GitHub 源码检索',
+    'search_images': '图片检索', 'get_weather': '天气查询',
+    'create_word': 'Word 文档生成', 'create_excel': '表格生成',
+    'create_ppt': '演示文稿生成', 'create_pdf': 'PDF 生成',
+    'generate_xiaoyunque_video': '视频生成', 'execute_python': '代码执行',
+    'vector_search': '知识库检索',
+}
+
+
+def summarize_additional_tasks(outcomes: dict[str, bool | None]) -> str:
+    """Summarize confirmed activity, never echo source or claim loading executed a task."""
+    parts = []
+    for status, prefix in [(True, '另外完成了'), (False, '另有未完成的步骤：'), (None, '另外调用了')]:
+        labels = [ADDITIONAL_TASK_LABELS[name] for name, result in outcomes.items()
+                  if name in ADDITIONAL_TASK_LABELS and result is status]
+        if labels:
+            parts.append(prefix + '、'.join(labels) + '。')
+    return ('\n\n' + ''.join(parts) + '相关结果、失败原因或附件请查看对应工具反馈。') if parts else ''
+
 
 def project_subject(files: dict[str, str]) -> str:
     """Use a confirmed content title, never echo implementation/source lines."""

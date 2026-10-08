@@ -5,6 +5,7 @@ import type { PreviewFiles } from '../../core/types.ts';
 import type { BuildOutputFile, PreviewBuildResult } from '../workerProtocol.ts';
 import { normalizeDiagnostics } from './diagnostics.ts';
 import { createVirtualFsPlugin, loaderForPath, resolveVirtualModule } from './virtualFsPlugin.ts';
+import { preparePreviewCompilation } from './babelHtmlAdapter.ts';
 
 let initialization: Promise<void> | null = null;
 
@@ -33,7 +34,8 @@ export async function buildPreviewProject(
   await initializeCompiler();
   const startedAt = performance.now();
   const normalizedEntry = normalizePreviewPath(entryPoint);
-  resolveVirtualModule(files, normalizedEntry);
+  const compilationFiles = preparePreviewCompilation(files, normalizedEntry);
+  resolveVirtualModule(compilationFiles, normalizedEntry);
   loaderForPath(normalizedEntry);
 
   const result = await esbuild.build({
@@ -48,7 +50,7 @@ export async function buildPreviewProject(
     jsx: 'automatic',
     sourcemap: false,
     logLevel: 'silent',
-    plugins: [createVirtualFsPlugin(() => files)],
+    plugins: [createVirtualFsPlugin(() => compilationFiles)],
   });
 
   return {

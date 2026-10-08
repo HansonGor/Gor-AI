@@ -1,4 +1,4 @@
-from agent.project_reply import project_subject, summarize_project_changes
+from agent.project_reply import project_subject, summarize_project_changes, summarize_additional_tasks
 
 
 def test_completion_explains_content_and_web_viewing_without_source():
@@ -29,3 +29,12 @@ def test_subject_uses_titles_not_generic_templates_or_source():
     assert project_subject({'/index.html': '<title>New React Project</title>'}) == ''
     assert project_subject({'/src/scene.json': 'invalid'}) == ''
     assert '没有产生新的变更' in summarize_project_changes('改标题', [])
+
+
+def test_compound_summary_distinguishes_loaded_attempted_failed_and_completed_tools():
+    text = summarize_additional_tasks({'request_tools': True, 'get_weather': True,
+                                      'create_pdf': False, 'execute_python': None})
+    assert '完成了天气查询' in text
+    assert '未完成的步骤：PDF 生成' in text
+    assert '调用了代码执行' in text and '完成了代码执行' not in text
+    assert 'request_tools' not in text
