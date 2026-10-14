@@ -230,7 +230,7 @@ export interface SearchSource {
   /** 来源平台/站点名（如小红书、GitHub） */
   source?: string;
   sourceType?: string;
-  /** 实际返回该结果的 Search Provider（如 doubao / tavily / serper / github） */
+  /** 实际返回该结果的 Search Provider（如 doubao / tavily / bocha / serper / github） */
   provider?: string;
   query?: string;
 }

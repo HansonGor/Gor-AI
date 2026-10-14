@@ -7,7 +7,7 @@ User Query
                               deep_research / visual_inspiration）
   → Source Type             （preferred domain / general web / github）
   → Preferred Domains       （意图 + 关键词驱动的优先来源域名）
-  → Provider                （豆包 / Tavily / Serper / Brave / Exa / GitHub）
+  → Provider                （豆包 / Tavily / 博查 / Serper / Brave / Exa / GitHub）
   → Unified Results         （统一结果结构）
 
 设计原则：
@@ -32,6 +32,7 @@ from tools.web_search import (
     _search_doubao,
     _search_github_repositories,
     _search_tavily,
+    _search_bocha,
     _search_serper,
     _search_brave,
     _search_exa,
@@ -711,13 +712,13 @@ def preferred_domains_for(intent: str, query: str) -> list[str]:
 _PROVIDER_PLAN: dict[str, list[str]] = {
     # Specialist first in final ranking; every configured provider in the
     # selected plan is queried concurrently rather than stopping at first hit.
-    "code_example": ["tavily", "brave", "serper", "doubao"],
-    "technical_docs": ["tavily", "brave", "serper", "doubao"],
-    "official_fact": ["tavily", "brave", "serper", "doubao"],
-    "user_experience": ["tavily", "brave", "serper", "doubao"],
-    "news": ["tavily", "brave", "serper", "doubao"],
-    "deep_research": ["exa", "tavily", "brave", "serper", "doubao"],
-    "visual_inspiration": ["tavily", "brave", "serper", "doubao"],
+    "code_example": ["tavily", "bocha", "brave", "serper", "doubao"],
+    "technical_docs": ["tavily", "bocha", "brave", "serper", "doubao"],
+    "official_fact": ["tavily", "bocha", "brave", "serper", "doubao"],
+    "user_experience": ["tavily", "bocha", "brave", "serper", "doubao"],
+    "news": ["tavily", "bocha", "brave", "serper", "doubao"],
+    "deep_research": ["exa", "tavily", "bocha", "brave", "serper", "doubao"],
+    "visual_inspiration": ["tavily", "bocha", "brave", "serper", "doubao"],
 }
 
 
@@ -726,6 +727,7 @@ def _provider_configured(name: str) -> bool:
     return {
         "doubao": bool(config.Search.DOUBAO_SEARCH_API_KEY),
         "tavily": bool(config.Search.TAVILY_API_KEY),
+        "bocha": bool(config.Search.BOCHA_API_KEY),
         "serper": bool(config.Search.SERPER_API_KEY),
         "brave": bool(config.Search.BRAVE_API_KEY),
         "exa": bool(config.Search.EXA_API_KEY),
@@ -748,6 +750,8 @@ def _call_provider(name: str, query: str, max_results: int, sites: list[str] | N
             return _search_doubao(query, max_results=max_results, sites=sites), None
         if name == "tavily":
             return _search_tavily(query, max_results=max_results, include_domains=sites), None
+        if name == "bocha":
+            return _search_bocha(query, max_results=max_results, sites=sites), None
         if name == "serper":
             return _search_serper(query, max_results=max_results, sites=sites), None
         if name == "brave":

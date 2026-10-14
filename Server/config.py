@@ -41,6 +41,8 @@ class Config:
         DOUBAO_SEARCH_API_KEY = os.getenv("DOUBAO_SEARCH_API_KEY", "")
         # Tavily（通用网页搜索，已有）
         TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+        # 博查 Web Search（https://open.bochaai.com）
+        BOCHA_API_KEY = os.getenv("BOCHA_API_KEY", "")
         # Serper（Google 搜索代理，适合海外/中英文混合）
         SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
         # Brave Search（独立索引，无广告）

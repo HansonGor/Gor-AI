@@ -251,15 +251,15 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 
 | 搜索意图/范围 | 实际 Provider 顺序（同时并行请求已配置项） | 优先检索范围示例 |
 | --- | --- | --- |
-| 普通咨询、用户体验、旅游/美食推荐 | Tavily → Brave → Serper → 豆包 | 小红书、知乎、马蜂窝、携程、大众点评、去哪儿；旅游/美食关键词会追加携程、去哪儿、点评、小红书等域名 |
-| 官方事实（政策、票价、开放时间等） | Tavily → Brave → Serper → 豆包 | gov.cn、文旅部门、UNESCO、携程等 |
-| 技术文档与教程 | Tavily → Brave → Serper → 豆包 | MDN、Python、React、Vue、Node、Vite、Webpack、esbuild、Chrome/Google Developers；React、esbuild 等词会追加官方站和 GitHub |
+| 普通咨询、用户体验、旅游/美食推荐 | Tavily → 博查 → Brave → Serper → 豆包 | 小红书、知乎、马蜂窝、携程、大众点评、去哪儿；旅游/美食关键词会追加携程、去哪儿、点评、小红书等域名 |
+| 官方事实（政策、票价、开放时间等） | Tavily → 博查 → Brave → Serper → 豆包 | gov.cn、文旅部门、UNESCO、携程等 |
+| 技术文档与教程 | Tavily → 博查 → Brave → Serper → 豆包 | MDN、Python、React、Vue、Node、Vite、Webpack、esbuild、Chrome/Google Developers；React、esbuild 等词会追加官方站和 GitHub |
 | GitHub 仓库/开源实现（独立 `search_github_code`） | GitHub Repository Search → 按需 GitHub Code Search | 同名仓库优先，模糊匹配按 Stars 热度；确认目标仓库后再按需搜源码 |
-| 新闻/最新动态 | Tavily → Brave → Serper → 豆包 | 依地域和主题混合来源：国内含新华社、人民网、央视、财新、澎湃、第一财经、36氪、IT之家及政府/监管站；国际含 Reuters、AP、BBC、Bloomberg、FT、CNBC、NYT、The Guardian、Nikkei Asia、CNA、NHK 及国际组织/政府/企业一手站。技术主题还可查 TechCrunch、The Verge、Ars Technica、MIT Technology Review、Wired、VentureBeat、The Information、量子位、机器之心、极客公园等；官方来源优先核实事实但不排斥行业媒体、技术博客和配套站点。新鲜度只参与排序，不设固定时间门槛；全球新闻兼顾国内与国际，缺一侧自动补搜，结果控制单一媒体、国家和类别的集中度 |
-| 深度调研/论文 | Exa → Tavily → Brave → Serper → 豆包 | arXiv、Semantic Scholar、ACM、IEEE、JMLR、ACL 等 |
-| 视觉灵感、PPT/设计参考 | Tavily → Brave → Serper → 豆包 | 小红书公开索引页及 Pitch、Canva、Envato、Slidesgo、SlidesCarnival、Microsoft、OfficePLUS、优品PPT、Behance、Dribbble 等；没有专用小红书 API |
+| 新闻/最新动态 | Tavily → 博查 → Brave → Serper → 豆包 | 依地域和主题混合来源：国内含新华社、人民网、央视、财新、澎湃、第一财经、36氪、IT之家及政府/监管站；国际含 Reuters、AP、BBC、Bloomberg、FT、CNBC、NYT、The Guardian、Nikkei Asia、CNA、NHK 及国际组织/政府/企业一手站。技术主题还可查 TechCrunch、The Verge、Ars Technica、MIT Technology Review、Wired、VentureBeat、The Information、量子位、机器之心、极客公园等；官方来源优先核实事实但不排斥行业媒体、技术博客和配套站点。新鲜度只参与排序，不设固定时间门槛；全球新闻兼顾国内与国际，缺一侧自动补搜，结果控制单一媒体、国家和类别的集中度 |
+| 深度调研/论文 | Exa → Tavily → 博查 → Brave → Serper → 豆包 | arXiv、Semantic Scholar、ACM、IEEE、JMLR、ACL 等 |
+| 视觉灵感、PPT/设计参考 | Tavily → 博查 → Brave → Serper → 豆包 | 小红书公开索引页及 Pitch、Canva、Envato、Slidesgo、SlidesCarnival、Microsoft、OfficePLUS、优品PPT、Behance、Dribbble 等；没有专用小红书 API |
 
-  每个 Provider 缺少密钥会跳过；结果规范化、跨源去重、融合排名并保留来源。普通检索零有效结果时可扩大到全网，但不会为凑到 8 条扩搜；全球新闻缺少地区来源时另行定向补搜。用户明确给出 `site:` 时只保留指定域名结果，禁止扩大范围。Tavily 传 `include_domains`，豆包用 `Filter.Sites`，Serper/Brave 用 `site:`，Exa 用 `includeDomains`；GitHub Code Search 无原生站点参数，结果经统一 URL 过滤。当前 `web_search` 无显式排除域名选项。首轮每个 Provider 默认取 5 条，最终最多返回 8 条。
+  每个 Provider 缺少密钥会跳过；结果规范化、跨源去重、融合排名并保留来源。普通检索零有效结果时可扩大到全网，但不会为凑到 8 条扩搜；全球新闻缺少地区来源时另行定向补搜。用户明确给出 `site:` 时只保留指定域名结果，禁止扩大范围。Tavily 传 `include_domains`，博查用 `include`，豆包用 `Filter.Sites`，Serper/Brave 用 `site:`，Exa 用 `includeDomains`；GitHub Code Search 无原生站点参数，结果经统一 URL 过滤。当前 `web_search` 无显式排除域名选项。首轮每个 Provider 默认取 5 条，最终最多返回 8 条。
 - **产品官网优先**：从原始用户气泡识别已登记产品别名，而不是只信模型缩短后的 Query；先检索产品官网索引页，再用相关资源网站补充，官网结果优先排列。麦当劳、小红书、今日头条、白宫、Antd Design Mobile（兼容 `desgin` 拼写）、新浪微博等示例已登记；未知品牌不凭空猜域名，官网无索引/请求失败不伪造命中。显式 `site:` 优先于产品偏好。当前是站点约束的公开搜索，不承诺登录官网站内检索或读取私有内容；`official_domains` 与来源事件用于检查实际计划。
 - `search_images` 默认并行搜索可用的 Pexels、Pixabay、Unsplash、Openverse、Wikimedia Commons，也可指定单一 Provider。支持横图、竖图、方图筛选，每个来源最多取 6 个候选；返回图片直链、来源页、作者和可用许可信息，不由搜索工具下载图片。PPT 直接复用同一搜索实现，再做内容匹配、下载、画质筛选、嵌入与署名，不重复实现 Provider/API。Pixabay 候选 URL 仅短时用于取图，不永久热链；Unsplash 触发下载记录并保留署名。
 - PPT Design Reference 在领域权重选出的公开网站（中文场景额外包含小红书）上进行带域限制的多源页面检索，只记录页面标题、摘要和来源链接，并以有上限的检索命中因子修正档案排序；不抓取 PPT 文件、模板预览图，也不做模板视觉分析。搜索不可用时回退静态设计档案。

@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from tools.search_orchestrator import (
-    SearchOrchestrator, _canonical_url, _dedupe, classify_intent, official_domains_for,
+    SearchOrchestrator, _PROVIDER_PLAN, _canonical_url, _dedupe, classify_intent, official_domains_for,
 )
 
 
@@ -90,8 +90,22 @@ class SearchOrchestratorTest(unittest.TestCase):
 
         self.assertEqual(payload["explicit_domains"], ["acme.dev"])
         self.assertEqual([item["url"] for item in payload["results"]], ["https://docs.acme.dev/a"])
-        self.assertEqual(call.call_count, 4)
+        self.assertEqual(call.call_count, 5)
+        self.assertEqual(
+            payload["attempted_providers"],
+            ["tavily", "bocha", "brave", "serper", "doubao"],
+        )
         self.assertFalse(payload["fallback_used"])
+
+    def test_provider_plan_places_bocha_after_tavily(self):
+        web = ["tavily", "bocha", "brave", "serper", "doubao"]
+        for intent in ("user_experience", "official_fact", "technical_docs", "news", "visual_inspiration", "code_example"):
+            with self.subTest(intent=intent):
+                self.assertEqual(_PROVIDER_PLAN[intent], web)
+        self.assertEqual(
+            _PROVIDER_PLAN["deep_research"],
+            ["exa", "tavily", "bocha", "brave", "serper", "doubao"],
+        )
 
     def test_duplicate_tracking_urls_merge_provider_attribution(self):
         first = {"url": "https://www.example.com/page?utm_source=one", "title": "Page",

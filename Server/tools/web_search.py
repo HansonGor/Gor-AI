@@ -12,6 +12,7 @@
 底层 Provider（保留，供 orchestrator 调用）：
 - _search_doubao    豆包搜索（feedcoopapi），支持 Filter.Sites / BlockHosts
 - _search_tavily    Tavily，支持 include_domains / exclude_domains
+- _search_bocha     博查 Web Search，支持 include 站点限定
 - _search_serper    Serper(Google)，支持 query 内 site: 限定
 - _search_brave     Brave 独立索引
 - _search_exa       Exa 语义搜索（未来 includeDomains）
@@ -245,6 +246,58 @@ def _search_tavily(query: str, max_results: int = 5,
             "published_date": it.get("published_date") or it.get("publishedDate"),
         })
     return items
+
+
+def _search_bocha(query: str, max_results: int = 5,
+                  sites: list[str] | None = None) -> list[dict]:
+    """博查 Web Search。站点约束走 include；不传 freshness 硬截止。"""
+    api_key = config.Search.BOCHA_API_KEY
+    if not api_key:
+        return []
+    payload: dict = {
+        "query": query,
+        "freshness": "noLimit",
+        "summary": True,
+        "count": max(1, min(50, max_results)),
+    }
+    if sites:
+        payload["include"] = "|".join(sites)
+    r = httpx.post(
+        "https://api.bochaai.com/v1/web-search",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=TIMEOUT,
+    )
+    r.raise_for_status()
+    data = r.json()
+    code = data.get("code", 200)
+    try:
+        ok = int(code) == 200
+    except (TypeError, ValueError):
+        ok = False
+    if not ok:
+        raise RuntimeError(
+            f"bocha search error: code={code} log_id={data.get('log_id')} msg={data.get('msg')}"
+        )
+    pages = ((data.get("data") or {}).get("webPages") or {}).get("value") or []
+    out = []
+    for it in pages[:max_results]:
+        url = (it.get("url") or "").strip()
+        if not url:
+            continue
+        content = it.get("summary") or it.get("snippet") or ""
+        site_name = (it.get("siteName") or "web").strip() or "web"
+        out.append({
+            "title": it.get("name", ""),
+            "url": url,
+            "content": content[:500],
+            "source": f"bocha/{site_name}",
+            "published_date": it.get("datePublished") or it.get("dateLastCrawled"),
+        })
+    return out
 
 
 def _search_serper(query: str, max_results: int = 5,
