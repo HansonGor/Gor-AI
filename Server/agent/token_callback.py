@@ -104,6 +104,12 @@ class TokenCountCallback(BaseCallbackHandler):
             # LangChain 的 usage 可能在 response.llm_output 中
             llm_output = response.llm_output or {}
             token_usage = llm_output.get("token_usage", {})
+            if not token_usage and response.generations and response.generations[0]:
+                usage = getattr(response.generations[0][0].message, "usage_metadata", None) or {}
+                if usage:
+                    token_usage = {"prompt_tokens": usage.get("input_tokens", 0),
+                                   "completion_tokens": usage.get("output_tokens", 0),
+                                   "total_tokens": usage.get("total_tokens", 0)}
 
             record = self._unmatched_calls.pop(0) if self._unmatched_calls else None
             if token_usage:
@@ -129,6 +135,14 @@ class TokenCountCallback(BaseCallbackHandler):
         except Exception as e:
             print(f"[TokenCallback] 解析 usage 失败: {e}")
 
+    def record_presentation_usage(self, usage: "TokenCountCallback") -> None:
+        """Charge presentation requests without changing Agent context accounting."""
+        self.prompt_tokens += usage.prompt_tokens
+        self.completion_tokens += usage.completion_tokens
+        self.total_tokens += usage.total_tokens
+        for call in usage.calls:
+            self.calls.append({**call, "index": len(self.calls) + 1})
+
     def get_usage(self) -> Dict[str, Any]:
         """获取累加完成的 token 数据"""
         return {
@@ -138,7 +152,7 @@ class TokenCountCallback(BaseCallbackHandler):
             "llm_call_count": len(self.calls),
             "calls": [dict(call) for call in self.calls],
             "last_prompt_tokens": self.last_prompt_tokens,
-            "execution_llm_calls": sum(1 for call in self.calls if call["reason"] != "final_response"),
+            "execution_llm_calls": sum(1 for call in self.calls if call["reason"] not in {"final_response", "thinking_summary"}),
             "final_response_llm_calls": sum(1 for call in self.calls if call["reason"] == "final_response"),
             "preview_tool_calls": self.preview_tool_calls,
             "search_calls": self.search_calls,

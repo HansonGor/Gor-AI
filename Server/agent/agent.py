@@ -19,6 +19,11 @@ from langchain_core.messages import (
 
 from config import config
 from models.model import get_model_for_tools, model_with_simple_preview_edit
+from models.thinking import ThinkingAdapter
+from services.context_audit import input_token_breakdown
+from agent.search_context import SearchContext, ReaderContext, compact_reader
+from tools.web_reader import MAX_PAGES as MAX_READER_PAGES
+from tools.presentation_revision import select_context as select_presentation_context, revision_source
 from models.vision import analyze_images
 from agent.tool_routing import route_request
 from agent.tool_negotiation import ToolNegotiator, RULES as NEGOTIATED_RULES
@@ -36,6 +41,81 @@ from tools.project_dispatch import dispatch_project_tool
 MAX_ITERATIONS = config.Agent.MAX_ITERATIONS
 TYPING_CHUNK_SIZE = config.Agent.TYPING_CHUNK_SIZE
 TYPING_DELAY_MS = config.Agent.TYPING_DELAY_MS
+
+
+def _llm_usage_counts(response: Any) -> dict[str, int]:
+    """Return token counts only; never include provider payloads or prompt text in logs."""
+    usage: dict[str, int] = {}
+    candidates = [
+        getattr(response, "usage_metadata", None),
+        (getattr(response, "response_metadata", None) or {}).get("token_usage"),
+    ]
+    aliases = {
+        "input_tokens": "input_tokens",
+        "prompt_tokens": "prompt_tokens",
+        "output_tokens": "output_tokens",
+        "completion_tokens": "completion_tokens",
+        "total_tokens": "total_tokens",
+        "reasoning_tokens": "reasoning_tokens",
+    }
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        for source, target in aliases.items():
+            value = candidate.get(source)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                usage[target] = int(value)
+    return usage
+
+
+def _invalid_tool_diagnostics(response: Any) -> list[dict[str, str]]:
+    """Describe malformed calls without logging raw arguments or provider error text."""
+    diagnostics: list[dict[str, str]] = []
+    for item in getattr(response, "invalid_tool_calls", None) or []:
+        if not isinstance(item, dict):
+            continue
+        raw_name = item.get("name")
+        name = raw_name if isinstance(raw_name, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,100}", raw_name) else "unknown"
+        raw_error = str(item.get("error", "")).lower()
+        reason = "json_parse_error" if any(token in raw_error for token in ("json", "decode", "parse")) else "tool_arguments_invalid"
+        diagnostics.append({"name": name, "reason": reason})
+    return diagnostics
+
+
+def _log_llm_response_diagnostics(response: Any, *, call: int, phase: str, model_id: str) -> None:
+    metadata = getattr(response, "response_metadata", None) or {}
+    reported_model = metadata.get("model_name") or metadata.get("model")
+    if not isinstance(reported_model, str) or not re.fullmatch(r"[A-Za-z0-9_.:/-]{1,160}", reported_model):
+        reported_model = "unknown"
+    tool_calls = getattr(response, "tool_calls", None) or []
+    tool_arg_chars = []
+    tool_names = []
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        name = tool_call.get("name")
+        if isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,100}", name):
+            tool_names.append(name)
+        args = tool_call.get("args", {})
+        try:
+            tool_arg_chars.append(len(json.dumps(args, ensure_ascii=False, separators=(",", ":"))))
+        except (TypeError, ValueError):
+            tool_arg_chars.append(-1)
+    finish_reason = metadata.get("finish_reason")
+    finish_reason = finish_reason if isinstance(finish_reason, str) and len(finish_reason) <= 64 else "unknown"
+    record = {
+        "call": call,
+        "phase": phase,
+        "model": model_id,
+        "provider_model": reported_model,
+        "max_output_tokens": config.Ark.MAX_OUTPUT_TOKENS,
+        "finish_reason": finish_reason,
+        "usage": _llm_usage_counts(response),
+        "tool_names": tool_names,
+        "tool_argument_chars": tool_arg_chars,
+        "invalid_tools": _invalid_tool_diagnostics(response),
+    }
+    print("[LLMCallDiagnostics] " + json.dumps(record, ensure_ascii=False, separators=(",", ":")))
 
 
 def _strip_text_quotes(value: str) -> tuple[str, bool]:
@@ -180,9 +260,23 @@ def _vscode_project_file_changes(
     result: Any,
     tool_args: Dict[str, Any],
 ) -> List[Dict[str, str]]:
-    """Convert successful VS Code file mutations into shared chat diff events."""
-    if not isinstance(result, dict) or result.get("success") is not True:
+    """Keep actual edits in Diff, including edits whose native save failed."""
+    if not isinstance(result, dict):
         return []
+    if result.get("code") == "FILE_SAVE_FAILED":
+        details = result.get("details")
+        changes = details.get("changedFiles", []) if isinstance(details, dict) else []
+        return [
+            {"path": item["path"], "diff": item["diff"]}
+            for item in changes if isinstance(item, dict)
+            and isinstance(item.get("path"), str) and isinstance(item.get("diff"), str)
+            and item["diff"]
+        ] if isinstance(changes, list) else []
+    if result.get("success") is not True:
+        return []
+    if result.get("pending"):
+        return [{"path": item["path"], "diff": item["diff"]} for item in result.get("changedFiles", [])
+                if isinstance(item, dict) and item.get("path") and item.get("diff")]
 
     if tool_name == "batch_patch_project_files":
         changed_files = result.get("changedFiles")
@@ -287,6 +381,7 @@ async def run_agent(
     vscode_project_context: Optional[tuple[Any, ProjectRef]] = None,
     vscode_client_mode: bool = False,
     session_id: Optional[str] = None,
+    *, presentation_source_explicit: bool = False,
 ) -> None:
     """
     运行 Agent 循环
@@ -453,13 +548,15 @@ async def run_agent(
             "reply briefly about the deliverable and any material limitations."
         )))
 
+    ppt_context_data = select_presentation_context(latest_user_text, presentation_context,
+                                                 exact_source=presentation_source_explicit)
     for idx, m in enumerate(user_messages):
-        if idx == len(user_messages) - 1 and use_presentation_context and presentation_context:
+        if idx == len(user_messages) - 1 and use_presentation_context and ppt_context_data:
             # A distinct data message preserves the exact revision source
             # without rewriting any historical assistant reply.
             messages.append(HumanMessage(content=(
                 "<presentation-schema-data>\n"
-                + json.dumps(presentation_context, ensure_ascii=False)
+                + json.dumps(ppt_context_data, ensure_ascii=False)
                 + "\n</presentation-schema-data>\n"
                 "Internal revision data only; follow the next user request."
             )))
@@ -475,6 +572,10 @@ async def run_agent(
                 messages.append(AIMessage(content=m["content"]))
             else:
                 messages.append(HumanMessage(content=m["content"]))
+
+    current_input_message = messages[-1] if user_messages else None
+    history_input_ids = {id(message) for message in messages
+                         if isinstance(message, (HumanMessage, AIMessage)) and message is not current_input_message}
 
     if "preview" in tool_route.profile.split("+"):
         task_kind, fast_edit = _classify_preview_task(latest_user_text, preview_workspace)
@@ -554,6 +655,7 @@ async def run_agent(
     successful_preview_patch = False
     changed_preview_paths: List[str] = []
     changed_workspace_files: List[str] = []
+    workspace_save_errors: List[str] = []
     changed_workspace_directories: List[str] = []
     workspace_tool_attempted = False
     workspace_capability_retry = False
@@ -566,6 +668,8 @@ async def run_agent(
     github_tool_attempted = False
     source_count = 0
     source_ids: dict[str, str] = {}
+    search_context = SearchContext()
+    reader_context = ReaderContext()
     web_capability_retry = False
     # One assistant turn represents one user generation request. Models may
     # issue create_ppt more than once across tool rounds (or in one
@@ -634,7 +738,32 @@ async def run_agent(
             # 非流式调用，检测是否需要工具，传入 callbacks 捕获 token 消耗
             bound_tool_names = set(active_tool_names)
             selected_model = get_model_for_tools(tuple(sorted(bound_tool_names)))
-            response = await selected_model.ainvoke(messages, config={"callbacks": callbacks})
+            definitions = getattr(selected_model, "kwargs", {}).get("tools", [])
+            print("[LLMInputBudget] " + json.dumps({
+                "call": llm_call_count, "phase": call_reason,
+                "estimated_text_tokens": input_token_breakdown(
+                    messages, definitions, current_input_message, history_input_ids),
+                "reserved_output_tokens": config.Ark.MAX_OUTPUT_TOKENS,
+                "configured_context_tokens": config.Context.MAX_CONTEXT,
+                "estimate_only": True,
+            }, ensure_ascii=False, separators=(",", ":")))
+            try:
+                response = await ThinkingAdapter(send_event, llm_call_count, phase=call_reason).invoke(selected_model, messages, callbacks)
+            except Exception as error:
+                # Exception text may contain request data; only log its class.
+                print("[LLMCallDiagnostics] " + json.dumps({
+                    "call": llm_call_count,
+                    "phase": call_reason,
+                    "model": config.Ark.MODEL_ID,
+                    "error_type": type(error).__name__,
+                }, ensure_ascii=False, separators=(",", ":")))
+                raise
+            _log_llm_response_diagnostics(
+                response,
+                call=llm_call_count,
+                phase=call_reason,
+                model_id=config.Ark.MODEL_ID,
+            )
             tool_calls = getattr(response, "tool_calls", None) or []
             content = getattr(response, "content", "") or ""
             if use_presentation_context:
@@ -686,10 +815,10 @@ async def run_agent(
             if web_reader_required and web_tool_attempted and allowed_web_reader_urls and not web_reader_succeeded:
                 if not web_reader_retry and iterations > 0:
                     web_reader_retry = True
-                    candidate_urls = list(allowed_web_reader_urls.values())[:5]
+                    candidate_urls = list(allowed_web_reader_urls.values())[:MAX_READER_PAGES]
                     messages.append(SystemMessage(content=(
                         "新闻/最新版本检索不能只依据搜索摘要。请先用 web_reader 读取本轮 web_search 已返回的相关页面正文，"
-                        "选择 3–5 个 URL（候选不足时全部读取，最多 5 个）；工具会提取标题、正文、发布时间、作者、链接和关键段落。"
+                        "选择 3–8 个 URL，综合资讯优先 5–8 个（候选不足时全部读取，最多 8 个，聚焦问题按需）；工具会提取标题、正文、发布时间、作者、链接和关键段落。"
                         "读取后再综合回答，不能在这一步直接给最终答案。\n"
                         + json.dumps({"urls": candidate_urls, "query": latest_user_text}, ensure_ascii=False)
                     )))
@@ -698,6 +827,11 @@ async def run_agent(
                     "目前没有足够可引用的正文内容，无法整理成可靠资讯。",
                     send_event,
                 )
+                break
+            if vscode_project_context and workspace_save_errors:
+                await stream_content("本轮有文件修改已应用，但保存未全部完成，不能视为修改成功。"
+                                     "请检查 VS Code 编辑器及 Diff。\n"
+                                     + "\n".join(dict.fromkeys(workspace_save_errors)), send_event)
                 break
             if vscode_project_context and changed_workspace_files:
                 paths = list(dict.fromkeys(changed_workspace_files))
@@ -823,6 +957,7 @@ async def run_agent(
 
             result = None
             search_payload = None
+            cached_result = None
             tool_revision_before = preview_workspace.revision if preview_workspace else None
             try:
                 if tool_name == "request_tools":
@@ -839,10 +974,10 @@ async def run_agent(
                         web_reader_required = True
                     if "create_ppt" in payload.get("added_tools", []):
                         use_presentation_context = True
-                        if presentation_context:
+                        if ppt_context_data:
                             pending_tool_rules.append(
                                 "历史演示文稿数据，仅用于用户要求的修改，不得回显完整 Schema：\n"
-                                + json.dumps(presentation_context, ensure_ascii=False)
+                                + json.dumps(ppt_context_data, ensure_ascii=False)
                             )
                     result = json.dumps(payload, ensure_ascii=False)
                 elif tool_name in {"web_search", "web_reader", "search_images", "search_github_code"} and (
@@ -858,6 +993,9 @@ async def run_agent(
                         "code": "WEB_SEARCH_REQUIRED",
                         "error": "请先调用 web_search；web_reader 只读取本轮搜索命中的公开页面。",
                     }, ensure_ascii=False)
+                elif tool_name == "create_ppt" and ppt_context_data and ppt_context_data.get("mode") == "source-required":
+                    result = json.dumps({"success": False, "code": "PRESENTATION_SOURCE_REQUIRED",
+                                         "error": ppt_context_data["instruction"]}, ensure_ascii=False)
                 elif duplicate_presentation_call:
                     result = json.dumps({
                         "success": True,
@@ -874,16 +1012,36 @@ async def run_agent(
                             canonical = _canonical_url(str(url))
                             if canonical in allowed_web_reader_urls:
                                 accepted_urls.append(allowed_web_reader_urls[canonical])
-                        tool_args["urls"] = list(dict.fromkeys(accepted_urls))[:5]
-                    result = await execute_tool(
-                        tool_name,
-                        tool_args,
-                        signal,
-                        preview_workspace,
-                        allow_workspace_edit,
-                        bound_tool_names,
-                        vscode_project_context,
-                    )
+                        tool_args["urls"] = list(dict.fromkeys(accepted_urls))[:MAX_READER_PAGES]
+                    cache_key = search_context.key(tool_name, tool_args)
+                    may_reuse = tool_name in bound_tool_names and not (signal and signal.is_set())
+                    cached_result = search_context.get(cache_key) if may_reuse else None
+                    started = asyncio.get_running_loop().time()
+                    if tool_name == "web_reader":
+                        async def fetch_reader(updated_args):
+                            return await execute_tool(tool_name, updated_args, signal, preview_workspace,
+                                                      allow_workspace_edit, bound_tool_names, vscode_project_context)
+                        result = await reader_context.invoke(
+                            tool_args, fetch_reader,
+                            lambda: tool_name in bound_tool_names and not (signal and signal.is_set()),
+                        )
+                    elif cached_result is not None:
+                        result = cached_result
+                    else:
+                        source_token = revision_source.set(presentation_context if
+                            ppt_context_data and ppt_context_data.get("mode") == "revision" else None)
+                        try:
+                            result = await execute_tool(
+                                tool_name, tool_args, signal, preview_workspace,
+                                allow_workspace_edit, bound_tool_names, vscode_project_context,
+                            )
+                        finally:
+                            revision_source.reset(source_token)
+                        if may_reuse and not (signal and signal.is_set()):
+                            search_context.remember(cache_key, result)
+                    if cache_key:
+                        print(f"[SearchReuse] tool={tool_name} cache_hit={str(cached_result is not None).lower()} "
+                              f"elapsed_ms={round((asyncio.get_running_loop().time() - started) * 1000)}")
                     _notify_tool_call(
                         callbacks,
                         preview_name or tool_name,
@@ -974,6 +1132,8 @@ async def run_agent(
                                     "read_pages": len(pages),
                                     "failed_pages": len(reader_payload.get("failures") or []),
                                     "success": web_reader_succeeded,
+                                    "cache_hits": sum(bool(page.get("cache_hit")) for page in pages if isinstance(page, dict)),
+                                    "truncated_pages": sum(bool(page.get("body_truncated")) for page in pages if isinstance(page, dict)),
                                 }, ensure_ascii=False))
                         except (json.JSONDecodeError, TypeError, AttributeError):
                             web_reader_succeeded = False
@@ -1083,7 +1243,10 @@ async def run_agent(
                             "sourceDomains": payload.get("source_domains", payload.get("searched_domains", [])),
                             "githubSkillUsed": payload.get("github_skill_used", False),
                             "githubSkillStatus": payload.get("github_skill_status", "not_requested"),
-                            "trace": payload.get("trace", []),
+                            # Reused sources remain visible, but must not be
+                            # reported as a second set of provider executions.
+                            "cacheHit": cached_result is not None,
+                            "trace": [] if cached_result is not None else payload.get("trace", []),
                         },
                     })
 
@@ -1096,6 +1259,10 @@ async def run_agent(
                 # return a JSON array. Only object-shaped tool results carry
                 # side effects such as downloads or Preview file updates.
                 parsed = parsed_result if isinstance(parsed_result, dict) else {}
+                # Applied edits are still real Diff records when native save fails.
+                # Keep them separate from the successful-operation summary below.
+                if vscode_project_context and parsed.get("code") == "FILE_SAVE_FAILED":
+                    workspace_save_errors.append(str(parsed.get("error") or "文件保存失败。"))
                 if vscode_project_context and tool_name in {
                     "patch_project_file", "batch_patch_project_files", "write_project_file",
                     "create_project_file", "delete_project_file", "create_project_directory",
@@ -1156,6 +1323,7 @@ async def run_agent(
                             "type": "project_file_changed",
                             "path": change["path"],
                             "diff": change["diff"],
+                            "pending": parsed.get("pending") is True,
                         })
                 if tool_name in {"edit_project_file", "create_project_file"} and parsed.get("success") and vscode_project_context is None:
                     changed_path = parsed["path"]
@@ -1259,6 +1427,10 @@ async def run_agent(
             # `messages` is scoped to this run_agent invocation. Preview tool
             # outputs are available for follow-up model steps in this run only;
             # routes.chat persists only user/assistant prose and compact diffs.
+            if search_payload and search_context.healthy(search_payload):
+                tool_result_for_context = search_context.compact_search(tool_result_for_context)
+            elif tool_name == "web_reader":
+                tool_result_for_context = compact_reader(tool_result_for_context)
             messages.append(ToolMessage(
                 tool_call_id=tc.get("id", ""),
                 content=tool_result_for_context,
@@ -1340,6 +1512,9 @@ async def run_agent(
             break
 
     if iterations <= 0:
+        if vscode_project_context and workspace_save_errors:
+            await stream_content("文件修改已应用，但保存未全部完成，请检查 VS Code 编辑器及 Diff。\n"
+                                 + "\n".join(dict.fromkeys(workspace_save_errors)), send_event)
         send_event({"type": "token", "content": "\n\n（已达到最大工具调用轮次限制）"})
 
     if negotiator.denied and not (signal and signal.is_set()):
@@ -1432,7 +1607,8 @@ async def execute_tool(
                     result = await dispatch_project_tool(context, canonical_name, tool_args)
                     return json.dumps(result, ensure_ascii=False, default=str)
                 except ProjectAPIError as error:
-                    return json.dumps({"success": False, "code": error.code, "error": error.message}, ensure_ascii=False)
+                    return json.dumps({"success": False, "code": error.code, "error": error.message,
+                        **({"details": error.details} if error.details else {})}, ensure_ascii=False)
             if tool_name == "read_project_file" and allow_workspace_edit:
                 return str(await legacy_read_project_file.ainvoke({"path": tool_args.get("path", "")}))
             if tool_name == "create_project_file" and allow_workspace_edit:

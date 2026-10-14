@@ -30,6 +30,7 @@ function copyChatAssets() {
 }
 
 export default defineConfig({
+  worker: { format: 'es' },
   root,
   base: './',
   publicDir: false,

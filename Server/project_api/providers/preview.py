@@ -37,6 +37,41 @@ class PreviewProjectProvider:
     def __init__(self, service: PreviewProjectService):
         self._service = service
 
+    async def inspect_files(self, ref, paths):
+        from project_api.changes import snapshot
+        from project_api.types import ProjectAPIError
+        from services.preview.workspace import normalize_virtual_path
+        if not self._matches(ref):
+            raise ProjectAPIError("PROJECT_NOT_FOUND", "虚拟项目不匹配。")
+        workspace = self._service._workspace
+        return {normalize_virtual_path(path): snapshot(workspace.files.get(normalize_virtual_path(path)),
+                                                     workspace.revision) for path in paths}
+
+    async def restore_files(self, ref, targets):
+        from project_api.changes import conflict
+        from project_api.types import ProjectAPIError
+        from services.preview.workspace import PreviewProjectWorkspace
+        workspace = self._service._workspace
+        current = await self.inspect_files(ref, [f["path"] for f in targets])
+        if any(conflict(current[f["path"]], f["after"]) for f in targets):
+            raise ProjectAPIError("VERSION_CONFLICT", "虚拟项目已变化，未撤销。")
+        staged = dict(workspace.files)
+        for file in targets:
+            if file["before"]["content"] is None:
+                staged.pop(file["path"], None)
+            else:
+                staged[file["path"]] = file["before"]["content"]
+        # Validate the whole resulting VFS, then one commit without an await gap.
+        restored = PreviewProjectWorkspace.from_request({"id": ref.project_id, "template": workspace.template,
+            "files": staged, "revision": workspace.revision + 1})
+        commit = getattr(self, "commit_restore", None)
+        if commit:
+            await commit(restored)
+        workspace.files = restored.files
+        workspace.revision = restored.revision
+        self.undo_version = workspace.revision
+        return [{"fileId": f["id"], "path": f["path"], "success": True, "changed": True} for f in targets]
+
     def _matches(self, project_ref: ProjectRef) -> bool:
         return project_ref.provider == "preview" and project_ref.project_id == self._service.project_id
 

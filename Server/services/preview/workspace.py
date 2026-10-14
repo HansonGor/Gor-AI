@@ -64,7 +64,7 @@ class PreviewProjectWorkspace:
 
     def diff_from_initial(self, path: str) -> str:
         normalized = normalize_virtual_path(path)
-        return _diff(normalized, self.initial_files.get(normalized, ""), self.files[normalized])
+        return _diff(normalized, self.initial_files.get(normalized, ""), self.files.get(normalized, ""))
 
     @classmethod
     def from_request(cls, project: dict | None) -> "PreviewProjectWorkspace | None":

@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 from langchain_core.tools import tool
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from storage import GENERATED_ROOT, ensure_storage_dirs
 from tools.presentation_design import MAX_QA_ROUNDS, PresentationDesign, anti_ai_pattern_report, apply_deterministic_fixes, compose_design, run_visual_qa, story_outline
@@ -18,6 +18,7 @@ from tools.presentation_render import RenderedSlide, create_render_provider
 from tools.presentation_critique import apply_safe_critique_patches, critique_rendered_slides
 from tools.presentation_motion import direct_motion, SlideTransition, inspect_motion
 from tools.presentation_reference import PublicIndexedReferenceProvider, apply_reference_system
+from tools.presentation_revision import PresentationRevision, merge_revision, revision_source, restore_unaffected
 
 
 def create_presentation_asset_provider() -> PresentationAssetProvider:
@@ -27,7 +28,14 @@ def create_presentation_asset_provider() -> PresentationAssetProvider:
 
 class CreatePptInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    presentation: PresentationDesign
+    presentation: PresentationDesign | None = None
+    revision: PresentationRevision | None = None
+
+    @model_validator(mode="after")
+    def exactly_one_input(self):
+        if (self.presentation is None) == (self.revision is None):
+            raise ValueError("新稿传 presentation，修改传 revision，必须且只能选择一种。")
+        return self
 
 
 def _photo_extension(image_bytes: bytes) -> str | None:
@@ -38,16 +46,20 @@ def _photo_extension(image_bytes: bytes) -> str | None:
     return None
 
 
-def build_presentation_artifact(raw_presentation: dict) -> dict:
+def build_presentation_artifact(raw_presentation: dict, *, affected_slides: set[str] | None = None) -> dict:
     # Recompute the weighted source plan and fetch only public-indexed page
     # metadata before deterministic composition. No template file is downloaded.
     initial = PresentationDesign.model_validate(raw_presentation)
-    design, qa = apply_deterministic_fixes(apply_reference_system(
+    def preserve(candidate):
+        return restore_unaffected(candidate, initial, affected_slides) if affected_slides is not None else candidate
+    local_revision = affected_slides is not None and affected_slides != {slide.id for slide in initial.slides}
+    reference_design = (initial if local_revision and initial.referencePlan else apply_reference_system(
         initial, provider=PublicIndexedReferenceProvider()
     ))
+    design, qa = apply_deterministic_fixes(reference_design)
     if not qa["passed"]:
         raise ValueError("Presentation Visual QA 未通过：" + "；".join(issue["message"] for issue in qa["issues"] if issue["severity"] == "error"))
-    design = compose_design(ensure_presentation_image_queries(design))
+    design = preserve(compose_design(ensure_presentation_image_queries(design)))
 
     artifact_id = str(uuid.uuid4())
     project_id = str(uuid.uuid4())
@@ -78,8 +90,12 @@ def build_presentation_artifact(raw_presentation: dict) -> dict:
     while rounds < MAX_QA_ROUNDS:
         rounds += 1
         design, motion_qa = direct_motion(design, set(photo_assets))
+        design = preserve(design)
         warnings = []
-        pptx_bytes = render_presentation(design, photo_assets=photo_assets, motion_warnings=warnings)
+        render_args = {"photo_assets": photo_assets, "motion_warnings": warnings}
+        if affected_slides is not None:
+            render_args["prepared"] = True
+        pptx_bytes = render_presentation(design, **render_args)
         if warnings:
             failed = {warning["slideId"] for warning in warnings}
             design = design.model_copy(update={"slides": [slide.model_copy(update={"animationTimeline": [], "transition": SlideTransition(effect="none"), "motionDisabled": True}) if slide.id in failed else slide for slide in design.slides]})
@@ -104,7 +120,7 @@ def build_presentation_artifact(raw_presentation: dict) -> dict:
             if patched.model_dump(mode="json") == design.model_dump(mode="json"):
                 break
             design, _ = apply_deterministic_fixes(patched)
-            design = compose_design(ensure_presentation_image_queries(design))
+            design = preserve(compose_design(ensure_presentation_image_queries(design)))
         except (ValueError, TypeError):
             # Invalid model-proposed edits are ignored; the original valid deck remains deliverable.
             break
@@ -206,16 +222,31 @@ def build_presentation_artifact(raw_presentation: dict) -> dict:
 
 
 @tool(args_schema=CreatePptInput)
-def create_ppt(presentation: dict) -> str:
+def create_ppt(presentation: dict | None = None, revision: dict | None = None) -> str:
     """Plan and render an editable PPTX from a semantic Presentation Design Schema.
 
     The assistant should first plan a narrative arc, vary slide types/layouts,
     and provide semantic content only; never supply pixel coordinates. To revise
-    a deck, start from the latest schema in conversation context, change only
-    requested content/theme, and call this tool again to create a new snapshot.
+    a deck, use revision with the exact baseFingerprint from the request's
+    presentation-schema-data. updates contains slideId and changes (changed
+    fields only; nested objects merge, lists replace). deckChanges changes global
+    fields, appendSlides adds complete slides, removeSlideIds deletes exact IDs.
+    Untouched pages are retained server-side. Never reconstruct a whole deck from
+    a partial context. New decks use the full presentation parameter. Supply
+    exactly one parameter. Both paths generate a new independent snapshot.
     """
     try:
-        artifact = build_presentation_artifact(presentation)
+        if revision is not None:
+            presentation, affected = merge_revision(revision_source.get(), revision)
+            artifact = build_presentation_artifact(presentation, affected_slides=affected)
+        elif presentation is not None:
+            source = revision_source.get()
+            if source and not {slide["id"] for slide in source.get("slides", [])}.issubset(
+                    {slide.get("id") for slide in presentation.get("slides", [])}):
+                raise ValueError("完整 presentation 缺少原稿页面；局部修改或删除请使用 revision 补丁，不能用部分上下文覆盖整稿。")
+            artifact = build_presentation_artifact(presentation)
+        else:
+            raise ValueError("缺少 PPT 内容或修改补丁。")
         return json.dumps(artifact, ensure_ascii=False)
     except Exception as exc:
         return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)

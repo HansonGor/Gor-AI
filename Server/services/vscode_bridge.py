@@ -193,7 +193,8 @@ class VSCodeBridgeClient:
             error = message.get("error") if isinstance(message.get("error"), dict) else {}
             code = error.get("code") if isinstance(error.get("code"), str) else "WORKSPACE_REQUEST_FAILED"
             text = error.get("message") if isinstance(error.get("message"), str) else "VS Code 工作区请求失败。"
-            pending.future.set_exception(ProjectAPIError(code, text))
+            details = error.get("details") if isinstance(error.get("details"), dict) else None
+            pending.future.set_exception(ProjectAPIError(code, text, details))
         return True
 
     def disconnect_workspace(self, workspace_id: str, websocket: Any) -> None:

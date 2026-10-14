@@ -10,6 +10,7 @@ import {
 } from './files';
 import { applyProjectPatches, patchProjectFile, writeProjectFile } from './edits';
 import { normalizeWorkspaceRelativePath, WorkspaceRequestError } from './paths';
+import { inspectFiles, restoreFiles, validateExpected } from './changes';
 
 export type WorkspaceRequestPacket = {
   type: 'workspace_request';
@@ -25,8 +26,11 @@ export type WorkspaceResponsePacket = {
   workspaceId: string;
   success: boolean;
   result?: unknown;
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; details?: Record<string, unknown> };
 };
+
+// Serialize Agent RPC operations across handler instances; manual edits remain native.
+let workspaceRequests: Promise<void> = Promise.resolve();
 
 export class WorkspaceRequestHandler {
   constructor(
@@ -35,6 +39,16 @@ export class WorkspaceRequestHandler {
   ) {}
 
   async handle(
+    request: WorkspaceRequestPacket,
+    currentWorkspaceId: string | undefined,
+    send: (response: WorkspaceResponsePacket) => boolean,
+  ): Promise<void> {
+    const task = workspaceRequests.then(() => this.execute(request, currentWorkspaceId, send));
+    workspaceRequests = task.catch(() => undefined);
+    return task;
+  }
+
+  private async execute(
     request: WorkspaceRequestPacket,
     currentWorkspaceId: string | undefined,
     send: (response: WorkspaceResponsePacket) => boolean,
@@ -85,8 +99,8 @@ export class WorkspaceRequestHandler {
     let releaseExpectedTreeMutation: (() => void) | undefined;
     try {
       const maxRequestChars = method === 'project.patchFile' || method === 'project.applyPatches'
-        || method === 'project.writeFile' || method === 'project.createFile'
-        ? 2_200_000
+        || method === 'project.writeFile' || method === 'project.createFile' || method === 'project.restoreFiles'
+        ? 24_000_000
         : 16_000;
       if (JSON.stringify(params).length > maxRequestChars) {
         throw new WorkspaceRequestError('WORKSPACE_REQUEST_FAILED', '工作区请求参数过大。');
@@ -97,7 +111,37 @@ export class WorkspaceRequestHandler {
         releaseExpectedTreeMutation = this.expectTreeMutation?.(method, params);
       }
       let result: Record<string, unknown>;
+      const groups = Array.isArray(params.changeExpectedGroups)
+        ? params.changeExpectedGroups as Array<{ root: unknown; files: Record<string, { version: number | null }> }> : [];
+      for (const group of groups) await validateExpected({ root: group.root }, group.files as never);
+      if (groups.length && Array.isArray(params.patches)) {
+        params.patches = params.patches.map((value) => {
+          const patch = value as Record<string, unknown>;
+          const group = groups.find(g => g.root === (patch.root ?? params.root));
+          return { ...patch, expectedFileVersion: patch.expectedFileVersion ??
+            group?.files[normalizeWorkspaceRelativePath(patch.path)]?.version };
+        });
+      }
+      if (params.changeExpected) {
+        await validateExpected(params, params.changeExpected as never);
+        const expected = params.changeExpected as Record<string, { version: number | null }>;
+        if (method === 'project.applyPatches' && Array.isArray(params.patches)) {
+          params.patches = params.patches.map((value) => {
+            const patch = value as Record<string, unknown>;
+            const state = expected[normalizeWorkspaceRelativePath(patch.path)];
+            return { ...patch, expectedFileVersion: patch.expectedFileVersion ?? state?.version };
+          });
+        } else if (typeof params.path === 'string') {
+          params.expectedFileVersion ??= expected[normalizeWorkspaceRelativePath(params.path)]?.version;
+        }
+      }
       switch (method) {
+        case 'project.inspectFiles':
+          result = await inspectFiles(params);
+          break;
+        case 'project.restoreFiles':
+          result = await restoreFiles(params);
+          break;
         case 'project.listFiles':
           result = await listProjectFiles(params);
           break;
@@ -131,6 +175,15 @@ export class WorkspaceRequestHandler {
         default:
           throw new WorkspaceRequestError('UNSUPPORTED_OPERATION', '该 VS Code Workspace 操作尚未开放。');
       }
+      if (params.changeExpected) {
+        result.changeSnapshots = (await inspectFiles({ root: params.root,
+          paths: Object.keys(params.changeExpected as object) })).files;
+      }
+      if (groups.length) {
+        result.changeSnapshotGroups = [];
+        for (const group of groups) (result.changeSnapshotGroups as unknown[]).push({ root: group.root,
+          files: (await inspectFiles({ root: group.root, paths: Object.keys(group.files) })).files });
+      }
       response = { type: 'workspace_response', requestId, workspaceId, success: true, result };
       const changed = result.changed === true;
       this.output.appendLine((changed && (method === 'project.patchFile' || method === 'project.applyPatches' || method === 'project.writeFile'))
@@ -142,9 +195,26 @@ export class WorkspaceRequestHandler {
       const known = error instanceof WorkspaceRequestError
         ? error
         : new WorkspaceRequestError('WORKSPACE_REQUEST_FAILED', 'VS Code Workspace 请求失败。');
+      if (params.changeExpected && known.details) {
+        try {
+          known.details.changeSnapshots = (await inspectFiles({ root: params.root,
+            paths: Object.keys(params.changeExpected as object) })).files;
+        } catch { /* The original error remains authoritative. */ }
+      }
+      if (Array.isArray(params.changeExpectedGroups) && known.details) {
+        try {
+          const snapshots = [];
+          for (const value of params.changeExpectedGroups) {
+            const group = value as { root: unknown; files: object };
+            snapshots.push({ root: group.root,
+              files: (await inspectFiles({ root: group.root, paths: Object.keys(group.files) })).files });
+          }
+          known.details.changeSnapshotGroups = snapshots;
+        } catch { /* Preserve the original failure and Diff. */ }
+      }
       response = {
         type: 'workspace_response', requestId, workspaceId, success: false,
-        error: { code: known.code, message: known.message },
+        error: { code: known.code, message: known.message, ...(known.details ? { details: known.details } : {}) },
       };
       if (known.code === 'VERSION_CONFLICT') {
         let conflictPath = safePath;

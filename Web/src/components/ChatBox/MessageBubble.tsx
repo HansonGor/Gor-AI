@@ -1,19 +1,16 @@
+import { isToolStatusInThinking } from '../../utils/thinking';
 ﻿// 单条消息气泡
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   Box,
   ChevronRight,
-  BarChart3,
   Code2,
   Eye,
   ExternalLink,
-  FileSearch,
   FileSpreadsheet,
   FileText,
   Globe2,
   LoaderCircle,
-  Link2,
-  Search,
   Sparkles,
   Paperclip,
   Presentation,
@@ -22,83 +19,21 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { MODEL_CONFIG } from '../../config';
+import { markdownCodeComponents } from '../chat/MarkdownCodeBlock';
+import { MODEL_CONFIG, LAYOUT_CONFIG } from '../../config';
 import { previewArtifactName, previewSnapshotExtension } from '../../preview/core/artifactFormat';
 import { isPreviewableGeneratedFile } from '../../preview/core/previewFilePresence';
 import { extractVideoUrl, removeVideoUrl, buildProxyVideoUrl } from '../../utils/video';
 import type { MessageBubbleProps, SearchSource } from '../../types';
 import { Button } from '../ui/button';
 import ProjectChanges from '../chat/ProjectChanges';
+import ThinkingPanel from '../chat/ThinkingPanel';
+import { createProjectChangeClient } from '../../api/projectChanges';
+import { createWebProjectChangeClient } from '../../api/webProjectChanges';
+import { getChatClientMode } from '../../utils/clientMode';
+import { useFeedback } from '../ui/feedback';
 
 const QUOTA_WARNING_THRESHOLD = MODEL_CONFIG.QUOTA_WARNING_THRESHOLD;
-
-function ExecutionTimeline({
-  phase = 'thinking',
-  toolName,
-  status,
-}: {
-  phase?: NonNullable<MessageBubbleProps['message']['executionPhase']>;
-  toolName?: string;
-  status?: string;
-}) {
-  const toolLabels: Record<string, string> = {
-    web_search: '联网搜索',
-    search_web: '联网搜索',
-    search_images: '图片搜索',
-    github_code_search: '代码搜索',
-    create_ppt: '生成演示文稿',
-    generate_xiaoyunque_video: '生成视频',
-  };
-  const normalizedToolName = toolName?.toLowerCase() ?? '';
-  const toolLabel = toolLabels[normalizedToolName] || toolName?.replace(/[_-]+/g, ' ') || '相关工具';
-  const statusText = status?.startsWith('正在调用 ')
-    ? `正在调用：${toolLabel}`
-    : status;
-  const hasTool = Boolean(toolName);
-  const isSearch = /search|搜索|检索/i.test(toolName ?? '');
-  const activeStep = phase === 'thinking' ? 1 : phase === 'tool' ? 2 : phase === 'summarizing' ? 3 : 4;
-  const stepTitles = isSearch
-    ? ['正在搜索关键词', '查看相关网页', '分析内容并整理要点', '生成最终回答']
-    : ['分析并理解需求', '准备执行任务', '整合执行结果', '生成最终回答'];
-  const steps = stepTitles.map((title, index) => {
-    const descriptions = isSearch
-      ? [
-          '提取问题重点与检索词',
-          statusText || '搜索匹配的网页与资料',
-          '筛选有效信息，归纳关键结论',
-          '组织清晰、完整的回答',
-        ]
-      : [
-          '梳理目标与当前对话上下文',
-          hasTool ? '已确定需要执行的操作' : '本次问题无需外部工具',
-          statusText || `整理${toolLabel}结果与重点`,
-          '组织清晰、完整的回答',
-        ];
-    const icons = isSearch ? [Search, Link2, FileText, BarChart3] : [Search, Globe2, FileSearch, Sparkles];
-    return { title, description: descriptions[index], Icon: icons[index] };
-  });
-  const currentStep = steps[Math.min(activeStep, steps.length) - 1];
-  const CurrentStepIcon = currentStep.Icon;
-
-  return (
-    <section className="execution-timeline" aria-label="助手执行进度" aria-live="polite">
-      <ol className="execution-steps">
-        <li className="execution-step is-active">
-          <span className="execution-step-rail" aria-hidden="true">
-            <span className="execution-step-node">
-              <span className="execution-step-node-empty" />
-            </span>
-          </span>
-          <span className="execution-step-copy">
-            <strong>{currentStep.title}</strong>
-            <small>{currentStep.description}</small>
-          </span>
-          <span className="execution-step-icon"><CurrentStepIcon aria-hidden="true" /></span>
-        </li>
-      </ol>
-    </section>
-  );
-}
 
 function GeneratedFileIcon({ type }: { type: string }) {
   if (type === 'word' || type === 'pdf') return <FileText aria-hidden="true" />;
@@ -240,8 +175,28 @@ export default function MessageBubble({
   onPreviewProject,
   onPreviewAttachment,
 }: MessageBubbleProps) {
+  const { notify } = useFeedback();
+  const projectChangeClient = useMemo(() => {
+    const target = message.projectChangeSet;
+    if (!target || !target.sessionId
+      || (target.provider === 'preview' ? 'web' : 'vscode') !== getChatClientMode()) return undefined;
+    return target.provider === 'preview'
+      ? createWebProjectChangeClient(target.sessionId)
+      : createProjectChangeClient(target.sessionId, { mode: 'vscode' });
+  }, [message.projectChangeSet?.id, message.projectChangeSet?.provider, message.projectChangeSet?.sessionId]);
+  // Responsive policy stays outside the pure Diff: narrow Web and Webview
+  // both use Unified only, including after resizing from desktop Split.
+  const [allowDiffSplit, setAllowDiffSplit] = useState(() => typeof window === 'undefined'
+    || window.innerWidth >= LAYOUT_CONFIG.PC_BREAKPOINT);
+  useEffect(() => {
+    const update = () => setAllowDiffSplit(window.innerWidth >= LAYOUT_CONFIG.PC_BREAKPOINT);
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
   const logoGradientId = useId().replace(/:/g, '');
   const isUser = message.role === 'user';
+  const codeComponents = useMemo(() => markdownCodeComponents({ streaming: message.isStreaming }), [message.isStreaming]);
   const images = message.images ?? [];
   const hasImages = isUser && images.length > 0;
   const messageTime = formatMessageTime(message);
@@ -258,7 +213,7 @@ export default function MessageBubble({
   const previewableGeneratedFiles = generatedFiles.filter((file) =>
     isPreviewableGeneratedFile(file) && (file.fileType !== '3d' || Boolean(message.previewSnapshot)),
   );
-  const hasProjectOutput = (message.previewChanges?.length ?? 0) > 0;
+  const hasProjectOutput = (message.previewChanges?.length ?? 0) > 0 || Boolean(message.previewSnapshot && message.projectChanges?.length);
   const isPresentationSnapshot = message.previewSnapshot?.template === 'presentation';
   const hasRestorableProjectOutput = Boolean(message.previewSnapshot && (hasProjectOutput || isPresentationSnapshot));
   const snapshotArtifactSummary = hasRestorableProjectOutput && message.previewSnapshot
@@ -302,6 +257,7 @@ export default function MessageBubble({
     : '';
   const visibleUserContent = message.content === attachmentOnlyLabel ? '' : displayContent;
   const showExecutionTimeline = !isUser && Boolean(message.isStreaming && message.executionPhase);
+  const hasThinking = !isUser && Boolean(message.thinkingTrace?.rounds.length);
 
   return (
     <div
@@ -365,13 +321,7 @@ export default function MessageBubble({
           </div>
         )}
 
-        {showExecutionTimeline && (
-          <ExecutionTimeline
-            phase={message.executionPhase}
-            toolName={message.executionToolName}
-            status={message.toolStatus}
-          />
-        )}
+        {hasThinking && message.thinkingTrace && <ThinkingPanel trace={message.thinkingTrace} />}
 
         {showExecutionTimeline && !displayContent && (
           <div className="assistant-loading-indicator" role="status" aria-label="正在生成回答">
@@ -392,18 +342,20 @@ export default function MessageBubble({
             <span className="message-content whitespace-pre-wrap">{visibleUserContent}</span>
           ) : (
             <div className="message-content markdown-body">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayContent}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={codeComponents}>{displayContent}</ReactMarkdown>
             </div>
           ))}
 
         {!isUser && !message.isStreaming && message.projectChanges && message.projectChanges.length > 0 && (
-          <ProjectChanges changes={message.projectChanges} label="本次代码修改"
-            title={`本次变更 ${message.projectChanges.length} 个文件`} />
+          <ProjectChanges changes={message.projectChanges} label="本次代码修改" allowSplit={allowDiffSplit}
+            title={`本次变更 ${message.projectChanges.length} 个文件`}
+            changeSetId={message.projectChangeSet?.id} changeClient={projectChangeClient} onNotify={notify} />
         )}
 
         {!isUser && !message.isStreaming && message.previewChanges && message.previewChanges.length > 0 && (
-          <ProjectChanges changes={message.previewChanges} label="虚拟项目文件"
+          <ProjectChanges changes={message.previewChanges} label="虚拟项目文件" allowSplit={allowDiffSplit}
             restored={message.previewChangesRestored}
+            changeSetId={message.projectChangeSet?.id} changeClient={projectChangeClient} onNotify={notify}
             title={message.previewChangesRestored
               ? `已恢复项目文件 ${message.previewChanges.length} 个`
               : `本轮更新了 ${message.previewChanges.length} 个项目文件`} />
@@ -452,7 +404,7 @@ export default function MessageBubble({
                   <Eye aria-hidden="true" />
                   <span className="project-action-copy">
                     <span className="project-action-title">{sceneArtifact ? '预览模型' : isPresentationSnapshot ? '预览演示文稿' : '预览项目'}</span>
-                    <span className="project-action-description">在预览窗口中查看效果</span>
+                    <span className="project-action-description">{'推窗见新景  笔墨生诗意'}</span>
                   </span>
                 </Button>
               )}
@@ -466,8 +418,8 @@ export default function MessageBubble({
                 >
                   <Code2 aria-hidden="true" />
                   <span className="project-action-copy">
-                    <span className="project-action-title">{sceneArtifact ? '查看场景源码' : isPresentationSnapshot ? '查看演示文稿源码' : '查看项目源码'}</span>
-                    <span className="project-action-description">打开当前项目源码</span>
+                    <span className="project-action-title">阅览源码</span>
+                    <span className="project-action-description">{'展卷寻其源  墨韵见初心'}</span>
                   </span>
                 </Button>
               )}
@@ -551,7 +503,7 @@ export default function MessageBubble({
           </div>
         )}
 
-        {!showExecutionTimeline && message.toolStatus ? (
+        {!isUser && message.toolStatus && !isToolStatusInThinking(message) ? (
           <div className="tool-status">
             <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
             <span>{message.toolStatus}</span>

@@ -1,11 +1,13 @@
 // SSE 聊天 API 封装
 import { parseSSEStream } from '../utils/sse';
+import type { ThinkingEvent, ThinkingStatus } from '../utils/thinking';
 import config from '../config';
 import { getChatClientMode, projectClientContext } from '../utils/clientMode';
 import type { Session, TokenUsage, ModelQuotaInfo, ProjectChange, UploadedAttachment, SearchSource, SearchTrace } from '../types';
 import type { PreviewProject } from '../preview/core/types.ts';
 
 interface SendChatMessageParams {
+  editMode?: 'auto' | 'review';
   sessionId: string;
   message: string;
   messages?: Array<{ role: string; content: string; images?: string[]; attachments?: UploadedAttachment[] }>;
@@ -23,6 +25,7 @@ interface SendChatMessageParams {
 }
 
 interface SendChatMessageCallbacks {
+  onThinking?: (event: ThinkingEvent) => void;
   onToken?: (content: string) => void;
   onToolStart?: (name: string, args: string) => void;
   onToolEnd?: (name: string, result: string) => void;
@@ -34,6 +37,7 @@ interface SendChatMessageCallbacks {
   onModelQuotaInfo?: (quotaInfo: ModelQuotaInfo) => void;
   onProjectFileChanged?: (change: ProjectChange) => void;
   onPreviewFileChanged?: (change: { projectId: string; path: string; content: string; diff: string; revision?: number }) => void;
+  onChangeSet?: (change: { id: string; sessionId: string; provider: 'preview' | 'vscode' }) => void;
   onPreviewProjectPersisted?: (change: { projectId: string; contentRevision: number; serverRevision: number }) => void;
   onPreviewProjectCommitted?: (change: {
     projectId: string;
@@ -43,7 +47,7 @@ interface SendChatMessageCallbacks {
   }) => void | number | Promise<void | number>;
   onPreviewProjectConflict?: (message: string) => void;
   onSearchSources?: (sources: SearchSource[], searchTrace?: SearchTrace) => void;
-  onDone?: () => void;
+  onDone?: (status?: ThinkingStatus) => void;
   onError?: (error: Error) => void;
 }
 
@@ -151,7 +155,7 @@ export async function sendChatMessage(
   callbacks: SendChatMessageCallbacks = {},
   signal?: AbortSignal
 ): Promise<void> {
-  const { onToken, onToolStart, onToolEnd, onFileReady, onVideoReady, onToolProgress, onTokenUsage, onContextRemain, onModelQuotaInfo, onProjectFileChanged, onPreviewFileChanged, onSearchSources, onDone, onError } = callbacks;
+  const { onToken, onToolStart, onToolEnd, onFileReady, onVideoReady, onToolProgress, onTokenUsage, onContextRemain, onModelQuotaInfo, onProjectFileChanged, onPreviewFileChanged, onChangeSet, onSearchSources, onDone, onError } = callbacks;
   let previewCommitPayloadBytes = 0;
   let previewSyncFetchBytes = 0;
 
@@ -170,6 +174,7 @@ export async function sendChatMessage(
   let previewProjectUploadName: string | null | undefined;
   let assistantMessageId: string | undefined;
   let newPreviewProject: boolean | undefined;
+  let editMode: 'auto' | 'review' | undefined;
   if (Array.isArray(params)) {
     messages = params;
   } else {
@@ -187,6 +192,7 @@ export async function sendChatMessage(
     previewProjectUploadName = params.previewProjectUploadName;
     assistantMessageId = params.assistantMessageId;
     newPreviewProject = params.newPreviewProject;
+    editMode = params.editMode;
   }
 
   try {
@@ -201,7 +207,7 @@ export async function sendChatMessage(
       },
       body: JSON.stringify({
         sessionId, message, messages, attachments, analysisContext, analysisContextMode,
-        assistantMessageId,
+        assistantMessageId, editMode,
         ...(!vscodeMode ? { previewProjectId, previewServerRevision, previewContentRevision,
           previewProjectBootstrap, previewProjectOrigin, previewProjectUploadName, newPreviewProject } : {}),
         ...projectClientContext(clientMode, vscodeWorkspaceId),
@@ -219,6 +225,14 @@ export async function sendChatMessage(
 
     for await (const event of parseSSEStream(response.body)) {
       switch (event.type) {
+        case 'thinking_start':
+        case 'thinking_delta':
+        case 'thinking_end':
+        case 'thinking_update':
+        case 'thinking_title':
+        case 'thinking_summary_delta':
+          if (typeof event.roundId === 'string') callbacks.onThinking?.(event as ThinkingEvent);
+          break;
         case 'token':
           onToken?.(event.content || '');
           break;
@@ -252,12 +266,18 @@ export async function sendChatMessage(
           break;
         case 'project_file_changed':
           if (typeof event.path === 'string' && typeof event.diff === 'string') {
-            onProjectFileChanged?.({ path: event.path, diff: event.diff });
+            onProjectFileChanged?.({ path: event.path, diff: event.diff, ...(event.pending ? { pending: true } : {}) });
           }
           break;
         case 'preview_file_changed':
           if (typeof event.projectId === 'string' && typeof event.path === 'string' && typeof event.content === 'string' && typeof event.diff === 'string') {
             onPreviewFileChanged?.({ projectId: event.projectId, path: event.path, content: event.content, diff: event.diff, revision: event.revision });
+          }
+          break;
+        case 'change_set':
+          if (typeof event.changeSetId === 'string' && event.projectRef
+            && (event.projectRef.provider === 'preview' || event.projectRef.provider === 'vscode')) {
+            onChangeSet?.({ id: event.changeSetId, sessionId: sessionId || '', provider: event.projectRef.provider });
           }
           break;
         case 'preview_project_persisted':
@@ -349,7 +369,7 @@ export async function sendChatMessage(
           }
           break;
         case 'done':
-          onDone?.();
+          onDone?.(event.status === 'cancelled' ? 'cancelled' : 'completed');
           return;
         case 'error':
           throw new Error(event.message || '服务端错误');
@@ -357,6 +377,7 @@ export async function sendChatMessage(
           break;
       }
     }
+    if (!signal?.aborted) throw new Error('响应连接中断，未收到执行结束状态');
   } catch (err) {
     const error = err as Error;
     if (error.name === 'AbortError') {

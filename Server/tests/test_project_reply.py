@@ -5,7 +5,8 @@ def test_completion_explains_content_and_web_viewing_without_source():
     text = summarize_project_changes('生成一个 React 待办清单', ['/src/App.jsx', '/src/App.jsx', '/index.html'])
     assert 'React 项目' in text
     assert '内容是待办清单' in text
-    assert '2 个文件' in text
+    assert '此番落笔 · 二卷留痕' in text
+    assert '阅览源码' in text
     assert '预览项目' in text and 'Diff' in text
     assert '/src/' not in text and '<h1>' not in text
 
@@ -29,6 +30,14 @@ def test_subject_uses_titles_not_generic_templates_or_source():
     assert project_subject({'/index.html': '<title>New React Project</title>'}) == ''
     assert project_subject({'/src/scene.json': 'invalid'}) == ''
     assert '没有产生新的变更' in summarize_project_changes('改标题', [])
+
+
+def test_file_trace_uses_actual_unique_count_in_chinese_without_changing_directory_units():
+    paths = [f'/src/{index}.js' for index in range(9)]
+    text = summarize_project_changes('修改项目', paths + paths, provider='vscode')
+    assert '此番落笔 · 九卷留痕' in text
+    assert '本次涉及' not in text
+    assert '本次涉及 9 个目录' in summarize_project_changes('删除文件夹', paths, directories=True)
 
 
 def test_compound_summary_distinguishes_loaded_attempted_failed_and_completed_tools():

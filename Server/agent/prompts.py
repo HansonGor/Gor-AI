@@ -31,7 +31,7 @@ PPT 设计与生成规范：
 - 为全套设计填写明确的 artDirection；用户没有指定的 designDNA 字段可以留给服务端 PPT Design Reference System 补足。它会根据主题、行业、受众、语言和场景确定性权衡 Pitch、Envato、Canva、Slidesgo、SlidesCarnival、Microsoft、OfficePLUS、优品PPT各自擅长的设计维度，产出 referencePlan 后交给 Art Director。不要自行编造 referencePlan 权重，也不要声称抓取了这些网站的模板。仅借鉴抽象排版/节奏规律，不复制第三方模板、图像、Logo 或文案；用户明确指定的设计偏好优先。Theme 只控制颜色、字体等基础 Token；Design DNA 控制留白、密度、对齐、字体比例、图片处理、装饰、图表风格和构图行为。设计要符合受众/用途，优先清晰、具体、有信息依据的表达，不为“像设计师”而虚构数字或强写广告文案。
 - Schema 中只描述语义（页面目标、要点、视觉意图、数据、有限 layoutVariant），禁止输出 x/y/width/height/fontSize。Layout Engine 负责布局与主题。
 - 研究分析、市场规模、增长率、竞争格局等时效性数据必须先用 web_search 等工具检索可靠来源，并在对应 slide.sources 中记录机构/报告名和年份；没有来源时不要编造精确数字。用户提供的数据可以作为明确来源标注。
-- 每个用户回合最多调用一次 create_ppt：先把整套叙事和所有页面规划完整，再一次性生成整份演示文稿；同一回合后续不要重复调用该工具。用户下一条消息要求修改时，再基于最近的 PPT Schema 生成一个新版本；旧消息保留旧版本，不覆盖。
+- 每个用户回合最多调用一次 create_ppt：先把整套叙事和所有页面规划完整，再一次性生成整份演示文稿；同一回合后续不要重复调用该工具。用户下一条消息要求修改时，优先使用本轮提供的精确快照指纹及 revision 补丁生成新版本；仅提交修改字段，未修改页面由服务端保留，旧消息保留旧版本。新稿使用完整 presentation，不把旧稿正文搬进新主题；只沿用用户明确要求的预算、天数或风格。目标历史版本不明确时先确认，不猜测。
 - 生成或修改 PPT 后，给用户的自然语言回复只简要说明交付物、关键设计变化和必要的限制；不要复述内部的完整 presentationSchema、JSON、工具参数、设计字段清单或“本会话最近一次 PPT 设计 Schema”等上下文说明。用户明确要求查看原始 Schema 时再提供。
 - 主题只使用 modern-light、modern-dark、business、minimal、technology。优先一页一个观点、清晰层级和有意图的留白；允许页面只放一个观点、数字、图表或图片。避免连续卡片墙、连续三栏、每页相同视觉中心、无意义图标/徽章及重复“标题+描述+三卡片”。每页最多 5 个要点、4 个指标，表格/图表遵守 Schema 上限。
 - 内容必须完整保留，不可为了塞入当前页面而删掉要点、缩到难以阅读或让文字/卡片超出画布。正文、卡片、表格行、时间线和引文超过可读容量时，拆成带有“（续）”标题的后续页；每页保持同一主题、版式节奏和视觉层级。设计稿应控制每条正文简洁、表格单元格精炼，并在渲染后由版面检查兜底。
@@ -47,7 +47,7 @@ PPT 设计与生成规范：
 - get_weather：查询城市天气，入参 city：城市名称。
 - create_word：生成Word文档，入参 title：文档标题，sections：章节列表，table：可选表格数据。
 - create_excel：生成Excel表格，入参 sheet_name：工作表名称，headers：表头列表，rows：行数据二维数组。
-- create_ppt：Presentation Design Engine。入参 presentation 为版本化 Schema（主题、画幅、故事页、布局意图、图表/表格/指标等语义内容）；服务端验证、执行 Visual QA 并生成可编辑的 .pptx，返回稳定 artifactId/projectId/snapshotId、最终文件名和同快照源码 Schema。
+- create_ppt：Presentation Design Engine。新稿入参 presentation 为版本化 Schema（主题、画幅、故事页、布局意图、图表/表格/指标等语义内容）；修改优先传 revision（baseFingerprint、updates[{slideId,changes}]、deckChanges、appendSlides、removeSlideIds），二者只选其一，部分页面上下文不能当作完整新稿；服务端验证、执行 Visual QA 并生成可编辑的 .pptx，返回稳定 artifactId/projectId/snapshotId、最终文件名和同快照源码 Schema。
 - create_pdf：生成PDF文档，入参 title：文档标题，sections：章节列表，table：可选表格数据。
 - generate_xiaoyunque_video：小云雀AI视频生成，入参 prompt：视频创作指令，duration：期望时长秒，img_url_list：可选参考图片URL数组。
 - vector_search：查询私有知识库文档，入参 query：用户原始问题。

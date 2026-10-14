@@ -17,6 +17,7 @@ from routes.weather import router as weather_router
 from routes.music import router as music_router
 from routes.judge import router as judge_router
 from routes.vscode import router as vscode_router
+from routes.project_changes import router as project_changes_router
 
 
 @asynccontextmanager
@@ -70,3 +71,4 @@ app.include_router(weather_router, prefix="/api")            # GET /api/weather?
 app.include_router(music_router, prefix="/api")              # GET /api/music/random
 app.include_router(judge_router, prefix="/api")              # POST /api/judge/execute
 app.include_router(vscode_router)                              # WebSocket /ws/vscode
+app.include_router(project_changes_router, prefix="/api/chat")

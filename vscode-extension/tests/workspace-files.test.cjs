@@ -29,6 +29,10 @@ let saveCalls = 0;
 let applyCalls = 0;
 let lastWorkspaceEdit;
 let failNextApply = false;
+let saveFailures = new Set();
+let throwOnSave = new Set();
+let afterApply;
+let beforeSave;
 let diskFiles = new Map();
 let directories = new Set([rootUri.path, `${rootUri.path}/src`]);
 let trashCalls = [];
@@ -63,7 +67,15 @@ function createDocument(uri, initialText, initialVersion) {
       const text = this.content.split(/\r\n|\n|\r/)[index] ?? '';
       return { text, range: { end: new Position(index, text.length) } };
     },
-    async save() { saveCalls += 1; return true; },
+    async save() {
+      saveCalls += 1;
+      if (beforeSave) await beforeSave(this);
+      if (throwOnSave.has(this.uri.path)) throw new Error('save rejected');
+      if (saveFailures.has(this.uri.path)) return false;
+      diskFiles.set(this.uri.path, new TextEncoder().encode(this.content));
+      this.isDirty = false;
+      return true;
+    },
   };
 }
 
@@ -78,6 +90,10 @@ const workspace = {
     return [documentUri, styleUri, testUri];
   },
   fs: {
+    async readFile(uri) {
+      if (diskFiles.has(uri.path)) return diskFiles.get(uri.path);
+      throw Object.assign(new Error('File not found'), { code: 'FileNotFound' });
+    },
     async stat(uri) {
       const found = thisDocuments().find((item) => item.uri.toString() === uri.toString());
       if (found) return { type: 1, size: found.getText().length };
@@ -122,11 +138,17 @@ const workspace = {
       if (!diskFiles.delete(uri.path) && !workspace.textDocuments.some((item) => item.uri.path === uri.path)) {
         throw Object.assign(new Error('File not found'), { code: 'FileNotFound' });
       }
+      workspace.textDocuments = workspace.textDocuments.filter((item) => item.uri.path !== uri.path);
     },
   },
   async openTextDocument(uri) {
     const found = this.textDocuments.find((item) => item.uri.toString() === uri.toString());
     if (found) return found;
+    if (diskFiles.has(uri.path)) {
+      const created = createDocument(uri, new TextDecoder().decode(diskFiles.get(uri.path)), 1);
+      this.textDocuments.push(created);
+      return created;
+    }
     throw Object.assign(new Error('File not found'), { code: 'FileNotFound' });
   },
   async applyEdit(edit) {
@@ -156,6 +178,7 @@ const workspace = {
       target.version += 1;
       target.isDirty = true;
     }
+    if (afterApply) await afterApply();
     return true;
   },
   onDidChangeTextDocument() { return { dispose() {} }; },
@@ -180,6 +203,98 @@ Module._load = function (request, parent, isMain) {
 const { WorkspaceRequestHandler } = require('../out/workspace/requestHandler.js');
 Module._load = originalLoad;
 
+test('undo RPC restores one file and rejects repeated, dirty, version and hash conflicts', async () => {
+  reset();
+  const handler = new WorkspaceRequestHandler({ appendLine() {} });
+  const before = (await invoke(handler, 'project.inspectFiles', { paths: ['/src/App.tsx'] })).result.files['/src/App.tsx'];
+  const edit = await invoke(handler, 'project.writeFile', { path: '/src/App.tsx', content: 'changed',
+    changeExpected: { '/src/App.tsx': before } });
+  assert.equal(edit.success, true);
+  const after = edit.result.changeSnapshots['/src/App.tsx'];
+  const file = { id: 'f', path: '/src/App.tsx', before, after };
+  document.isDirty = true;
+  assert.equal((await invoke(handler, 'project.restoreFiles', { files: [file] })).error.code, 'FILE_HAS_UNSAVED_CHANGES');
+  document.isDirty = false;
+  document.version += 1;
+  assert.equal((await invoke(handler, 'project.restoreFiles', { files: [file] })).error.code, 'VERSION_CONFLICT');
+  document.version = after.version;
+  const wrongHash = { ...file, after: { ...after, hash: 'wrong' } };
+  assert.equal((await invoke(handler, 'project.restoreFiles', { files: [wrongHash] })).error.code, 'VERSION_CONFLICT');
+  const undone = await invoke(handler, 'project.restoreFiles', { files: [file] });
+  assert.equal(undone.result.results[0].success, true);
+  assert.equal(document.content, initialSource);
+  assert.equal(document.isDirty, false);
+  assert.equal((await invoke(handler, 'project.restoreFiles', { files: [file] })).error.code, 'VERSION_CONFLICT');
+});
+
+test('undo RPC batch blocks all conflicts and reports actual partial save failure', async () => {
+  reset();
+  const handler = new WorkspaceRequestHandler({ appendLine() {} });
+  const paths = ['/src/App.tsx', '/src/style.css'];
+  const before = (await invoke(handler, 'project.inspectFiles', { paths })).result.files;
+  for (const path of paths) assert.equal((await invoke(handler, 'project.writeFile', { path, content: 'new' })).success, true);
+  const after = (await invoke(handler, 'project.inspectFiles', { paths })).result.files;
+  const files = paths.map((path, index) => ({ id: String(index), path, before: before[path], after: after[path] }));
+  styleDocument.version += 1;
+  const count = applyCalls;
+  assert.equal((await invoke(handler, 'project.restoreFiles', { files })).success, false);
+  assert.equal(applyCalls, count);
+  styleDocument.version = after[paths[1]].version;
+  saveFailures.add(styleUri.path);
+  const result = await invoke(handler, 'project.restoreFiles', { files });
+  assert.equal(result.result.results[0].success, true);
+  assert.equal(result.result.results[1].success, false);
+  assert.equal(result.result.results[1].changed, true);
+  assert.equal(result.result.results[1].code, 'FILE_SAVE_FAILED');
+});
+
+test('undo RPC deletes created files and restores deleted files through native APIs', async () => {
+  reset();
+  const handler = new WorkspaceRequestHandler({ appendLine() {} });
+  const path = '/src/new.ts';
+  const missing = (await invoke(handler, 'project.inspectFiles', { paths: [path] })).result.files[path];
+  await invoke(handler, 'project.createFile', { path, content: 'original' });
+  const exists = (await invoke(handler, 'project.inspectFiles', { paths: [path] })).result.files[path];
+  const result = await invoke(handler, 'project.restoreFiles', { files: [{ id: 'created', path, before: missing, after: exists }] });
+  assert.equal(result.result.results[0].success, true);
+  assert.equal(diskFiles.has('/workspace/src/new.ts'), false);
+  assert.equal(trashCalls.at(-1).options.useTrash, true);
+  const absent = (await invoke(handler, 'project.inspectFiles', { paths: [path] })).result.files[path];
+  const restored = await invoke(handler, 'project.restoreFiles', { files: [{ id: 'deleted', path, before: exists, after: absent }] });
+  assert.equal(restored.result.results[0].success, true);
+  assert.equal(new TextDecoder().decode(diskFiles.get('/workspace/src/new.ts')), 'original');
+});
+
+test('journal batch keeps multiple roots and same-named files isolated', async () => {
+  reset();
+  workspace.workspaceFolders = [firstFolder, secondFolder];
+  const secondUri = Uri.joinPath(secondRootUri, 'src', 'App.tsx');
+  const secondDoc = createDocument(secondUri, 'root two original', 5);
+  workspace.textDocuments.push(secondDoc);
+  directories.add('/workspace-two/src');
+  diskFiles.set(secondUri.path, new TextEncoder().encode(secondDoc.content));
+  const handler = new WorkspaceRequestHandler({ appendLine() {} });
+  const groups = [];
+  for (const root of ['root-1', 'root-2']) {
+    groups.push({ root, files: (await invoke(handler, 'project.inspectFiles', { root, paths: ['/src/App.tsx'] })).result.files });
+  }
+  const result = await invoke(handler, 'project.applyPatches', { patches: [
+    { root: 'root-1', path: '/src/App.tsx', oldText: 'unsaved title', newText: 'root one changed' },
+    { root: 'root-2', path: '/src/App.tsx', oldText: 'root two original', newText: 'root two changed' },
+  ], changeExpectedGroups: groups });
+  assert.equal(result.success, true);
+  assert.equal(result.result.changeSnapshotGroups.length, 2);
+  assert.match(result.result.changeSnapshotGroups[0].files['/src/App.tsx'].content, /root one changed/);
+  assert.equal(result.result.changeSnapshotGroups[1].files['/src/App.tsx'].content, 'root two changed');
+  const after = result.result.changeSnapshotGroups[1].files['/src/App.tsx'];
+  const undone = await invoke(handler, 'project.restoreFiles', { root: 'root-2', files: [
+    { id: 'root-two', path: '/src/App.tsx', before: groups[1].files['/src/App.tsx'], after },
+  ] });
+  assert.equal(undone.result.results[0].success, true);
+  assert.match(document.content, /root one changed/);
+  assert.equal(secondDoc.content, 'root two original');
+});
+
 function reset() {
   document.content = initialSource;
   document.version = 7;
@@ -196,7 +311,12 @@ function reset() {
   applyCalls = 0;
   lastWorkspaceEdit = undefined;
   failNextApply = false;
+  saveFailures = new Set();
+  throwOnSave = new Set();
+  afterApply = undefined;
+  beforeSave = undefined;
   diskFiles = new Map();
+  for (const doc of workspace.textDocuments) diskFiles.set(doc.uri.path, new TextEncoder().encode(doc.content));
   directories = new Set([rootUri.path, `${rootUri.path}/src`, secondRootUri.path]);
   trashCalls = [];
 }
@@ -226,7 +346,7 @@ test('read and search use the current unsaved TextDocument and return fileVersio
   assert.match(search.result.results[0].snippet, /manually edited unsaved title/);
 });
 
-test('patch edits the latest unsaved TextDocument once, leaves it dirty, and never saves', async () => {
+test('patch applies once and saves its target, retaining the original Diff', async () => {
   reset();
   document.content = document.content.replace('unsaved title', 'unsaved counter title');
   document.version = 8;
@@ -239,10 +359,12 @@ test('patch edits the latest unsaved TextDocument once, leaves it dirty, and nev
   assert.equal(result.result.changed, true);
   assert.match(document.getText(), /Gor title/);
   assert.equal(document.version, 9);
-  assert.equal(document.isDirty, true);
+  assert.equal(document.isDirty, false);
   assert.equal(applyCalls, 1);
   assert.equal(lastWorkspaceEdit.edits.length, 1);
-  assert.equal(saveCalls, 0);
+  assert.equal(saveCalls, 1);
+  assert.equal(result.result.saved, true);
+  assert.match(new TextDecoder().decode(diskFiles.get(documentUri.path)), /Gor title/);
   assert.match(result.result.diff, /-const title = 'unsaved counter title';/);
   assert.match(result.result.diff, /\+const title = 'Gor title';/);
   assert.equal('content' in result.result, false);
@@ -303,7 +425,8 @@ test('batch validates all files then commits same-file and cross-file patches wi
   assert.equal(styleDocument.version, 5);
   assert.equal(applyCalls, 1);
   assert.equal(lastWorkspaceEdit.edits.length, 3);
-  assert.equal(saveCalls, 0);
+  assert.equal(saveCalls, 2);
+  assert.deepEqual(response.result.savedFiles, ['/src/App.tsx', '/src/style.css']);
 });
 
 test('batch failure and overlap are atomic and do not change any TextDocument', async () => {
@@ -332,7 +455,7 @@ test('batch failure and overlap are atomic and do not change any TextDocument', 
   assert.equal(applyCalls, 0);
 });
 
-test('write replaces only an existing text file via WorkspaceEdit without saving', async () => {
+test('write replaces only an existing clean file via WorkspaceEdit and saves it', async () => {
   reset();
   const handler = new WorkspaceRequestHandler({ appendLine() {} });
   const response = await invoke(handler, 'project.writeFile', {
@@ -341,17 +464,121 @@ test('write replaces only an existing text file via WorkspaceEdit without saving
   assert.equal(response.success, true);
   assert.equal(response.result.changed, true);
   assert.equal(testDocument.getText(), 'export const value = 2;\n');
-  assert.equal(testDocument.isDirty, true);
+  assert.equal(testDocument.isDirty, false);
   assert.equal(testDocument.version, 4);
   assert.equal(applyCalls, 1);
   assert.equal(lastWorkspaceEdit.edits.length, 1);
-  assert.equal(saveCalls, 0);
+  assert.equal(saveCalls, 1);
+  assert.equal(response.result.saved, true);
   assert.equal('content' in response.result, false);
 
   const missing = await invoke(handler, 'project.writeFile', { path: '/src/new.ts', content: 'new file' });
   assert.equal(missing.success, false);
   assert.equal(missing.error.code, 'FILE_NOT_FOUND');
   assert.equal(applyCalls, 1);
+});
+
+test('dirty originals reject write, patch and the entire batch without saving manual edits', async () => {
+  reset();
+  document.isDirty = true;
+  const handler = new WorkspaceRequestHandler({ appendLine() {} });
+  for (const [method, params] of [
+    ['project.writeFile', { path: '/src/App.tsx', content: 'replacement', expectedFileVersion: 7 }],
+    ['project.patchFile', { path: '/src/App.tsx', oldText: 'unsaved title', newText: 'replacement' }],
+    ['project.applyPatches', { patches: [
+      { path: '/src/style.css', oldText: 'red', newText: 'blue' },
+      { path: '/src/App.tsx', oldText: 'unsaved title', newText: 'replacement' },
+    ] }],
+  ]) {
+    const response = await invoke(handler, method, params);
+    assert.equal(response.success, false);
+    assert.equal(response.error.code, 'FILE_HAS_UNSAVED_CHANGES');
+  }
+  assert.equal(document.content, initialSource);
+  assert.equal(styleDocument.content, 'body { color: red; }\n');
+  assert.equal(applyCalls, 0);
+  assert.equal(saveCalls, 0);
+});
+
+test('false and thrown native saves return failure with applied Diff, not success', async () => {
+  for (const throws of [false, true]) {
+    reset();
+    (throws ? throwOnSave : saveFailures).add(documentUri.path);
+    const response = await invoke(new WorkspaceRequestHandler({ appendLine() {} }), 'project.patchFile', {
+      path: '/src/App.tsx', oldText: 'unsaved title', newText: 'Agent title', expectedFileVersion: 7,
+    });
+    assert.equal(response.success, false);
+    assert.equal(response.error.code, 'FILE_SAVE_FAILED');
+    assert.equal(response.error.details.saved, false);
+    assert.deepEqual(response.error.details.savedFiles, []);
+    assert.match(response.error.details.changedFiles[0].diff, /\+const title = 'Agent title'/);
+    assert.equal(document.isDirty, true);
+    assert.equal(saveCalls, 1);
+    assert.equal(new TextDecoder().decode(diskFiles.get(documentUri.path)), initialSource);
+  }
+});
+
+test('batch save continues after failure, reports partial saves and never saves unrelated dirty files', async () => {
+  reset();
+  saveFailures.add(documentUri.path);
+  testDocument.isDirty = true;
+  const response = await invoke(new WorkspaceRequestHandler({ appendLine() {} }), 'project.applyPatches', { patches: [
+    { path: '/src/App.tsx', oldText: 'unsaved title', newText: 'Agent title' },
+    { path: '/src/style.css', oldText: 'red', newText: 'blue' },
+  ] });
+  assert.equal(response.success, false);
+  assert.equal(response.error.code, 'FILE_SAVE_FAILED');
+  assert.deepEqual(response.error.details.savedFiles, ['/src/style.css']);
+  assert.deepEqual(response.error.details.failedFiles, [{ path: '/src/App.tsx', code: 'FILE_SAVE_FAILED' }]);
+  assert.equal(response.error.details.changedFiles.length, 2);
+  assert.equal(applyCalls, 1);
+  assert.equal(saveCalls, 2);
+  assert.equal(testDocument.isDirty, true);
+  assert.equal(new TextDecoder().decode(diskFiles.get(testUri.path)), 'export const value = 1;\n');
+});
+
+test('concurrent edits after apply are not saved or overwritten', async () => {
+  reset();
+  afterApply = () => { document.content += '// user edit\n'; document.version += 1; };
+  const response = await invoke(new WorkspaceRequestHandler({ appendLine() {} }), 'project.writeFile', {
+    path: '/src/App.tsx', content: 'Agent change\n', expectedFileVersion: 7,
+  });
+  assert.equal(response.success, false);
+  assert.equal(response.error.details.failedFiles[0].code, 'VERSION_CONFLICT');
+  assert.equal(saveCalls, 0);
+  assert.equal(document.content, 'Agent change\n// user edit\n');
+  assert.match(response.error.details.changedFiles[0].diff, /\+Agent change/);
+  assert.doesNotMatch(response.error.details.changedFiles[0].diff, /user edit/);
+});
+
+test('batch catches later document version changes while saving an earlier document', async () => {
+  reset();
+  beforeSave = (doc) => { if (doc === document) styleDocument.version += 2; };
+  const response = await invoke(new WorkspaceRequestHandler({ appendLine() {} }), 'project.applyPatches', { patches: [
+    { path: '/src/App.tsx', oldText: 'unsaved title', newText: 'Agent title' },
+    { path: '/src/style.css', oldText: 'red', newText: 'blue' },
+  ] });
+  assert.equal(response.success, false);
+  assert.deepEqual(response.error.details.savedFiles, ['/src/App.tsx']);
+  assert.deepEqual(response.error.details.failedFiles, [{ path: '/src/style.css', code: 'VERSION_CONFLICT' }]);
+  assert.equal(saveCalls, 1);
+  assert.equal(styleDocument.isDirty, true);
+});
+
+test('native save participants are reflected in final Diff and no-op edits do not save', async () => {
+  reset();
+  const handler = new WorkspaceRequestHandler({ appendLine() {} });
+  const noop = await invoke(handler, 'project.writeFile', { path: '/src/App.tsx', content: document.content });
+  assert.equal(noop.result.changed, false);
+  assert.equal(saveCalls, 0);
+  beforeSave = (doc) => { doc.content = doc.content.replace('Agent title', 'Formatted Agent title'); doc.version += 1; };
+  const result = await invoke(handler, 'project.patchFile', {
+    path: '/src/App.tsx', oldText: 'unsaved title', newText: 'Agent title', expectedFileVersion: 7,
+  });
+  assert.equal(result.success, true);
+  assert.match(result.result.diff, /\+const title = 'Formatted Agent title'/);
+  assert.equal(result.result.fileVersion, 9);
+  assert.equal(document.isDirty, false);
 });
 
 test('VS Code refusal to apply WorkspaceEdit returns WORKSPACE_EDIT_FAILED without saving', async () => {
@@ -374,7 +601,7 @@ test('createFile creates a new text file without overwriting and hides its conte
   const created = await invoke(handler, 'project.createFile', {
     path: '/src/new-component.tsx', content: 'export const NewComponent = () => null;',
   });
-  assert.deepEqual(created.result, { success: true, path: '/src/new-component.tsx', created: true });
+  assert.deepEqual(created.result, { success: true, path: '/src/new-component.tsx', created: true, saved: true });
   assert.equal(new TextDecoder().decode(diskFiles.get('/workspace/src/new-component.tsx')), 'export const NewComponent = () => null;');
   assert.equal(lastWorkspaceEdit.creates[0].options.overwrite, false);
   assert.equal(lastWorkspaceEdit.creates[0].options.contents instanceof Uint8Array, true);

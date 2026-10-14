@@ -9,6 +9,8 @@ import './ChatBox.less';
 
 export default function ChatBox({
   messages,
+  shareSelection,
+  shareToolbar,
   currentPreviewProject,
   input,
   setInput,
@@ -29,6 +31,9 @@ export default function ChatBox({
   hasPendingUploadSummary,
   onRemoveImportedUpload,
   onClearPendingUpload,
+  fileEditMode,
+  fileEditModeLoading,
+  onFileEditModeChange,
 }: ChatBoxProps) {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -68,12 +73,13 @@ export default function ChatBox({
         {messages.length === 0 ? (
           <WelcomeScreen onPromptClick={handleSend} />
         ) : (
-          <MessageList messages={messages} currentPreviewProject={currentPreviewProject} onPreviewFile={onPreviewFile} onPreviewProject={onPreviewProject} onPreviewAttachment={onPreviewAttachment} />
+          <MessageList shareSelection={shareSelection} messages={messages} currentPreviewProject={currentPreviewProject} onPreviewFile={onPreviewFile} onPreviewProject={onPreviewProject} onPreviewAttachment={onPreviewAttachment} />
         )}
       </div>
 
       {/* 输入区域 */}
       <div className="input-dock">
+        {shareToolbar}
         {messages.length > 0 && (
           <button
             type="button"
@@ -88,6 +94,9 @@ export default function ChatBox({
           </button>
         )}
         <InputArea
+          fileEditMode={fileEditMode}
+          fileEditModeLoading={fileEditModeLoading}
+          onFileEditModeChange={onFileEditModeChange}
           input={input}
           setInput={setInput}
           isLoading={isLoading}

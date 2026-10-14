@@ -1,6 +1,7 @@
 """ProjectProvider backed by VS Code workspace RPC."""
 
 from typing import Any
+import copy
 
 from project_api.provider import ProjectProvider
 from project_api.types import ProjectAPIError, ProjectRef
@@ -38,10 +39,64 @@ class VSCodeProjectProvider:
     ) -> Any:
         # Prime the workspace tree once per active VS Code connection and root,
         # even when the model starts with a guessed or user-provided file path.
-        await self._tree(project_ref)
+        roots = {p.get("root", project_ref.root) for p in params.get("patches", [])} if method == "project.applyPatches" else set()
+        if roots and any(root is not None for root in roots):
+            for root in roots:
+                await self._tree(ProjectRef(project_ref.project_id, project_ref.provider, root))
+        else:
+            await self._tree(project_ref)
+        from project_api.changes import current_recorder
+        recorder = current_recorder.get()
+        if recorder and recorder.edit_mode == "review":
+            from project_api.review import stage_vscode, candidate_files
+            if method in {"project.patchFile", "project.applyPatches", "project.writeFile", "project.createFile",
+                          "project.deleteFile", "project.createDirectory", "project.deleteDirectory"}:
+                return await stage_vscode(self, project_ref, method, params, recorder)
+            candidates = candidate_files(recorder, project_ref)
+            path = "/" + str(params.get("path", "")).lstrip("/")
+            if method == "project.readFile" and path in candidates:
+                state = candidates[path]
+                if state["content"] is None:
+                    raise ProjectAPIError("FILE_NOT_FOUND", "文件不存在。")
+                lines = state["content"].splitlines(keepends=True)
+                start, end = params.get("startLine"), params.get("endLine")
+                if ((start is not None and (type(start) is not int or start < 1))
+                    or (end is not None and (type(end) is not int or end < (start or 1)))):
+                    raise ProjectAPIError("INVALID_PATH", "文件读取范围无效。")
+                return {"success": True, "path": path, "content": "".join(lines[(start or 1)-1:end])
+                        if start is not None or end is not None else state["content"],
+                        "totalLines": len(lines), "fileVersion": state["version"], "pending": True}
+        if recorder and method == "project.applyPatches" and any(p.get("root") is not None for p in params.get("patches", [])):
+            return await self._recorded_root_batch(project_ref, params, recorder)
+        paths = ([p["path"] for p in params.get("patches", [])] if method == "project.applyPatches"
+                 else [params.get("path")]) if method in {
+                     "project.patchFile", "project.applyPatches", "project.writeFile",
+                     "project.createFile", "project.deleteFile"} else []
+        paths = list(dict.fromkeys(paths))
+        before = None
+        if recorder and paths:
+            before = await self.inspect_files(project_ref, paths)
+            self._check_snapshot_budget([before], method, params)
+            from project_api.changes import conflict
+            previous = copy.deepcopy(recorder.sets.get((project_ref.provider, project_ref.project_id, project_ref.root), {}))
+            for file in previous.get("files", []):
+                if file["path"] in before and conflict(before[file["path"]], file["after"]):
+                    raise ProjectAPIError("VERSION_CONFLICT", "文件在本轮修改之间发生变化，请重新发起请求。")
+            await recorder.record(project_ref, before, before, {p: "applying" for p in before})
+            params = {**params, "changeExpected": before}
         try:
             result = await self._bridge.call(project_ref.project_id, method, params)
         except ProjectAPIError as error:
+            if before is not None:
+                receipt = error.details or {}
+                after = receipt.pop("changeSnapshots", before)
+                saved = receipt.get("savedFiles", [])
+                saves = receipt.pop("saveReceipts", [])
+                await recorder.record(project_ref, before, after,
+                    {p: "applied" if p in saved and self._saved_snapshot(after[p], p, saves, receipt) else (
+                        next((f["status"] for f in previous.get("files", []) if f["path"] == p), "failed")
+                        if after[p] == before[p] and error.code not in {"WORKSPACE_REQUEST_TIMEOUT", "WORKSPACE_DISCONNECTED"}
+                        else "failed") for p in before})
             if error.code in {
                 "FILE_NOT_FOUND", "DIRECTORY_NOT_FOUND",
                 "FILE_ALREADY_EXISTS", "DIRECTORY_ALREADY_EXISTS",
@@ -53,6 +108,23 @@ class VSCodeProjectProvider:
                 except ProjectAPIError:
                     pass
             raise
+        if before is not None:
+            after = result.pop("changeSnapshots", None)
+            saves = result.pop("saveReceipts", [])
+            if after is None:
+                raise ProjectAPIError("CHANGE_RECORD_FAILED", "扩展未返回实际文件快照，请重载插件。")
+            statuses = {}
+            for path in before:
+                if before[path] == after[path]:
+                    statuses[path] = next((f["status"] for f in previous.get("files", []) if f["path"] == path), "unchanged")
+                    continue
+                safe = self._saved_snapshot(after[path], path, saves, result)
+                if method == "project.createFile":
+                    safe = safe and after[path]["content"] == params.get("content", "")
+                elif method == "project.deleteFile":
+                    safe = safe and after[path]["content"] is None
+                statuses[path] = "applied" if safe else "failed"
+            await recorder.record(project_ref, before, after, statuses)
         if mutation and isinstance(result, dict) and result.get("success") is True:
             path = result.get("path")
             if isinstance(path, str):
@@ -62,6 +134,99 @@ class VSCodeProjectProvider:
                     lambda snapshot: self._apply_tree_mutation(snapshot, mutation, path),
                 )
         return result
+
+    @staticmethod
+    def _check_snapshot_budget(groups, method, params):
+        size = sum(len((state["content"] or "").encode("utf-8")) for files in groups for state in files.values())
+        if method in {"project.writeFile", "project.createFile"}:
+            size = len(params.get("content", "").encode("utf-8"))
+        elif method == "project.deleteFile":
+            size = 0
+        else:
+            patches = params.get("patches", [params])
+            size += sum(len(p.get("newText", "").encode("utf-8")) - len(p.get("oldText", "").encode("utf-8")) for p in patches)
+        if size > 2_000_000:
+            raise ProjectAPIError("FILE_TOO_LARGE", "变更后快照超过 2 MB 安全预算，未执行操作。")
+
+    @staticmethod
+    def _saved_snapshot(state, path, saves, receipt):
+        if state.get("dirty"):
+            return False
+        if saves:
+            return any(s.get("path") == path and s.get("identity") == state.get("identity")
+                and s.get("hash") == state.get("hash") and s.get("version") == state.get("version")
+                and s.get("saved") for s in saves)
+        expected = receipt.get("fileVersions", {}).get(path, receipt.get("fileVersion", state["version"]))
+        return expected == state["version"]
+
+    async def _recorded_root_batch(self, ref, params, recorder):
+        """Keep existing multi-root batch atomicity; journal each ProjectRef root separately."""
+        from project_api.changes import current_recorder, conflict
+        roots = {}
+        for patch in params["patches"]:
+            roots.setdefault(patch.get("root", ref.root), []).append(patch["path"])
+        groups = []
+        for root, paths in roots.items():
+            group_ref = ProjectRef(ref.project_id, ref.provider, root)
+            before = await self.inspect_files(group_ref, list(dict.fromkeys(paths)))
+            previous = copy.deepcopy(recorder.sets.get((ref.provider, ref.project_id, root), {}))
+            for file in previous.get("files", []):
+                if file["path"] in before and conflict(before[file["path"]], file["after"]):
+                    raise ProjectAPIError("VERSION_CONFLICT", "文件在本轮修改之间发生变化。")
+            groups.append({"root": root, "files": before, "previous": previous})
+        if sum(len((state["content"] or "").encode("utf-8")) for group in groups for state in group["files"].values()) > 2_000_000:
+            raise ProjectAPIError("FILE_TOO_LARGE", "变更快照超过 2 MB 安全预算，未执行操作。")
+        self._check_snapshot_budget([group["files"] for group in groups], "project.applyPatches", params)
+        for group in groups:
+            await recorder.record(ProjectRef(ref.project_id, ref.provider, group["root"]),
+                group["files"], group["files"], {p: "applying" for p in group["files"]})
+        token = current_recorder.set(None)
+        error = None
+        try:
+            try:
+                result = await self._call(ref, "project.applyPatches", {**params,
+                    "changeExpectedGroups": [{"root": g["root"], "files": g["files"]} for g in groups]})
+            except ProjectAPIError as exc:
+                error = exc
+                result = exc.details or {}
+        finally:
+            current_recorder.reset(token)
+        after_groups = result.pop("changeSnapshotGroups", [])
+        saves = result.pop("saveReceipts", [])
+        for group in groups:
+            before = group["files"]
+            after = next((g["files"] for g in after_groups if g["root"] == group["root"]), before)
+            statuses = {}
+            for path in before:
+                prior = next((f["status"] for f in group["previous"].get("files", []) if f["path"] == path), "unchanged")
+                if error:
+                    statuses[path] = "applied" if path in result.get("savedFiles", []) and self._saved_snapshot(after[path], path, saves, result) else (
+                        prior if after[path] == before[path] and error.code not in {"WORKSPACE_REQUEST_TIMEOUT", "WORKSPACE_DISCONNECTED"}
+                        else "failed")
+                else:
+                    statuses[path] = prior if after_groups and before[path] == after[path] else (
+                        "failed" if not after_groups or not self._saved_snapshot(after[path], path, saves, result) else "applied")
+            await recorder.record(ProjectRef(ref.project_id, ref.provider, group["root"]), before, after, statuses)
+        if error:
+            raise error
+        if not after_groups:
+            raise ProjectAPIError("CHANGE_RECORD_FAILED", "扩展未返回根目录快照，请重载插件。")
+        return result
+
+    async def inspect_files(self, ref, paths):
+        self._validate(ref)
+        result = await self._bridge.call(ref.project_id, "project.inspectFiles", {"paths": paths, "root": ref.root})
+        return result["files"]
+
+    async def restore_files(self, ref, targets):
+        self._validate(ref)
+        result = await self._bridge.call(ref.project_id, "project.restoreFiles", {"files": targets, "root": ref.root})
+        try:
+            await self._tree(ref, refresh=True)
+        except ProjectAPIError:
+            # A disconnected tree refresh cannot erase already received save results.
+            pass
+        return result["results"]
 
     @staticmethod
     def _apply_tree_mutation(snapshot: dict[str, Any], operation: str, path: str) -> None:
@@ -91,7 +256,18 @@ class VSCodeProjectProvider:
             raise ProjectAPIError("WORKSPACE_NOT_FOUND", "VS Code 工作区标识无效。")
 
     async def list_files(self, project_ref: ProjectRef) -> dict[str, Any]:
-        return await self._tree(project_ref)
+        result = await self._tree(project_ref)
+        from project_api.changes import current_recorder
+        from project_api.review import candidate_files
+        recorder = current_recorder.get()
+        if recorder and recorder.edit_mode == "review":
+            result = copy.deepcopy(result)
+            files = set(result.get("files", []))
+            for path, state in candidate_files(recorder, project_ref).items():
+                if state["content"] is None: files.discard(path)
+                else: files.add(path)
+            result["files"] = sorted(files)
+        return result
 
     async def search_code(
         self,
@@ -108,6 +284,24 @@ class VSCodeProjectProvider:
         )
         if not isinstance(result, (dict, list)):
             raise ProjectAPIError("WORKSPACE_REQUEST_FAILED", "VS Code 搜索响应无效。")
+        from project_api.changes import current_recorder
+        from project_api.review import candidate_files
+        recorder = current_recorder.get()
+        if recorder and recorder.edit_mode == "review":
+            candidates = candidate_files(recorder, project_ref)
+            # Native search may describe a deleted/replaced original. Never expose
+            # those stale hits as candidate code; overlay uses the same literal query.
+            key = "matches" if isinstance(result, dict) and "matches" in result else "results"
+            matches = result.get(key, []) if isinstance(result, dict) else result
+            matches = [item for item in matches if item.get("path") not in candidates]
+            for candidate_path, state in candidates.items():
+                if state["content"] is None or (path and not candidate_path.startswith("/" + path.lstrip("/"))):
+                    continue
+                for index, line in enumerate(state["content"].splitlines(), 1):
+                    if query in line:
+                        matches.append({"path": candidate_path, "line": index, "column": line.index(query) + 1,
+                                        "content": line[:240], "fileVersion": state["version"]})
+            result = {**result, key: matches[:max_results]} if isinstance(result, dict) else matches[:max_results]
         return result
 
     async def read_file(

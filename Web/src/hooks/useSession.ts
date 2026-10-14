@@ -2,6 +2,7 @@
 // 负责会话的创建、查询、切换、删除等操作
 import { useState, useCallback, useRef } from 'react';
 import { getChatClientMode } from '../utils/clientMode';
+import { restoreThinking } from '../utils/thinking';
 import { useFeedback } from '../components/ui/feedback';
 import {
   createSession,
@@ -10,10 +11,11 @@ import {
   deleteSession as deleteSessionApi,
 } from '../api/chat';
 import { CHAT_CONFIG } from '../config';
-import { isToday } from '../utils/date';
+import { initialSessionId } from '../utils/sessionSelection';
 import type { Session, ChatMessage } from '../types';
 import { createMessagePreviewSnapshot } from '../preview/core/projectSnapshot';
 import { restorePresentationSnapshot } from '../preview/core/presentationSnapshot';
+import { restoreChangeSetReference } from '../utils/changeSetReference';
 
 function getSessionUserId(): string {
   // The web app keeps its existing account namespace. The VS Code Webview uses
@@ -35,6 +37,11 @@ export function useSession() {
   const commitSessionId = useCallback((sid: string | null) => {
     activeSessionIdRef.current = sid;
     setSessionId(sid);
+    try {
+      const key = `gor-last-session:${getSessionUserId()}`;
+      if (sid) localStorage.setItem(key, sid);
+      else localStorage.removeItem(key);
+    } catch { /* Storage may be unavailable in a Webview; API ordering remains a fallback. */ }
   }, []);
 
   /**
@@ -53,13 +60,14 @@ export function useSession() {
   /**
    * 拉取会话列表
    */
-  const fetchSessions = useCallback(async (): Promise<Session[]> => {
+  const fetchSessions = useCallback(async (strict = false): Promise<Session[]> => {
     try {
       const list = await getSessions(getSessionUserId());
       setSessions(list);
       return list;
     } catch (err) {
       console.error('[Session] 拉取会话列表失败:', err);
+      if (strict) throw err;
       return [];
     }
   }, []);
@@ -88,12 +96,14 @@ export function useSession() {
           id: m.id || Date.now().toString(),
           role: m.role,
           content: m.content,
+          thinkingTrace: restoreThinking(m.thinking_trace),
           images: m.images || undefined,
           attachments: m.role === 'user' ? m.attachments || undefined : undefined,
           files: m.role === 'assistant' ? m.attachments || undefined : undefined,
           file: m.role === 'assistant' ? m.attachments?.[m.attachments.length - 1] || undefined : undefined,
           previewChanges: m.preview_changes || m.previewChanges || undefined,
           projectChanges: m.project_changes || m.projectChanges || undefined,
+          projectChangeSet: restoreChangeSetReference(m.project_change_sets, sid),
           previewSnapshot: (() => {
             const snapshot = m.preview_snapshot || m.previewSnapshot;
             if (!snapshot || typeof snapshot !== 'object' || !snapshot.files || typeof snapshot.files !== 'object') return undefined;
@@ -132,12 +142,12 @@ export function useSession() {
   }, []);
 
   /**
-   * 页面初始化：拉取会话列表 + 处理 URL sessionId + 每天只创建一个新会话
+   * 页面初始化：明确链接优先，否则恢复最近使用的会话；空列表才新建。
    */
   const initSession = useCallback(async (): Promise<string | null> => {
     try {
       // 1. 拉取全部会话列表
-      const sessionList = await fetchSessions();
+      const sessionList = await fetchSessions(true);
 
       // 2. 读取 URL query 参数 sessionId（优先 hash 路由内 query：#/chat?sessionId=xxx）
       const hashQuery = new URLSearchParams(window.location.hash.split('?')[1] || '');
@@ -148,31 +158,18 @@ export function useSession() {
         sid = urlParams.get('sessionId');
       }
 
-      // 3. 处理 sessionId
-      if (sid && sessionList.some((s) => s.id === sid)) {
-        // 场景1：URL 携带 sessionId 且存在于列表中
+      let lastUsed: string | null = null;
+      try { lastUsed = localStorage.getItem(`gor-last-session:${getSessionUserId()}`); } catch { /* use API ordering */ }
+      sid = initialSessionId(sessionList, sid, lastUsed);
+      if (sid) {
+        updateUrlSessionId(sid);
         commitSessionId(sid);
       } else {
-        // 场景2：URL 无 sessionId 或不存在
-        // 检查今天是否已经有会话（每天只创建一个新会话）
-        const todaySessions = sessionList.filter((s) => isToday(s.updated_at || ''));
-
-        if (todaySessions.length > 0) {
-          // 今天已有会话，使用今天最新的会话
-          sid = todaySessions[0].id;
-          updateUrlSessionId(sid);
-          commitSessionId(sid);
-          console.log('[Session] 复用今天的会话:', sid);
-        } else {
-          // 今天没有会话，创建新会话
-          const newSession = await createSession(getSessionUserId());
-          sid = newSession.id;
-          updateUrlSessionId(sid);
-          commitSessionId(sid);
-          // 刷新会话列表，追加新会话
-          await fetchSessions();
-          console.log('[Session] 创建今天的新会话:', sid);
-        }
+        const newSession = await createSession(getSessionUserId());
+        sid = newSession.id;
+        updateUrlSessionId(sid);
+        commitSessionId(sid);
+        await fetchSessions();
       }
 
       setIsSessionReady(true);

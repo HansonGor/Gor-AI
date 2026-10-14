@@ -30,6 +30,9 @@ export function useChat() {
 
   const {
     messages,
+    fileEditMode,
+    fileEditModeLoading,
+    setFileEditMode,
     input,
     setInput,
     pendingImages,
@@ -217,6 +220,9 @@ export function useChat() {
     isSessionCacheLoading,
     // 消息状态
     messages,
+    fileEditMode,
+    fileEditModeLoading,
+    setFileEditMode,
     input,
     setInput,
     pendingImages,

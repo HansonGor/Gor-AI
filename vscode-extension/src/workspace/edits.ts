@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { createHash } from 'crypto';
 import { EditableWorkspaceDocument, looksLikeBinaryContent, openEditableWorkspaceDocument } from './files';
 import { WorkspaceRequestError } from './paths';
 
@@ -56,6 +57,63 @@ function requireVersion(document: vscode.TextDocument, expected: number | undefi
     throw new WorkspaceRequestError('VERSION_CONFLICT', `文件版本已变化，请重新读取后再修改：${path}`);
   }
   return actual;
+}
+
+function requireClean(document: vscode.TextDocument, path: string): void {
+  if (document.isDirty) {
+    throw new WorkspaceRequestError('FILE_HAS_UNSAVED_CHANGES', `文件已有未保存的编辑，请先保存或撤销后再让 Agent 修改：${path}`);
+  }
+}
+
+type SaveTarget = { file: EditableWorkspaceDocument; content: string; diff?: { diff: string; diffTruncated: boolean } };
+
+/** Save only this operation's targets, not every dirty document in the workspace. */
+async function saveTargets(targets: SaveTarget[]): Promise<Record<string, unknown>> {
+  // Snapshot every target before the first awaited save; subsequent user edits
+  // (including edits undone back to identical text) must not be saved for them.
+  const versions = targets.map(({ file }) => currentFileVersion(file.document));
+  const savedFiles: string[] = [];
+  const failedFiles: Array<{ path: string; code: string }> = [];
+  const changedFiles: Array<Record<string, unknown>> = [];
+  const fileVersions: Record<string, number> = {};
+  const saveReceipts: Array<Record<string, unknown>> = [];
+  for (const [index, { file, content, diff }] of targets.entries()) {
+    // Capture the Agent change before saving so even a failed save retains its Diff.
+    let after = content;
+    let savedOk = false;
+    const current = vscode.workspace.textDocuments.find((doc) => doc.uri.toString() === file.uri.toString());
+    if (current !== file.document || current.isClosed || current.getText() !== content
+      || currentFileVersion(current) !== versions[index]) {
+      failedFiles.push({ path: file.path, code: 'VERSION_CONFLICT' });
+    } else {
+      try {
+        const saved = await current.save();
+        if (!saved || current.isDirty || current.isClosed) {
+          failedFiles.push({ path: file.path, code: 'FILE_SAVE_FAILED' });
+        } else {
+          savedFiles.push(file.path);
+          savedOk = true;
+          // Native save participants (e.g. format-on-save) may change the final text.
+          after = current.getText();
+        }
+      } catch {
+        failedFiles.push({ path: file.path, code: 'FILE_SAVE_FAILED' });
+      }
+    }
+    changedFiles.push({ path: file.path, ...(after === content && diff
+      ? diff : wholeFileUnifiedDiff(file.path, file.content, after)) });
+    fileVersions[file.path] = current ? currentFileVersion(current) : file.fileVersion;
+    saveReceipts.push({ path: file.path,
+      identity: createHash('sha256').update(file.root.uri.toString(), 'utf8').digest('hex'),
+      hash: createHash('sha256').update(after, 'utf8').digest('hex'),
+      version: fileVersions[file.path], saved: savedOk });
+  }
+  const receipt = { changed: targets.length > 0, changedFiles, fileVersions, savedFiles, failedFiles, saveReceipts, saved: !failedFiles.length };
+  if (failedFiles.length) {
+    throw new WorkspaceRequestError('FILE_SAVE_FAILED',
+      `文件修改已应用，但保存未全部完成：${failedFiles.map((item) => `${item.path} (${item.code})`).join('、')}。未自动回滚，请检查编辑器和 Diff；不要将本次操作视为成功。`, receipt);
+  }
+  return receipt;
 }
 
 function exactMatch(content: string, oldText: string, path: string): number {
@@ -238,6 +296,9 @@ export async function patchProjectFile(params: Record<string, unknown>): Promise
     success: true,
     path: changedFile?.path ?? params.path,
     changed: result.changed,
+    saved: result.saved,
+    savedFiles: result.savedFiles,
+    saveReceipts: result.saveReceipts,
     diff: changedFile?.diff ?? '',
     fileVersion: (result.fileVersions as Record<string, number> | undefined)?.[String(changedFile?.path ?? params.path)],
     ...(changedFile?.diffTruncated ? { diffTruncated: true } : {}),
@@ -281,6 +342,7 @@ export async function applyProjectPatches(params: Record<string, unknown>): Prom
     }
     const expected = expectedVersion(input.expectedFileVersion);
     requireVersion(file.document, expected, file.path);
+    requireClean(file.document, file.path);
     if (file.document.version !== prepared.version) {
       throw new WorkspaceRequestError('VERSION_CONFLICT', `文件在本次请求中发生变化，请重新读取后再修改：${file.path}`);
     }
@@ -309,6 +371,7 @@ export async function applyProjectPatches(params: Record<string, unknown>): Prom
     if (currentFileVersion(prepared.file.document) !== prepared.version) {
       throw new WorkspaceRequestError('VERSION_CONFLICT', `文件在提交前发生变化，请重新读取后再修改：${prepared.file.path}`);
     }
+    requireClean(prepared.file.document, prepared.file.path);
   }
 
   const edit = new vscode.WorkspaceEdit();
@@ -325,7 +388,21 @@ export async function applyProjectPatches(params: Record<string, unknown>): Prom
     }
   }
 
+  const targets: SaveTarget[] = [];
+  for (const prepared of preparedByUri.values()) {
+    const patches = prepared.patches.filter((patch) => patch.oldText !== patch.newText);
+    if (!patches.length) continue;
+    let content = prepared.file.content;
+    for (const patch of [...patches].sort((a, b) => b.start - a.start)) {
+      content = content.slice(0, patch.start) + patch.newText + content.slice(patch.end);
+    }
+    targets.push({ file: prepared.file, content, diff: fragmentUnifiedDiff(prepared.file.path, patches) });
+  }
   if (patchCount > 0) await applyEdit(edit);
+  if (targets.length) {
+    const saved = await saveTargets(targets);
+    return { success: true, ...saved, patchCount: inputs.length };
+  }
 
   const changedFiles: Array<Record<string, unknown>> = [];
   const fileVersions: Record<string, number> = {};
@@ -362,22 +439,27 @@ export async function writeProjectFile(params: Record<string, unknown>): Promise
   }
   const file = await openEditableWorkspaceDocument(params.path, params.root);
   const expected = expectedVersion(params.expectedFileVersion ?? params.expectedVersion);
+  requireVersion(file.document, file.fileVersion, file.path);
   const version = requireVersion(file.document, expected, file.path);
+  requireClean(file.document, file.path);
   if (file.content === params.content) {
     return { success: true, path: file.path, changed: false, diff: '', fileVersion: version };
   }
   const range = new vscode.Range(file.document.positionAt(0), file.document.positionAt(file.content.length));
   const edit = new vscode.WorkspaceEdit();
   edit.replace(file.uri, range, params.content);
+  requireVersion(file.document, version, file.path);
+  requireClean(file.document, file.path);
   await applyEdit(edit);
-  const afterDocument = vscode.workspace.textDocuments.find((doc) => doc.uri.toString() === file.uri.toString());
-  const diff = wholeFileUnifiedDiff(file.path, file.content, params.content);
+  const saved = await saveTargets([{ file, content: params.content }]);
+  const change = (saved.changedFiles as Array<Record<string, unknown>>)[0];
   return {
     success: true,
     path: file.path,
     changed: true,
-    diff: diff.diff,
-    ...(diff.diffTruncated ? { diffTruncated: true } : {}),
-    fileVersion: afterDocument ? currentFileVersion(afterDocument) : version,
+    ...saved,
+    diff: change.diff,
+    ...(change.diffTruncated ? { diffTruncated: true } : {}),
+    fileVersion: (saved.fileVersions as Record<string, number>)[file.path],
   };
 }

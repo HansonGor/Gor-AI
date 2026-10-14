@@ -48,7 +48,7 @@ def test_validate_public_url_rejects_local_or_credential_urls(url):
         reader._validate_public_url(url)
 
 
-def test_reader_deduplicates_urls_and_caps_pages_at_five(monkeypatch):
+def test_reader_deduplicates_urls_and_caps_pages_at_eight(monkeypatch):
     calls = []
 
     def fake_read(url, focus):
@@ -56,12 +56,12 @@ def test_reader_deduplicates_urls_and_caps_pages_at_five(monkeypatch):
         return {"url": url, "body": "正文内容足够长。" * 20}
 
     monkeypatch.setattr(reader, "_read_one", fake_read)
-    urls = [f"https://example.com/{number}" for number in range(7)]
+    urls = [f"https://example.com/{number}" for number in range(10)]
     result = reader.read_web_pages([urls[0], *urls], query="测试", max_pages=99)
 
-    assert len(calls) == 5
-    assert len(result["pages"]) == 5
-    assert result["requested_pages"] == 5
+    assert len(calls) == 8
+    assert len(result["pages"]) == 8
+    assert result["requested_pages"] == 8
     assert result["success"] is True
 
 
@@ -117,3 +117,52 @@ def test_tool_returns_json_with_page_fields(monkeypatch):
     monkeypatch.setattr(reader, "read_web_pages", lambda *args, **kwargs: expected)
 
     assert json.loads(reader.web_reader.invoke({"urls": ["https://example.com"]})) == expected
+
+
+def test_long_article_continuations_cover_all_characters_and_tail_facts():
+    paragraphs = [f"段落{i}：" + "新闻背景内容" * 90 for i in range(20)]
+    paragraphs.append("最终确认：正式发布日期是2026年10月14日，价格为5200元，前三季度传闻数字并不准确。")
+    html = "<article>" + "".join(f"<p>{p}</p>" for p in paragraphs) + "</article>"
+    complete = "\n\n".join(paragraphs)
+    chunks, fingerprints = [], []
+    offset = 0
+    while True:
+        page = reader._extract_article(html, "https://example.com/news", "正式发布日期", start_char=offset)
+        chunks.append(page["body"])
+        fingerprints.append(page["body_fingerprint"])
+        assert page["total_body_chars"] == len(complete)
+        assert page["body_start_char"] == offset
+        if not page["has_more"]:
+            assert page["next_start_char"] is None
+            break
+        assert page["body_truncated"] and page["reading_note"]
+        assert page["next_start_char"] > offset
+        offset = page["next_start_char"]
+    assert "".join(chunks) == complete
+    assert "5200元" in chunks[-1]
+    assert len(set(fingerprints)) == 1
+
+
+def test_short_article_is_not_marked_truncated_and_short_tail_is_valid_evidence():
+    page = reader._extract_article("<article><p>" + "完整新闻正文。" * 20 + "</p></article>", "https://example.com/news")
+    assert not page["body_truncated"] and not page["has_more"] and not page["reading_note"]
+    assert reader.page_has_evidence({"body": "最后五个字", "body_start_char": 8000, "total_body_chars": 8005})
+
+
+def test_read_timings_and_continuation_arguments_are_reported(monkeypatch, capsys):
+    seen = []
+    def read(url, focus, offset=0):
+        seen.append((url, focus, offset))
+        return {"url": url, "body": "正文" * 50, "body_truncated": True,
+                "timings": {"download_ms": 10, "extraction_ms": 2}}
+    monkeypatch.setattr(reader, "_read_one", read)
+    payload = reader.read_web_pages(["https://example.com/a"], "重点", start_char=8000)
+    assert payload["success"]
+    assert seen == [("https://example.com/a", "重点", 8000)]
+    output = capsys.readouterr().out
+    assert "ReaderTiming" in output and '"download_ms": 10' in output and '"start_char": 8000' in output
+
+
+def test_tool_rejects_negative_continuation_before_network():
+    with pytest.raises(ValueError):
+        reader.web_reader.invoke({"urls": ["https://example.com/a"], "start_char": -1})

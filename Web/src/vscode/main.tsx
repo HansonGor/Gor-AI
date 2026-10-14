@@ -7,8 +7,11 @@ import '../utils/rem';
 import '../index.less';
 import './vscode.css';
 import { installVscodeWebviewRuntime } from './vscodeRuntime';
+import { configureCodeHighlightWorker } from '../components/chat/codeHighlight/client';
+import { VscodeCodeHighlightWorker } from './codeHighlightWorker';
 
 installVscodeWebviewRuntime();
+configureCodeHighlightWorker(() => new VscodeCodeHighlightWorker());
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

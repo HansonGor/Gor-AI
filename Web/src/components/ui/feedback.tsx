@@ -41,18 +41,20 @@ export function FeedbackProvider({ children }: { children: React.ReactNode }) {
       {notice && (
         <div
           role="status"
-          className="chat-theme-toast fixed left-1/2 top-5 z-[120] flex max-w-[calc(100%-32px)] -translate-x-1/2 items-center gap-2 rounded-lg border border-white/10 px-4 py-3 text-sm text-white shadow-xl backdrop-blur-xl"
+          className="chat-theme-toast fixed left-1/2 top-5 z-[120] flex max-w-[calc(100%-32px)] -translate-x-1/2 items-center rounded-lg border border-white/10 px-4 py-3 text-sm text-white shadow-xl backdrop-blur-xl"
         >
-          {notice.tone === 'success' ? (
-            <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-          ) : (
-            <AlertCircle className="h-4 w-4 text-rose-400" />
-          )}
-          <span>{notice.message}</span>
+          <span className="chat-theme-toast-content">
+            {notice.tone === 'success' ? (
+              <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+            ) : (
+              <AlertCircle className="h-4 w-4 text-rose-400" />
+            )}
+            <span>{notice.message}</span>
+          </span>
           <Button
             variant="ghost"
             size="icon"
-            className="ml-1 h-6 w-6 text-white/60 hover:bg-white/10 hover:text-white"
+            className="chat-theme-toast-close h-6 w-6 text-white/60 hover:bg-white/10 hover:text-white"
             onClick={() => setNotice(null)}
             aria-label="关闭提示"
           >

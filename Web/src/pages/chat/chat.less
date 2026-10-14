@@ -23,6 +23,21 @@
   --chat-message-list-max-width: calc(1030px + clamp(44px, 8.4vw, 128px));
   --chat-message-side-padding: clamp(22px, 4.2vw, 64px);
   --chat-mobile-bubble-inset: calc((100% - min(100%, var(--chat-message-list-max-width))) / 2 + var(--chat-message-side-padding));
+
+  // Preview Worker 按钮配色（分享复选框/生成按钮/分享按钮高亮统一复用）
+  --preview-toggle-bg: transparent;
+  --preview-toggle-border: transparent;
+  --preview-toggle-radius: 14px;
+  --preview-toggle-color: #e9e3ff;
+  --preview-toggle-blur: 16px;
+  --preview-toggle-hover-bg: rgba(87, 58, 201, 0.16);
+  --preview-toggle-hover-border: rgba(178, 150, 255, 0.28);
+  --preview-toggle-hover-color: #ffffff;
+  --preview-toggle-active-bg: linear-gradient(145deg, rgba(104, 72, 222, 0.8), rgba(64, 51, 145, 0.76));
+  --preview-toggle-active-border: rgba(168, 140, 255, 0.58);
+  --preview-toggle-active-shadow: 0 5px 18px rgba(90, 61, 200, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  // 分享复选框横向落位：与消息列表左侧 padding 对齐，不占气泡宽度
+  --chat-share-row-gutter: var(--chat-message-side-padding, clamp(22px, 4.2vw, 64px));
   position: relative;
   isolation: isolate;
   display: flex;
@@ -227,23 +242,41 @@
 .chat-header-left { display: flex; align-items: center; gap: 8px; }
 .chat-page.is-vscode-plugin .chat-header-left { display: flex; }
 .chat-header-right { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+.chat-header .chat-share-button {
+  position: relative;
+  display: grid;
+  width: 42px; height: 42px; flex: 0 0 42px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--preview-toggle-border);
+  border-radius: var(--preview-toggle-radius);
+  background: var(--preview-toggle-bg);
+  box-shadow: none;
+  color: var(--preview-toggle-color);
+  backdrop-filter: blur(var(--preview-toggle-blur));
+  cursor: default;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease, transform 160ms ease;
+  > svg { width: 18px; height: 18px; stroke-width: 1.7px; }
+  &:hover { transform: translateY(-1px); border-color: var(--preview-toggle-hover-border); background: var(--preview-toggle-hover-bg); color: var(--preview-toggle-hover-color); }
+  &:focus-visible { outline: 2px solid var(--preview-toggle-color); outline-offset: 3px; box-shadow: none; }
+}
 .chat-preview-worker-toggle {
   position: relative;
   display: grid;
   width: 42px;
   height: 42px;
   place-items: center;
-  border: 1px solid transparent;
-  border-radius: 14px;
-  background: transparent;
+  border: 1px solid var(--preview-toggle-border);
+  border-radius: var(--preview-toggle-radius);
+  background: var(--preview-toggle-bg);
   box-shadow: none;
-  color: #e9e3ff;
-  backdrop-filter: blur(16px);
+  color: var(--preview-toggle-color);
+  backdrop-filter: blur(var(--preview-toggle-blur));
   cursor: pointer;
   transition: border-color 160ms ease, background 160ms ease, color 160ms ease, transform 160ms ease;
 }
-.chat-preview-worker-toggle:hover { transform: translateY(-1px); border-color: rgba(178, 150, 255, 0.28); background: rgba(87, 58, 201, 0.16); color: #fff; }
-.chat-preview-worker-toggle[aria-expanded="true"] { border-color: rgba(168, 140, 255, 0.58); background: linear-gradient(145deg, rgba(104, 72, 222, 0.8), rgba(64, 51, 145, 0.76)); box-shadow: 0 5px 18px rgba(90, 61, 200, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.15); }
+.chat-preview-worker-toggle:hover { transform: translateY(-1px); border-color: var(--preview-toggle-hover-border); background: var(--preview-toggle-hover-bg); color: var(--preview-toggle-hover-color); }
+.chat-preview-worker-toggle[aria-expanded="true"] { border-color: var(--preview-toggle-active-border); background: var(--preview-toggle-active-bg); box-shadow: var(--preview-toggle-active-shadow); }
 .chat-preview-worker-toggle span { position: absolute; top: -5px; right: -5px; display: grid; min-width: 17px; height: 17px; place-items: center; padding: 0 4px; border: 1px solid rgba(229, 221, 255, 0.6); border-radius: 99px; background: #6846e8; color: #fff; font-size: 10px; line-height: 1; }
 
 .chat-main { position: relative; display: flex; min-height: 0; flex: 1 1 auto; overflow: hidden; background: transparent; }
@@ -549,10 +582,29 @@
 }
 .chat-theme-dialog [data-slot='alert-dialog-description'] { color: rgba(224, 230, 248, 0.68); }
 .chat-theme-toast {
+  justify-content: center;
+  padding-left: 44px !important;
+  padding-right: 44px !important;
   border-color: rgba(211, 225, 255, 0.2) !important;
   background: linear-gradient(145deg, rgba(39, 55, 88, 0.96), rgba(19, 31, 56, 0.97)) !important;
   box-shadow: 0 18px 52px rgba(3, 8, 25, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.07) !important;
   backdrop-filter: blur(24px) saturate(135%) !important;
+}
+.chat-theme-toast-content {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+}
+.chat-theme-toast-content > svg { flex: 0 0 auto; }
+.chat-theme-toast-close {
+  position: absolute !important;
+  right: 8px;
+  top: 50%;
+  margin-left: 0 !important;
+  transform: translateY(-50%);
 }
 
 @media (min-width: 1024px) {
@@ -587,7 +639,8 @@
   .chat-session-title { position: absolute; top: 50%; left: 50%; display: flex; width: max-content; max-width: min(64vw, calc(100% - var(--chat-header-title-left-obstruction) - var(--chat-header-title-left-obstruction)), calc(100% - var(--chat-header-title-right-obstruction) - var(--chat-header-title-right-obstruction))); align-items: center; justify-content: center; transform: translate(-50%, -50%); font-size: 16px; text-align: center; }
   .chat-page.is-empty-chat .chat-session-title { visibility: hidden; opacity: 0; transform: translate(-50%, calc(-50% - 4px)); }
   .chat-header-right { position: absolute; top: 50%; right: 8px; z-index: 4; gap: 1px; transform: translateY(-50%); }
-  .chat-preview-worker-toggle { width: 38px; height: 38px; }
+  .chat-preview-worker-toggle,
+  .chat-header .chat-share-button { width: 38px; height: 38px; flex-basis: 38px; }
 }
 
 // The VS Code webview uses the same compact mobile header even when the editor
@@ -605,6 +658,16 @@
 .chat-page.is-vscode-plugin.is-empty-chat .chat-session-title { visibility: hidden; opacity: 0; transform: translate(-50%, calc(-50% - 4px)); }
 .chat-page.is-vscode-plugin .chat-header-right { position: absolute; top: 50%; right: 8px; z-index: 4; gap: 1px; transform: translateY(-50%); }
 .chat-page.is-vscode-plugin.is-empty-chat .chat-header-right { display: none; }
+
+// Reserve only the new control's space in the existing compact header.
+@media (max-width: 1023px) {
+  .chat-header.has-share-button .chat-mobile-brand { left: calc(100% - clamp(84px, 22vw, 104px) - 16px - 42px); }
+  .chat-header.has-share-button .chat-session-title { --chat-header-title-right-obstruction: calc(clamp(84px, 22vw, 104px) + 16px + 12px + 42px); }
+  .chat-page.has-preview-worker-content:not(.is-vscode-plugin) .chat-header.has-share-button .chat-mobile-brand { left: 40px; }
+  .chat-page.has-preview-worker-content:not(.is-vscode-plugin) .chat-header.has-share-button .chat-session-title { --chat-header-title-right-obstruction: 104px; }
+}
+.chat-page.is-vscode-plugin .chat-header.has-share-button .chat-mobile-brand { left: calc(100% - 82px - var(--chat-mobile-bubble-inset, 18px) - 42px); }
+.chat-page.is-vscode-plugin .chat-header.has-share-button .chat-session-title { --chat-header-title-right-obstruction: calc(82px + var(--chat-mobile-bubble-inset, 18px) + 8px + 42px); }
 
 @media (max-width: 520px) {
   .chat-page { --chat-mobile-bubble-inset: 10px; }

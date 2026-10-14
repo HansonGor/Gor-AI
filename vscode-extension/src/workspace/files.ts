@@ -210,7 +210,8 @@ export async function createProjectFile(params: WorkspaceParams): Promise<Record
     }
     throw new WorkspaceRequestError('WORKSPACE_OPERATION_FAILED', 'VS Code 拒绝创建该文件。');
   }
-  return { success: true, path, created: true };
+  // createFile(contents) is already persisted by the native file operation.
+  return { success: true, path, created: true, saved: true };
 }
 
 export async function createProjectDirectory(params: WorkspaceParams): Promise<Record<string, unknown>> {

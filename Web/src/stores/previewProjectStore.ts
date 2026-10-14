@@ -80,6 +80,7 @@ export interface PreviewProjectStoreState {
     uploadName?: string | null,
   ) => void;
   requestBuildAndRun: (exportGlb?: boolean) => void;
+  applyUndoProject: (project: PreviewProject, serverRevision: number) => boolean;
 }
 
 type Listener = () => void;
@@ -273,6 +274,22 @@ const actions: Omit<PreviewProjectStoreState, 'project' | 'selectedFilePath' | '
       buildRunGlbRevision: exportGlb ? buildRunRevision : state.buildRunGlbRevision,
     };
     emit();
+  },
+  applyUndoProject(project, serverRevision) {
+    if (project.id !== state.project.id || serverRevision < (state.project.serverRevision ?? -1)
+      || !Number.isSafeInteger(project.revision) || (project.revision ?? -1) < (state.project.revision ?? 0)) return false;
+    const files: PreviewFiles = Object.create(null);
+    for (const [path, content] of Object.entries(project.files)) {
+      if (normalizePreviewPath(path) !== path || typeof content !== 'string') return false;
+      files[path] = content;
+    }
+    const selected = state.selectedFilePath && state.selectedFilePath in files
+      ? state.selectedFilePath : listFiles(files)[0] ?? null;
+    // Restore exact VFS state, including an empty project. Import reconciliation
+    // must not synthesize a new entry or resurrect deleted files during undo.
+    updateProject({ ...state.project, ...project, files, serverRevision,
+      persistedRevision: project.revision }, selected, true);
+    return true;
   },
 };
 

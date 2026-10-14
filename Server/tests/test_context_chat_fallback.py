@@ -4,11 +4,48 @@ import importlib
 import json
 import unittest
 from unittest.mock import AsyncMock, patch
+from services.context_engine import message_tokens, RECENT_CONTEXT_BUDGET
 
 chat_module = importlib.import_module("routes.chat")
 
 
 class ContextChatFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        # These are SSE/adapter tests, not live database integration checks.
+        for name in ("get_edit_mode", "get_session_preview_project"):
+            mock = patch.object(chat_module, name, new_callable=AsyncMock,
+                                return_value="auto" if name == "get_edit_mode" else None)
+            mock.start()
+            self.addCleanup(mock.stop)
+
+    async def test_database_history_failure_bounds_client_history_and_keeps_current(self):
+        class Request:
+            async def is_disconnected(self):
+                return False
+        for mode in ("web", "vscode"):
+            with self.subTest(mode=mode):
+                captured = {}
+                async def fake_agent(messages, send_event, *args):
+                    captured["messages"] = messages
+                    captured["summary"] = args[-4]
+                    send_event({"type": "token", "content": "正常回复"})
+                history = [{"role": "user" if i % 2 else "assistant", "content": "历史信息 " * 700}
+                           for i in range(1, 35)]
+                history.append({"role": "user", "content": "当前问题原文"})
+                with patch.object(chat_module, "save_message", new_callable=AsyncMock), \
+                     patch.object(chat_module, "load_messages", new_callable=AsyncMock, side_effect=RuntimeError("unavailable")), \
+                     patch.object(chat_module, "run_agent", fake_agent), \
+                     patch.object(chat_module, "deduct_model_quota", new_callable=AsyncMock), \
+                     patch.object(chat_module, "auto_generate_session_title", new_callable=AsyncMock):
+                    response = await chat_module.chat(Request(), chat_module.ChatRequest(
+                        sessionId="fallback", clientMode=mode, message="当前问题原文", messages=history))
+                    events = [chunk async for chunk in response.body_iterator]
+                self.assertEqual(captured["messages"][-1]["content"], "当前问题原文")
+                self.assertLessEqual(sum(map(message_tokens, captured["messages"][:-1])), RECENT_CONTEXT_BUDGET)
+                self.assertEqual(captured["messages"][0]["role"], "user")
+                self.assertIn("未附带", captured["summary"])
+                self.assertTrue(events)
+
     async def test_explicit_web_mode_ignores_stale_plugin_workspace_and_disk_edit_flag(self):
         class Request:
             async def is_disconnected(self):
@@ -50,12 +87,12 @@ class ContextChatFallbackTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_agent(messages, send_event, *args):
             captured["messages"] = messages
-            captured["summary"] = args[-3]
+            captured["summary"] = args[-4]
             send_event({"type": "token", "content": "正常回复"})
 
         rows = [
             {"db_message_id": i, "role": "user" if i % 2 else "assistant",
-             "content": f"消息{i}", "images": None, "preview_snapshot": None}
+             "content": f"消息{i}" + "历史信息 " * 700, "images": None, "preview_snapshot": None}
             for i in range(1, 37)
         ]
         with patch.object(chat_module, "save_message", new_callable=AsyncMock, return_value=36), \
@@ -67,8 +104,10 @@ class ContextChatFallbackTests(unittest.IsolatedAsyncioTestCase):
             response = await chat_module.chat(Request(), chat_module.ChatRequest(sessionId="test", message="当前消息"))
             chunks = [chunk async for chunk in response.body_iterator]
         events = [json.loads(chunk[6:]) for chunk in chunks if chunk.startswith("data: ")]
-        self.assertEqual(captured["summary"], None)
-        self.assertEqual(len(captured["messages"]), 30)
+        self.assertIn("未附带", captured["summary"])
+        self.assertLess(len(captured["messages"]), 36)
+        self.assertEqual(captured["messages"][0]["role"], "user")
+        self.assertLessEqual(sum(map(message_tokens, captured["messages"][:-1])), RECENT_CONTEXT_BUDGET)
         self.assertEqual(captured["messages"][-1]["content"], "当前消息")
         self.assertIn("token", [event["type"] for event in events])
         self.assertEqual(events[-1]["type"], "done")

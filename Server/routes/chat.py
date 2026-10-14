@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from agent.agent import run_agent
+from tools.presentation_revision import saved_presentation
 from services.preview.workspace import PreviewProjectWorkspace
 from agent.token_callback import TokenCountCallback
 from config import config
@@ -24,9 +25,14 @@ from db.supabase_chat import (
     auto_generate_session_title,
     load_messages,
     save_message,
+    save_thinking_trace,
 )
-from services.context_engine import context_engine, estimate_tokens
+from services.context_engine import context_engine, estimate_tokens, fallback_context
 from project_api.vscode_context import create_current_vscode_project_api
+from project_api.changes import ChangeRecorder, current_recorder, snapshot
+from project_api.types import ProjectRef
+from db.project_changes import change_sets, get_edit_mode
+import uuid
 
 router = APIRouter()
 
@@ -41,6 +47,7 @@ class ChatRequest(BaseModel):
     # previewProject is retained for older clients as a one-time bootstrap fallback.
     previewProject: dict | None = None
     previewProjectId: str | None = None
+    presentationMessageId: str | None = None
     previewServerRevision: int | None = None
     previewContentRevision: int | None = None
     previewProjectBootstrap: dict | None = None
@@ -52,6 +59,7 @@ class ChatRequest(BaseModel):
     workspaceId: str | None = Field(default=None, max_length=120)
     assistantMessageId: str | None = Field(default=None, max_length=80)
     newPreviewProject: bool = False
+    editMode: Literal['auto', 'review'] | None = None
 
 
 @router.post("/chat")
@@ -61,6 +69,9 @@ async def chat(request: Request, body: ChatRequest):
     SSE 流式聊天接口
     """
     print("[SSE] 收到请求")
+    # Freeze before the stream/Agent starts; later session preference updates
+    # cannot change the execution policy of this request.
+    edit_mode = body.editMode or await get_edit_mode(body.sessionId)
 
     async def event_generator() -> AsyncGenerator[str, None]:
         # ===== SSE 连接建立 =====
@@ -70,6 +81,10 @@ async def chat(request: Request, body: ChatRequest):
         def send_event(event: Dict[str, Any]) -> str:
             return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
+        from models.thinking import ThinkingTrace
+        thinking_trace = ThinkingTrace()
+        recorder = ChangeRecorder(change_sets, body.sessionId, str(uuid.uuid4()), edit_mode=edit_mode)
+        recorder_token = current_recorder.set(recorder)
         try:
             session_id = body.sessionId
             message = body.message
@@ -180,22 +195,23 @@ async def chat(request: Request, body: ChatRequest):
                         }
                         if body.previewProjectOrigin not in {"generated", "uploaded-source"}:
                             raise ValueError("Preview Project 来源无效。")
-                        created = await create_session_preview_project(
+                        created = None if edit_mode == "review" else await create_session_preview_project(
                             session_id,
                             canonical_project,
                             body.previewProjectOrigin,
                             body.previewProjectUploadName,
                         )
-                        if not created:
+                        if not created and edit_mode != "review":
                             raise ValueError("PREVIEW_PROJECT_REVISION_CONFLICT")
-                        preview_project_row_revision = created["revision"]
+                        preview_project_row_revision = created["revision"] if created else None
                         preview_project_origin = body.previewProjectOrigin
-                        yield send_event({
+                        if created:
+                            yield send_event({
                             "type": "preview_project_persisted",
                             "projectId": bootstrap_workspace.project_id,
                             "serverRevision": preview_project_row_revision,
                             "contentRevision": bootstrap_workspace.revision,
-                        })
+                            })
                 else:
                     canonical_project = None
 
@@ -283,37 +299,27 @@ async def chat(request: Request, body: ChatRequest):
                 current_message = {"role": "user", "content": user_content, "images": user_images}
                 try:
                     context = await context_engine.build_context(session_id, prior_messages, current_message)
-                    context_summary = context["summary"] or None
+                    context_summary = "\n".join(filter(None, (context["summary"], context.get("notice")))) or None
                     selected_messages = context["recent_messages"]
                 except Exception as context_err:
-                    print(f"[Context] session={session_id} compression failed; using existing history: {context_err}")
-                    context_summary = None
-                    selected_messages = prior_messages[-29:]
+                    print(f"[Context] history fallback type={type(context_err).__name__}")
+                    context = fallback_context(prior_messages)
+                    context_summary = context["notice"] or None
+                    selected_messages = context["recent_messages"]
                 history_messages = [
                     {"role": m["role"], "content": m["content"], "images": m.get("images"),
                      **({"project_changes": m["project_changes"]} if plugin_workspace_request and m.get("project_changes") else {})}
                     for m in selected_messages
                 ]
                 history_messages.append(current_message)
-                recent_messages = db_messages[-30:]
-                latest_presentation = next((m for m in reversed(recent_messages)
-                    if m.get("role") == "assistant"
-                    and isinstance(m.get("preview_snapshot"), dict)
-                    and m["preview_snapshot"].get("template") == "presentation"), None)
-                if latest_presentation:
-                    schema = latest_presentation["preview_snapshot"].get("presentationSchema")
-                    if isinstance(schema, dict):
-                        # Keep revision data separate from the assistant's
-                        # user-visible prose. Appending JSON to that prose
-                        # caused the model to quote the whole schema back.
-                        latest_presentation_schema = schema
+                latest_presentation_schema = saved_presentation(prior_messages, body.presentationMessageId)
                 print(f"[SSE] 加载历史消息 {len(history_messages)} 条")
             except Exception as db_err:
                 print(f"[SSE] 加载历史消息失败: {db_err}")
                 # 加载失败时使用当前请求中的消息（含图片）
-                history_messages = []
+                client_history = []
                 if isinstance(messages, list) and len(messages) > 0:
-                    history_messages = [
+                    client_history = [
                         {
                             "role": m.get("role", "user"),
                             "content": m.get("content", ""),
@@ -321,8 +327,11 @@ async def chat(request: Request, body: ChatRequest):
                         }
                         for m in messages
                     ]
-                if not history_messages or history_messages[-1].get("role") != "user":
-                    history_messages.append({"role": "user", "content": user_content, "images": user_images})
+                if client_history and client_history[-1].get("role") == "user" and client_history[-1].get("content") == user_content:
+                    client_history.pop()
+                context = fallback_context(client_history)
+                context_summary = context["notice"] or None
+                history_messages = context["recent_messages"] + [{"role": "user", "content": user_content, "images": user_images}]
 
             # 如果请求体中有图片信息，合并到当前用户消息中
             if isinstance(messages, list) and len(messages) > 0:
@@ -380,6 +389,9 @@ async def chat(request: Request, body: ChatRequest):
             def wrapped_send_event(event: Dict[str, Any]) -> None:
                 nonlocal full_assistant_content, full_assistant_files, full_preview_changes
                 nonlocal full_search_sources, full_search_trace, preview_project_needs_commit
+                thinking_update = thinking_trace.accept(event)
+                if thinking_update:
+                    event_queue.put_nowait(thinking_update)
                 if event.get("type") == "token" and event.get("content"):
                     full_assistant_content += event["content"]
                 if plugin_workspace_request and event.get("type") == "project_file_changed" and event.get("path"):
@@ -468,6 +480,7 @@ async def chat(request: Request, body: ChatRequest):
                     vscode_project_context,
                     plugin_workspace_request,
                     session_id,
+                    **({"presentation_source_explicit": True} if body.presentationMessageId else {}),
                 )
             )
 
@@ -477,6 +490,7 @@ async def chat(request: Request, body: ChatRequest):
                 if await request.is_disconnected():
                     print("[SSE] 客户端连接关闭，取消 Agent")
                     cancel_event.set()
+                    thinking_trace.status = "cancelled"
                     agent_task.cancel()
                     break
                 try:
@@ -489,9 +503,10 @@ async def chat(request: Request, body: ChatRequest):
             try:
                 await agent_task
             except asyncio.CancelledError:
-                pass
+                cancel_event.set()
+                thinking_trace.status = "cancelled"
 
-            if preview_workspace and full_preview_changes and preview_project_row_revision is not None and preview_project_needs_commit:
+            if preview_workspace and full_preview_changes and (preview_project_row_revision is not None or edit_mode == "review") and preview_project_needs_commit:
                 try:
                     final_project = {
                         "id": preview_workspace.project_id,
@@ -528,12 +543,39 @@ async def chat(request: Request, body: ChatRequest):
                                 index = re.sub(r'<title\b[^>]*>[\s\S]*?</title>', lambda _: '<title>' + final_project["name"].replace('<', '').replace('>', '') + '</title>', index, flags=re.I)
                                 preview_workspace.files["/index.html"] = index
                                 full_preview_changes["/index.html"] = {"projectId": preview_workspace.project_id, "path": "/index.html", "diff": preview_workspace.diff_from_initial("/index.html")}
-                    committed = await update_session_preview_project_if_revision(
-                        session_id,
-                        final_project,
-                        preview_project_row_revision,
-                    )
-                    if not committed:
+                    paths = preview_workspace.initial_files.keys() | preview_workspace.files.keys()
+                    paths = [p for p in paths if preview_workspace.initial_files.get(p) != preview_workspace.files.get(p)]
+                    change_record = await recorder.record(
+                        ProjectRef(preview_workspace.project_id, "preview"),
+                        {p: snapshot(preview_workspace.initial_files.get(p), (canonical_project or {}).get("revision", 0)) for p in paths},
+                        {p: snapshot(preview_workspace.files.get(p), preview_workspace.revision) for p in paths},
+                        {p: "pending" for p in paths})
+                    if edit_mode == "review":
+                        change_record["previewCandidate"] = {k: v for k, v in final_project.items() if k != "files"}
+                        change_record["previewBaseProject"] = canonical_project
+                        change_record["previewParentProjectId"] = (saved_project or {}).get("project", {}).get("id")
+                        change_record["previewParentRevision"] = preview_project_row_revision
+                        change_record["previewNewProject"] = change_record["previewParentProjectId"] != preview_workspace.project_id
+                        await change_sets.put(change_record)
+                        for path in paths:
+                            event = {"type": "project_file_changed", "path": path,
+                                     "diff": preview_workspace.diff_from_initial(path), "pending": True}
+                            full_workspace_changes[path] = {"path": path, "diff": event["diff"]}
+                            yield send_event(event)
+                        full_preview_changes.clear()
+                        committed = None
+                    else:
+                        for file in change_record["files"]:
+                            file["status"] = "applied"
+                        committed = await update_session_preview_project_if_revision(
+                            session_id,
+                            final_project,
+                            preview_project_row_revision,
+                            change_record=change_record if change_record["files"] else None,
+                        )
+                    if not committed and edit_mode != "review":
+                        for file in change_record["files"]:
+                            file["status"] = "failed"
                         print(f"[Preview] session={session_id} project commit conflict at revision={preview_project_row_revision}")
                         full_preview_changes.clear()
                         yield send_event({
@@ -541,7 +583,7 @@ async def chat(request: Request, body: ChatRequest):
                             "projectId": preview_workspace.project_id,
                             "message": "项目在本轮修改期间已被其他操作更新；本轮代码未覆盖服务器版本，请刷新项目后重试。",
                         })
-                    else:
+                    elif committed:
                         changed_files = []
                         full_content_files = []
                         for path, change in full_preview_changes.items():
@@ -592,6 +634,10 @@ async def chat(request: Request, body: ChatRequest):
                             f"server_revision={committed['revision']} changed_files={len(changed_files)}"
                         )
                 except Exception as preview_commit_error:
+                    for item in recorder.sets.values():
+                        if item["projectRef"]["provider"] == "preview":
+                            for file in item["files"]:
+                                file["status"] = "failed"
                     print(f"[Preview] session={session_id} project commit failed: {preview_commit_error}")
                     full_preview_changes.clear()
                     yield send_event({
@@ -679,7 +725,7 @@ async def chat(request: Request, body: ChatRequest):
             # 12. 流结束后保存 AI 完整回答（包含 token 数据）
             # A tool may successfully create a deliverable even when the model's
             # final prose is empty; persist that assistant message and its snapshot too.
-            if full_assistant_content.strip() or full_assistant_files or full_preview_changes:
+            if full_assistant_content.strip() or full_assistant_files or full_preview_changes or full_workspace_changes:
                 try:
                     preview_snapshot = None
                     presentation_file = next(
@@ -757,15 +803,39 @@ async def chat(request: Request, body: ChatRequest):
                 except Exception as db_err:
                     print(f"[SSE] 保存 AI 回答失败: {db_err}")
 
-            yield send_event({"type": "done"})
+            # Bind the real journal to this assistant message, not to a guessed
+            # filename/latest project. History can recover this compact reference.
+            for item in recorder.sets.values():
+                if body.assistantMessageId:
+                    item["messageId"] = body.assistantMessageId
+            await recorder.seal()
+            for item in recorder.sets.values():
+                if item["files"]:
+                    yield send_event({"type": "change_set", "changeSetId": item["id"],
+                                     "roundId": item["roundId"], "projectRef": item["projectRef"]})
+            thinking_trace.status = "cancelled" if cancel_event.is_set() else "completed"
+            yield send_event({"type": "done", "status": thinking_trace.status})
 
         except Exception as err:
+            thinking_trace.status = "failed"
             print(f"[Chat Error] {err}")
             import traceback
             traceback.print_exc()
             yield send_event({"type": "error", "message": str(err) or "服务内部错误"})
             yield send_event({"type": "done"})
         finally:
+            if thinking_trace.rounds and body.sessionId and body.assistantMessageId:
+                try:
+                    await save_thinking_trace(body.sessionId, body.assistantMessageId, thinking_trace.snapshot())
+                except Exception as trace_error:
+                    print(f"[Thinking] history persistence failed: {type(trace_error).__name__}")
+            try:
+                await recorder.seal()
+            except Exception as journal_error:
+                # Do not mask stream cancellation or manufacture saved ChangeSets.
+                print(f"[ChangeSet] final persistence failed: {type(journal_error).__name__}")
+            finally:
+                current_recorder.reset(recorder_token)
             print("[SSE] 连接已关闭")
 
     return StreamingResponse(

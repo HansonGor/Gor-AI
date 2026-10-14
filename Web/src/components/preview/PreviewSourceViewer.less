@@ -1,0 +1,25 @@
+// A noninteractive color layer shares the existing textarea's exact text geometry.
+.preview-source-viewer .preview-source-colors {
+  position: absolute;
+  inset: 0 0 0 56px;
+  margin: 0;
+  border: 0;
+  padding: 16px;
+  overflow: hidden;
+  scrollbar-gutter: stable;
+  background: transparent;
+  color: #d7d7e2;
+  tab-size: 2;
+  white-space: pre;
+  font:
+    11px/1.65 Consolas,
+    'Courier New',
+    monospace;
+  pointer-events: none;
+  user-select: none;
+}
+.preview-source-viewer textarea.is-syntax-highlighted {
+  background: transparent !important;
+  color: transparent !important;
+  caret-color: #d7d7e2;
+}

@@ -2,9 +2,18 @@
 import asyncio
 import copy
 from unittest.mock import AsyncMock, patch
+import pytest
 
 from langchain_core.messages import AIMessage
 from routes import chat as chat_route
+
+
+@pytest.fixture(autouse=True)
+def isolate_display_history_and_edit_preferences(monkeypatch):
+    from test_project_changes import Store
+    monkeypatch.setattr(chat_route, "change_sets", Store())
+    monkeypatch.setattr(chat_route, "get_edit_mode", AsyncMock(return_value="auto"))
+    monkeypatch.setattr(chat_route, "save_thinking_trace", AsyncMock())
 from test_preview_context_flow import FakeRequest, collect_events
 
 
@@ -13,7 +22,7 @@ def test_scene_generation_commits_scene_metadata_through_real_route():
         initial = {"id": "scene-commit", "name": "New React Project", "template": "react", "files": {}, "revision": 0}
         committed = []
 
-        async def commit(_session, project, expected_revision):
+        async def commit(_session, project, expected_revision, *, change_record=None):
             assert expected_revision == 0
             committed.append(copy.deepcopy(project))
             return {"revision": 1}
@@ -33,6 +42,7 @@ def test_scene_generation_commits_scene_metadata_through_real_route():
             patch.object(chat_route, "update_session_preview_project_if_revision", side_effect=commit),
             patch.object(chat_route, "load_messages", new=AsyncMock(return_value=[])),
             patch.object(chat_route, "save_message", new=AsyncMock(return_value=1)),
+            patch.object(chat_route, "save_thinking_trace", new=AsyncMock()),
             patch.object(chat_route, "deduct_model_quota", new=AsyncMock(return_value=None)),
             patch.object(chat_route, "auto_generate_session_title", new=AsyncMock()),
         ):
@@ -69,7 +79,7 @@ def test_new_react_project_stages_blank_identity_instead_of_reusing_old_scene():
             async def ainvoke(self, messages, config=None):
                 return AIMessage(content="", tool_calls=[{"name": "write_preview_file", "id": f"write-{index}", "args": {"path": path, "content": content}} for index, (path, content) in enumerate(sources.items())])
 
-        async def commit(_session, project, revision):
+        async def commit(_session, project, revision, *, change_record=None):
             assert revision == 8
             commits.append(copy.deepcopy(project))
             return {"revision": 9}
@@ -82,6 +92,7 @@ def test_new_react_project_stages_blank_identity_instead_of_reusing_old_scene():
             patch.object(chat_route, "update_session_preview_project_if_revision", side_effect=commit),
             patch.object(chat_route, "load_messages", new=AsyncMock(return_value=[])),
             patch.object(chat_route, "save_message", new=AsyncMock(return_value=1)),
+            patch.object(chat_route, "save_thinking_trace", new=AsyncMock()),
             patch.object(chat_route, "deduct_model_quota", new=AsyncMock(return_value=None)),
             patch.object(chat_route, "auto_generate_session_title", new=AsyncMock()),
         ):
@@ -119,6 +130,7 @@ def test_failed_new_generation_does_not_replace_the_previous_canonical_project()
             patch.object(chat_route, "update_session_preview_project_if_revision", new=commit),
             patch.object(chat_route, "load_messages", new=AsyncMock(return_value=[])),
             patch.object(chat_route, "save_message", new=AsyncMock(return_value=1)),
+            patch.object(chat_route, "save_thinking_trace", new=AsyncMock()),
             patch.object(chat_route, "deduct_model_quota", new=AsyncMock(return_value=None)),
             patch.object(chat_route, "auto_generate_session_title", new=AsyncMock()),
         ):

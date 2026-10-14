@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 from urllib.request import urlopen
 
 from langchain_core.messages import AIMessage
-from project_api.types import ProjectRef
+from project_api.types import ProjectRef, ProjectAPIError
 
 import agent.agent as agent_module
 import tools.project_files as project_files
@@ -106,6 +106,41 @@ class ProjectFileToolsTest(unittest.TestCase):
         finally:
             agent_module.get_model_for_tools = previous_model
             agent_module.TYPING_DELAY_MS = previous_delay
+
+    def test_failed_save_keeps_diff_and_overrides_false_success_chat(self):
+        from unittest.mock import patch
+        details = {"saved": False, "savedFiles": [],
+                   "failedFiles": [{"path": "/src/App.tsx", "code": "FILE_SAVE_FAILED"}],
+                   "changedFiles": [{"path": "/src/App.tsx", "diff": "-old\n+new"}]}
+
+        class API:
+            async def write_file(self, *_args):
+                raise ProjectAPIError("FILE_SAVE_FAILED", "文件修改已应用，但保存未全部完成", details)
+
+        class Model:
+            calls = 0
+            async def ainvoke(self, _messages, config=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return AIMessage(content="", tool_calls=[{
+                        "name": "write_project_file", "id": "write",
+                        "args": {"path": "/src/App.tsx", "content": "new", "expected_file_version": 1},
+                    }])
+                return AIMessage(content="已成功修改并保存全部文件。")
+
+        events = []
+        with patch.object(agent_module, "get_model_for_tools", return_value=Model()), patch.object(agent_module, "TYPING_DELAY_MS", 0):
+            asyncio.run(agent_module.run_agent(
+                [{"role": "user", "content": "修改 /src/App.tsx 的标题"}], events.append,
+                vscode_project_context=(API(), ProjectRef("vscode-save", "vscode")), vscode_client_mode=True,
+            ))
+        diffs = [event for event in events if event["type"] == "project_file_changed"]
+        self.assertEqual(len(diffs), 1)
+        self.assertEqual(diffs[0]["diff"], "-old\n+new")
+        prose = "".join(event.get("content", "") for event in events if event["type"] == "token")
+        self.assertIn("保存未全部完成", prose)
+        self.assertNotIn("已成功修改", prose)
+        self.assertNotIn("+new", prose)
 
     def test_search_read_edit_and_create(self):
         found = json.loads(project_files.search_project_files.invoke({"query": "Before"}))

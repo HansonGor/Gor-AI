@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 
 export default defineConfig({
+  worker: { format: 'es' },
   plugins: [react()],
   // The compiler is loaded from a Worker, outside Vite's normal page scan.
   // Prebundle it before chat starts so first preview never reloads the Parent

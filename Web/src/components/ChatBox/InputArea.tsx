@@ -5,6 +5,7 @@ import { CHAT_CONFIG } from '../../config';
 import type { InputAreaProps } from '../../types';
 import { Button } from '../ui/button';
 import { Textarea } from '../ui/textarea';
+import FileEditModeSelector from '../chat/FileEditModeSelector';
 
 const { INPUT_MAX_HEIGHT } = CHAT_CONFIG;
 
@@ -25,6 +26,9 @@ export default function InputArea({
   hasPendingUploadSummary = false,
   onRemoveImportedUpload,
   onClearPendingUpload,
+  fileEditMode,
+  fileEditModeLoading,
+  onFileEditModeChange,
 }: InputAreaProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const importPopoverRef = useRef<HTMLDivElement | null>(null);
@@ -241,6 +245,7 @@ export default function InputArea({
             </section>
           )}
         </div>
+        <FileEditModeSelector value={fileEditMode} loading={fileEditModeLoading} onChange={onFileEditModeChange} />
         <input
           ref={fileInputRef}
           type="file"

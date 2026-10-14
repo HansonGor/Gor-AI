@@ -50,7 +50,7 @@ def patch_project_file(
     root: str | None = None,
     expected_version: int | None = None,
 ) -> str:
-    """Replace one unique exact fragment from a fresh search/read. expected_version is the Web project version or VS Code fileVersion. expected_file_version is a compatibility alias; no automatic disk save."""
+    """Replace one unique exact fragment from a fresh search/read. expected_version is the Web project version or VS Code fileVersion. expected_file_version is a compatibility alias. Web stays virtual; VS Code saves Agent edits and rejects pre-existing unsaved changes."""
     return _adapter_only("patch_project_file")
 
 
@@ -60,7 +60,7 @@ def batch_patch_project_files(
     root: str | None = None,
     expected_version: int | None = None,
 ) -> str:
-    """Apply exact patches atomically, each with path, old_text and new_text. Web requires the latest project expected_version at batch level; VS Code needs each patch's latest file expected_version (legacy expected_file_version accepted). Failure changes nothing."""
+    """Apply exact patches atomically, each with path, old_text and new_text. Web requires the latest project expected_version at batch level; VS Code needs each patch's latest file expected_version (legacy expected_file_version accepted). Validation failure changes nothing; VS Code save failure can leave applied edits or partially saved files and is not success."""
     return _adapter_only("batch_patch_project_files")
 
 
@@ -72,7 +72,7 @@ def write_project_file(
     root: str | None = None,
     expected_version: int | None = None,
 ) -> str:
-    """Write full text according to current Provider rules. Web upserts a virtual file; VS Code replaces an existing editor document without saving. Read existing content first. expected_version comes from the latest project/file read; expected_file_version is a legacy alias."""
+    """Write full text according to current Provider rules. Web upserts a virtual file; VS Code replaces and saves an existing clean editor document, rejecting pre-existing unsaved changes. Read existing content first. expected_version comes from the latest project/file read; expected_file_version is a legacy alias."""
     return _adapter_only("write_project_file")
 
 

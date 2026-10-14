@@ -1,0 +1,54 @@
+.thinking-panel {
+  display: grid;
+  gap: 0;
+  min-width: 0;
+  margin: 12px 0;
+  color: #c7c9dc;
+  overflow-anchor: none;
+  .thinking-fold {
+    display: grid; grid-template-rows: 0fr; opacity: 0; visibility: hidden;
+    transition: grid-template-rows 250ms ease-out, opacity 250ms ease-out, visibility 0s 250ms;
+    &.is-open { grid-template-rows: 1fr; opacity: 1; visibility: visible; transition-delay: 0s; }
+  }
+  .thinking-fold-inner { min-height: 0; overflow: hidden; }
+  .thinking-summary { animation: thinking-summary-in 180ms ease-out; }
+  .thinking-running > .thinking-fold-inner, .thinking-rounds { display: flex; flex-direction: column; min-width: 0; }
+  .thinking-previous { margin-bottom: 14px; }
+  .thinking-round-shell.is-open { animation: thinking-reveal 250ms ease-out; }
+  .thinking-round-shell { margin-top: 0; transition: grid-template-rows 250ms ease-out, opacity 250ms ease-out, margin-top 250ms ease-out, visibility 0s 250ms; }
+  .thinking-round-shell.is-open + .thinking-round-shell.is-open { margin-top: 10px; }
+  .thinking-finished { animation: thinking-summary-in 180ms ease-out; }
+  .thinking-kind-icon {
+    display: inline-flex; flex: 0 0 18px; width: 18px; height: 18px; color: #bca6fa;
+    animation: thinking-summary-in 180ms ease-out;
+    > svg { width: 18px; height: 18px; stroke-width: 1.7px; }
+  }
+  .thinking-completion-icon { flex-basis: 20px; width: 20px; height: 20px; color: #C5B3FF; > svg { width: 20px; height: 20px; } }
+  .thinking-title { animation: thinking-summary-in 180ms ease-out; }
+  .thinking-card { min-width: 0; border: 1px solid #3b405e; border-radius: 22px; background: rgba(28, 32, 51, .64); }
+  .thinking-latest { border-color: #73669e; }
+  .thinking-heading {
+    display: flex; align-items: center; gap: 14px; width: 100%; min-width: 0;
+    padding: 18px 20px; background: transparent; border: 0; border-radius: inherit;
+    color: inherit; text-align: left; cursor: pointer; font: inherit;
+    > svg { flex: 0 0 23px; width: 23px; height: 23px; color: #bca6fa; }
+    > svg:last-child { width: 20px; height: 20px; color: #aaaec9; transition: transform 250ms ease-out; }
+    > svg.is-expanded { transform: rotate(180deg); }
+    &:focus-visible { outline: 2px solid #bca6fa; outline-offset: 3px; }
+    &.is-static { cursor: default; }
+  }
+  .thinking-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; strong, small { display: block; } strong { color: #e0dff0; font-weight: 600; } small { margin-top: 3px; color: #aaaec9; font-size: inherit; } }
+  .thinking-content { margin: 0 18px; padding: 18px 0; border-top: 1px solid #414560; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto; overflow-anchor: none; }
+  .thinking-content p { margin: 0 0 8px; &:last-child { margin-bottom: 0; } }
+  .thinking-history { display: grid; gap: 10px; padding: 0 14px 14px; }
+  .thinking-spinner { animation: thinking-spin 1.2s linear infinite; }
+}
+@keyframes thinking-spin { to { transform: rotate(360deg); } }
+@keyframes thinking-summary-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes thinking-reveal { from { grid-template-rows: 0fr; opacity: 0; } to { grid-template-rows: 1fr; opacity: 1; } }
+@media (max-width: 1023px) {
+  .thinking-panel { .thinking-previous { margin-bottom: 10px; } .thinking-heading { gap: 10px; padding: 14px 12px; } .thinking-card { border-radius: 16px; } .thinking-content { margin: 0 12px; } }
+}
+@media (prefers-reduced-motion: reduce) {
+  .thinking-panel { *, *::before, *::after { animation: none !important; transition: none !important; } }
+}

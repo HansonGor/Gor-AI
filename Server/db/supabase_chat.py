@@ -96,6 +96,8 @@ async def init_db():
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             );
         """)
+        from db.project_changes import DDL
+        await conn.execute(DDL)
         # ----- 消息表 -----
         # id:              自增主键
         # session_id:      所属会话（外键，级联删除）
@@ -208,6 +210,7 @@ async def init_db():
         """)
         await conn.execute("""
             ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS project_changes JSONB;
+            ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS thinking_trace JSONB;
         """)
         await conn.execute("""
             ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS preview_snapshot JSONB;
@@ -332,6 +335,7 @@ async def update_session_preview_project_if_revision(
     session_id: str,
     project: dict,
     expected_revision: int,
+    change_record: dict | None = None,
 ) -> dict | None:
     """Commit by CAS; archive the previous project's source when creating a new ID."""
     serialized_project = json.dumps(project, ensure_ascii=False, separators=(",", ":"))
@@ -370,6 +374,10 @@ async def update_session_preview_project_if_revision(
                                 "outputExtension": ".glb" if previous.get("template") == "html" and "/src/scene.json" in previous["files"] else ".html"}
                     await conn.execute("UPDATE chat_messages SET preview_snapshot = $1::jsonb WHERE id = $2", json.dumps(snapshot, ensure_ascii=False), message["id"])
             if row:
+                if change_record:
+                    await conn.execute("""INSERT INTO project_change_sets(id,session_id,record)
+                        VALUES($1,$2,$3::jsonb) ON CONFLICT(id) DO UPDATE SET record=EXCLUDED.record,updated_at=NOW()""",
+                        change_record["id"], change_record["sessionId"], json.dumps(change_record, ensure_ascii=False))
                 await conn.execute("UPDATE chat_sessions SET updated_at = NOW() WHERE id = $1", session_id)
     if not row:
         return None
@@ -530,8 +538,23 @@ async def load_messages(session_id: str) -> list:
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT id, client_message_id, session_id, role, content, images, attachments, preview_changes, preview_snapshot, project_changes,
-                      search_sources, search_trace, created_at,
+            """SELECT id, client_message_id, session_id, role, content, images, attachments, preview_changes,
+                      COALESCE(preview_snapshot, (SELECT cs.record->'previewPublishedSnapshot'
+                        FROM project_change_sets cs
+                        WHERE cs.session_id = chat_messages.session_id::text
+                          AND cs.record->>'messageId' = chat_messages.client_message_id
+                          AND cs.record->>'sealed' = 'true'
+                          AND cs.record ? 'previewPublishedSnapshot'
+                        LIMIT 1)) AS preview_snapshot, project_changes,
+                      search_sources, search_trace, thinking_trace, created_at,
+                      (SELECT jsonb_agg(jsonb_build_object(
+                          'id', cs.id, 'sessionId', cs.session_id,
+                          'provider', cs.record->'projectRef'->>'provider'))
+                       FROM project_change_sets cs
+                       WHERE cs.session_id = chat_messages.session_id::text
+                         AND cs.record->>'messageId' = chat_messages.client_message_id
+                         AND cs.record->>'sealed' = 'true'
+                         AND jsonb_array_length(cs.record->'files') > 0) AS project_change_sets,
                       prompt_tokens, completion_tokens, total_tokens
                FROM chat_messages WHERE session_id = $1 ORDER BY created_at ASC, id ASC""",
             session_id,
@@ -558,6 +581,11 @@ async def load_messages(session_id: str) -> list:
                     if isinstance(row.get("project_changes"), str)
                     else row.get("project_changes")
                 ),
+                "project_change_sets": (
+                    json.loads(row["project_change_sets"])
+                    if isinstance(row.get("project_change_sets"), str)
+                    else row.get("project_change_sets")
+                ),
                 "preview_snapshot": (
                     json.loads(row["preview_snapshot"])
                     if isinstance(row.get("preview_snapshot"), str)
@@ -573,9 +601,27 @@ async def load_messages(session_id: str) -> list:
                     if isinstance(row.get("search_trace"), str)
                     else row.get("search_trace")
                 ),
+                "thinking_trace": (
+                    json.loads(row["thinking_trace"])
+                    if isinstance(row.get("thinking_trace"), str)
+                    else row.get("thinking_trace")
+                ),
             }
             for row in rows
         ]
+
+
+async def save_thinking_trace(session_id: str, message_id: str, trace: dict):
+    """Upsert only display metadata; preserve prose, files, Diff and usage."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO chat_messages (session_id, role, content, client_message_id, thinking_trace)
+               VALUES ($1, 'assistant', '', $2, $3::jsonb)
+               ON CONFLICT (session_id, client_message_id) WHERE client_message_id IS NOT NULL
+               DO UPDATE SET thinking_trace = EXCLUDED.thinking_trace""",
+            session_id, message_id, json.dumps(trace, ensure_ascii=False),
+        )
 
 
 async def load_conversation_context(session_id: str) -> dict | None:
@@ -737,6 +783,7 @@ async def delete_session(session_id: str) -> None:
             "SELECT relative_path FROM session_generated_artifacts WHERE session_id = $1", session_id
         )
         await conn.execute("DELETE FROM session_generated_artifacts WHERE session_id = $1", session_id)
+        await conn.execute("DELETE FROM project_change_sets WHERE session_id = $1", session_id)
         await conn.execute("DELETE FROM session_preview_projects WHERE session_id = $1", session_id)
         await conn.execute("DELETE FROM conversation_context WHERE session_id = $1", session_id)
         await conn.execute("DELETE FROM chat_sessions WHERE id = $1", session_id)

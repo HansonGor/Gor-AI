@@ -45,13 +45,34 @@ def project_subject(files: dict[str, str]) -> str:
     return ''
 
 
+def chinese_count(count: int) -> str:
+    if count < 0 or count > 9999:
+        return str(count)
+    if not count:
+        return '零'
+    result, gap = '', False
+    for place in range(3, -1, -1):
+        digit = count // (10 ** place) % 10
+        if digit:
+            result += ('零' if gap else '') + '零一二三四五六七八九'[digit] + ('', '十', '百', '千')[place]
+            gap = False
+        elif result:
+            gap = True
+    return re.sub(r'^一十', '十', result)
+
+
 def summarize_project_changes(request: str, paths: list[str], *, scene: bool = False, directories: bool = False, provider: str = 'web', subject: str = '') -> str:
     count = len(set(paths))
     if not count:
         return "检查完成，当前内容已符合要求，没有产生新的变更。"
+    from project_api.changes import current_recorder
+    recorder = current_recorder.get()
+    if recorder and recorder.edit_mode == "review":
+        # Keep existing display copy; candidates must not claim saved/completed work.
+        return f"此番落笔 · {chinese_count(count)}卷留痕"
     if scene:
         title = f'“{subject}”' if subject else '你需要的'
-        return f"已完成{title} 3D 模型。生成完成后会自动打开预览，你也可以点击“预览模型”查看、下载 GLB，或点击“查看场景源码”查看细节。"
+        return f"已完成{title} 3D 模型。生成完成后会自动打开预览，你也可以点击“预览模型”查看、下载 GLB，或点击“阅览源码”查看细节。"
     if re.search(r"删除|删掉|移除", request) and re.search(r"文件|目录|文件夹", request):
         action = "删除了你指定的目录" if directories else "删除了你指定的文件"
     elif re.search(r"恢复|还原|改回|换回|回滚", request):
@@ -67,6 +88,6 @@ def summarize_project_changes(request: str, paths: list[str], *, scene: bool = F
         (r'登录|login', '登录页面'), (r'天气', '天气展示'),
     ] if re.search(pattern, request, re.I)), '')
     detail = f'，内容是{topic}' if topic else (f'，主题为“{subject}”' if subject else '')
-    unit = "目录" if directories else "文件"
-    guide = '你可以在 VS Code 工作区查看结果，在 Diff 中查看具体变更。' if provider == 'vscode' else '完成后会自动打开预览；点击“预览项目”查看效果，点击“查看项目源码”或展开 Diff 查看细节。'
-    return f"已{action}{detail}，本次涉及 {count} 个{unit}。{guide}"
+    trace = f'本次涉及 {count} 个目录' if directories else f'此番落笔 · {chinese_count(count)}卷留痕'
+    guide = '你可以在 VS Code 工作区查看结果，在 Diff 中查看具体变更。' if provider == 'vscode' else '完成后会自动打开预览；点击“预览项目”查看效果，点击“阅览源码”或展开 Diff 查看细节。'
+    return f"已{action}{detail}。{trace}。{guide}"

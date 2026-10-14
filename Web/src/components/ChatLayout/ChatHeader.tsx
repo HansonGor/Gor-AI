@@ -6,6 +6,7 @@ import {
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
+  SquareArrowOutUpRight,
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import GorBrandLogo from '../GorBrandLogo';
@@ -21,6 +22,9 @@ export interface ChatHeaderProps {
   hasPreviewWorkerContent: boolean;
   previewWorkerOpen: boolean;
   previewableGeneratedFileCount: number;
+  hasShareableMessages?: boolean;
+  shareSelecting?: boolean;
+  onShare?: () => void;
   onBack: () => void;
   onMenuClick: () => void;
   onTogglePreviewWorker: () => void;
@@ -38,12 +42,15 @@ export default function ChatHeader({
   hasPreviewWorkerContent,
   previewWorkerOpen,
   previewableGeneratedFileCount,
+  hasShareableMessages = false,
+  shareSelecting = false,
+  onShare,
   onBack,
   onMenuClick,
   onTogglePreviewWorker,
 }: ChatHeaderProps) {
   return (
-    <header className="chat-header">
+    <header className={`chat-header${hasShareableMessages && !isVscodePluginMode ? ' has-share-button' : ''}`}>
       <div className="chat-header-heading">
         <div className={`chat-header-left ${isVscodePluginMode ? '' : 'lg:hidden'}`}>
           {canGoBack && (
@@ -94,6 +101,21 @@ export default function ChatHeader({
         </div>
       </div>
       <div className="chat-header-right">
+        {!isVscodePluginMode && hasShareableMessages && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={`chat-share-button${shareSelecting ? ' is-active' : ''}`}
+            aria-label={shareSelecting ? '退出分享模式' : '分享聊天'}
+            aria-pressed={shareSelecting}
+            aria-disabled={!onShare || undefined}
+            onClick={onShare}
+            title="分享聊天"
+          >
+            <SquareArrowOutUpRight size={18} strokeWidth={1.7} aria-hidden="true" />
+          </Button>
+        )}
         {!isVscodePluginMode && hasPreviewWorkerContent && (
           <button
             type="button"

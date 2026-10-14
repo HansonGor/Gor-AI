@@ -86,6 +86,27 @@ def test_list_search_and_range_read_round_trip_over_request_ids():
     asyncio.run(scenario())
 
 
+def test_save_failure_preserves_receipt_through_rpc():
+    async def scenario():
+        bridge = VSCodeBridgeClient(timeout_seconds=0.5)
+        socket = FakeSocket()
+        bridge.register_workspace("vscode-save", socket)
+        task = asyncio.create_task(bridge.call("vscode-save", "project.writeFile", {"path": "/src/App.tsx"}))
+        await asyncio.sleep(0)
+        request = socket.sent[-1]
+        details = {"saved": False, "savedFiles": [],
+                   "failedFiles": [{"path": "/src/App.tsx", "code": "FILE_SAVE_FAILED"}],
+                   "changedFiles": [{"path": "/src/App.tsx", "diff": "-old\n+new"}]}
+        bridge.handle_response({"type": "workspace_response", "requestId": request["requestId"],
+                                "workspaceId": "vscode-save", "success": False,
+                                "error": {"code": "FILE_SAVE_FAILED", "message": "保存失败", "details": details}})
+        with pytest.raises(ProjectAPIError) as error:
+            await task
+        assert error.value.code == "FILE_SAVE_FAILED"
+        assert error.value.details == details
+    asyncio.run(scenario())
+
+
 def test_bridge_timeout_and_disconnect_complete_pending_requests():
     async def scenario():
         timed = VSCodeBridgeClient(timeout_seconds=0.01)

@@ -1,0 +1,81 @@
+.gor-code-block {
+  min-width: 0;
+  max-width: 100%;
+  margin: 8px 0;
+  overflow: hidden;
+  border: 1px solid rgba(167, 139, 250, 0.18);
+  border-radius: 8px;
+  background: linear-gradient(145deg, #252839 0%, #2b2942 58%, #28263c 100%);
+}
+.gor-code-block-share {
+  margin: 14px 0;
+  border-radius: 10px;
+}
+.gor-code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 14px;
+  border-bottom: 1px solid rgba(167, 139, 250, 0.14);
+  color: #bdb4d7;
+  font:
+    12px/1.5 Consolas,
+    'SFMono-Regular',
+    monospace;
+  button {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 0;
+    background: transparent;
+    color: #c5b3ff;
+    cursor: pointer;
+    padding: 3px 5px;
+    border-radius: 4px;
+    &:hover {
+      background: rgba(167, 139, 250, 0.1);
+    }
+    &:focus-visible {
+      outline: 1px solid #c5b3ff;
+      outline-offset: 2px;
+    }
+  }
+}
+.markdown-body .gor-code-block pre,
+.gor-share-card .gor-code-block pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 12px 14px;
+  background: transparent;
+  white-space: pre;
+  overflow-x: auto;
+  overflow-wrap: normal;
+  word-break: normal;
+  max-width: 100%;
+  code {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: #d4d4d4;
+    font:
+      13px/1.65 Consolas,
+      'SFMono-Regular',
+      'Liberation Mono',
+      monospace;
+    white-space: inherit;
+    overflow-wrap: inherit;
+    word-break: inherit;
+    text-shadow: none;
+  }
+}
+// Share images contain the entire code rather than a clipped horizontal viewport.
+.gor-share-card .gor-code-block pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  code {
+    font-size: 16px;
+  }
+}

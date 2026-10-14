@@ -601,9 +601,9 @@ def _render_slide(slide, design: SlideDesign, theme: dict[str, Any], width: floa
 
 def render_presentation(raw_design: PresentationDesign | dict[str, Any],
                         photo_assets: dict[str, PexelsPhoto] | None = None,
-                        motion_warnings: list[dict] | None = None) -> bytes:
+                        motion_warnings: list[dict] | None = None, *, prepared: bool = False) -> bytes:
     from tools.presentation_design import compose_design
-    design = compose_design(raw_design)
+    design = (PresentationDesign.model_validate(raw_design) if prepared else compose_design(raw_design))
     width, height = CANVAS[design.aspectRatio]
     theme = resolve_theme(design.theme)
     if design.referencePlan:

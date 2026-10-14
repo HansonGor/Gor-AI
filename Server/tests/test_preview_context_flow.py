@@ -107,6 +107,55 @@ async def collect_events(response):
 
 
 class PreviewContextFlowTest(unittest.TestCase):
+    def setUp(self):
+        from test_project_changes import Store
+        for name, value in [("save_thinking_trace", None), ("get_edit_mode", "auto")]:
+            patcher = patch.object(chat_route, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = patch.object(chat_route, "change_sets", Store())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_review_chat_creates_candidate_diff_without_committing_actual_web_files(self):
+        async def exercise():
+            from test_project_changes import Store
+            journal = Store()
+            project = large_project()
+            row = {'project': project, 'revision': 7, 'origin': 'generated'}
+            model = TwoTurnPatchModel()
+            async def context(*args): return {'summary': '', 'recent_messages': []}
+            async def save(*args, **kwargs): return 1
+            with (
+                patch.object(chat_route, 'change_sets', journal),
+                patch('agent.agent.get_model_for_tools', return_value=model),
+                patch('agent.agent.model_with_simple_preview_edit', model),
+                patch('agent.agent.TYPING_DELAY_MS', 0),
+                patch.object(chat_route.context_engine, 'build_context', side_effect=context),
+                patch.object(chat_route, 'get_session_preview_project', return_value=copy.deepcopy(row)),
+                patch.object(chat_route, 'update_session_preview_project_if_revision') as commit,
+                patch.object(chat_route, 'load_messages', return_value=[]),
+                patch.object(chat_route, 'save_message', side_effect=save),
+                patch.object(chat_route, 'deduct_model_quota', return_value=None),
+                patch.object(chat_route, 'auto_generate_session_title', return_value=None),
+            ):
+                response = await chat_route.chat(FakeRequest(), chat_route.ChatRequest(
+                    sessionId='s', editMode='review', assistantMessageId='a',
+                    message='把页面标题从 React Demo 改成 Gor Demo', previewProjectId=project['id'],
+                    previewServerRevision=7, previewContentRevision=0))
+                events = await collect_events(response)
+                commit.assert_not_called()
+            self.assertFalse(any(e['type'] == 'preview_project_committed' for e in events))
+            changes = [e for e in events if e['type'] == 'project_file_changed']
+            self.assertTrue(changes and all(e['pending'] for e in changes))
+            self.assertIn('Gor Demo', changes[0]['diff'])
+            record = next(iter(journal.rows.values()))
+            self.assertTrue(record['sealed'])
+            self.assertEqual(record['editMode'], 'review')
+            self.assertTrue(all(f['status'] == 'pending' for f in record['files']))
+            self.assertIn('<h1>React Demo</h1>', row['project']['files']['/src/App.tsx'])
+        asyncio.run(exercise())
+
     def test_simple_edit_detector_is_conservative_and_supports_literal_variants(self):
         expected = [
             ("把计数器改成计次器", "计数器", "计次器"),
@@ -230,11 +279,16 @@ class PreviewContextFlowTest(unittest.TestCase):
             async def get_project(session_id):
                 return copy.deepcopy(project_row)
 
-            async def commit_project(session_id, updated_project, expected_revision):
+            from test_project_changes import Store
+            journal = Store()
+
+            async def commit_project(session_id, updated_project, expected_revision, change_record=None):
                 if expected_revision != project_row["revision"]:
                     return None
                 project_row["project"] = copy.deepcopy(updated_project)
                 project_row["revision"] += 1
+                if change_record:
+                    await journal.put(change_record)
                 return {"revision": project_row["revision"]}
 
             async def build_context(session_id, messages, current_message):
@@ -242,7 +296,9 @@ class PreviewContextFlowTest(unittest.TestCase):
 
             async def invoke_turn(text):
                 body = chat_route.ChatRequest(
+                    editMode="auto",
                     sessionId="preview-context-session",
+                    assistantMessageId=f"assistant-{next_message_id}",
                     message=text,
                     previewProjectId=project_row["project"]["id"],
                     previewServerRevision=project_row["revision"],
@@ -252,6 +308,7 @@ class PreviewContextFlowTest(unittest.TestCase):
                 return await collect_events(response)
 
             with (
+                patch.object(chat_route, "change_sets", journal),
                 patch("agent.agent.get_model_for_tools", return_value=model),
                 patch("agent.agent.model_with_simple_preview_edit", model),
                 patch("agent.agent.TYPING_DELAY_MS", 0),
@@ -266,9 +323,13 @@ class PreviewContextFlowTest(unittest.TestCase):
                 first_events = await invoke_turn("把页面标题从 React Demo 改成 Gor Demo")
                 second_events = await invoke_turn("把 Gor Demo 改成 Gor")
 
-            return project, project_row, stored_messages, model.prompts, first_events, second_events
+            return project, project_row, stored_messages, model.prompts, first_events, second_events, journal.rows
 
-        original_project, project_row, stored_messages, prompts, first_events, second_events = asyncio.run(exercise())
+        original_project, project_row, stored_messages, prompts, first_events, second_events, journal_rows = asyncio.run(exercise())
+        references = [event for events in (first_events, second_events) for event in events if event.get("type") == "change_set"]
+        self.assertEqual(len(references), 2)
+        self.assertEqual(len({journal_rows[event["changeSetId"]]["messageId"] for event in references}), 2)
+        self.assertTrue(all(journal_rows[event["changeSetId"]]["sealed"] for event in references))
         original_source = original_project["files"]["/src/App.tsx"]
         self.assertEqual(len(original_source.splitlines()), 530)
         self.assertIn(SOURCE_SENTINEL, project_row["project"]["files"]["/src/App.tsx"])

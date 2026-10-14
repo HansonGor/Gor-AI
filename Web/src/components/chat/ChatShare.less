@@ -1,0 +1,506 @@
+@import '../../styles/mixins.less';
+
+.gor-share-sheet {
+  box-sizing: border-box;
+  width: 750px;
+  padding: 22px 33px;
+  margin: 0;
+  background: #182440;
+  color: #eeeefa;
+  font:
+    20px/1.65 'Microsoft YaHei',
+    'PingFang SC',
+    'Noto Sans CJK SC',
+    sans-serif;
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+  .gor-share-frame {
+    border: 1px solid #697db6;
+    border-radius: 36px;
+    padding: 19px;
+    background: linear-gradient(135deg, #10192e, #202e55 55%, #121c35);
+  }
+  .gor-share-landscape {
+    display: block;
+    width: 100%;
+    height: 356px;
+    object-fit: cover;
+    border-radius: 23px 23px 0 0;
+  }
+  .gor-share-brand {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 0;
+    border-bottom: 1px solid #6474a1;
+  }
+  .gor-share-brand > span,
+  .gor-share-footer > span:last-child {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 25px;
+  }
+  .gor-share-brand svg,
+  .gor-share-footer svg {
+    color: #c5b3ff;
+  }
+  .gor-share-brand small {
+    font-size: 17px;
+    color: #c8c7e9;
+  }
+  .gor-share-message {
+    margin: 21px 0;
+  }
+  .gor-share-label {
+    font:
+      600 18px/1.5 'Microsoft YaHei',
+      sans-serif;
+    color: #c5b3ff;
+    margin: 0 0 10px;
+  }
+  .gor-share-card {
+    padding: 18px 20px;
+    border: 1px solid #394770;
+    border-radius: 18px;
+    background: rgba(53, 65, 109, 0.45);
+    overflow-wrap: anywhere;
+  }
+  .gor-share-card > :first-child {
+    margin-top: 0;
+  }
+  .gor-share-card > :last-child {
+    margin-bottom: 0;
+  }
+  p {
+    margin: 0 0 14px;
+    white-space: pre-wrap;
+  }
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-weight: 650;
+    line-height: 1.4;
+    margin: 18px 0 12px;
+  }
+  h1 {
+    font-size: 30px;
+  }
+  h2 {
+    font-size: 26px;
+  }
+  h3 {
+    font-size: 23px;
+  }
+  ul,
+  ol {
+    padding-left: 28px;
+    margin: 12px 0;
+  }
+  li {
+    margin: 5px 0;
+  }
+  ul {
+    list-style-type: disc;
+  }
+  ol {
+    list-style-type: decimal;
+  }
+  blockquote {
+    margin: 12px 0;
+    border-left: 3px solid #a393d0;
+    padding: 4px 14px;
+    color: #d0cce8;
+  }
+  pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-all;
+    margin: 14px 0;
+    padding: 14px;
+    background: #121b32;
+    border-radius: 10px;
+    font:
+      16px/1.6 Consolas,
+      monospace;
+  }
+  code {
+    font-family: Consolas, monospace;
+    font-size: 0.85em;
+  }
+  pre code {
+    font-size: inherit;
+  }
+  table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    font-size: 16px;
+    margin: 14px 0;
+  }
+  th,
+  td {
+    border: 1px solid #536187;
+    padding: 8px;
+    overflow-wrap: anywhere;
+  }
+  th {
+    background: #293858;
+  }
+  a {
+    color: #cdc0ff;
+    text-decoration: underline;
+  }
+  img:not(.gor-share-landscape) {
+    display: block;
+    max-width: 100%;
+    max-height: 650px;
+    object-fit: contain;
+    height: auto;
+    margin: 12px 0;
+  }
+  .gor-share-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 24px;
+    padding-top: 22px;
+    border-top: 1px solid #435682;
+    color: #bfc2e5;
+    font-size: 18px;
+  }
+}
+.gor-share-render-host {
+  position: fixed;
+  left: -20000px;
+  top: 0;
+  width: 750px;
+  pointer-events: none;
+  z-index: -1;
+}
+// Desktop controls overlay the gutter; mobile share mode reserves a left column.
+.chat-share-row { position: relative; display: flex; flex-direction: column; min-width: 0; }
+.chat-share-checkbox-target {
+  position: absolute;
+  top: 4px;
+  left: calc(-1 * var(--chat-share-row-gutter, 22px));
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.chat-share-checkbox {
+  position: absolute;
+  inset: 0;
+  width: 100%; height: 100%; margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.chat-share-checkbox-visual {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 23px; height: 23px;
+  border: 1px solid #737d9f;
+  border-radius: 5px;
+  background: #252c43;
+  pointer-events: none;
+  transition: background-color 160ms ease, border-color 160ms ease;
+  svg { color: #eeeefa; opacity: 0; transition: opacity 160ms ease; }
+  // Fade the shared gradient instead of attempting to interpolate gradients.
+  &::before {
+    content: '';
+    position: absolute; inset: 0; border-radius: inherit;
+    background: var(--preview-toggle-active-bg);
+    opacity: 0; transition: opacity 160ms ease;
+  }
+  svg { position: relative; }
+}
+.chat-share-checkbox-target:hover .chat-share-checkbox-visual { background-color: #303952; border-color: #8b95b8; }
+.chat-share-checkbox:checked + .chat-share-checkbox-visual {
+  background-color: transparent;
+  border-color: var(--preview-toggle-active-border);
+  &::before, svg { opacity: 1; }
+}
+.chat-share-checkbox:focus-visible + .chat-share-checkbox-visual { outline: 2px solid rgba(159, 142, 224, 0.75); outline-offset: 2px; }
+@media (max-width: 1023px) {
+  // Reserve the same left-hand selection column as desktop, inside the viewport.
+  .chat-share-row { padding-left: 44px; }
+  .chat-share-checkbox-target { top: 4px; left: 0; }
+}
+.chat-page .input-dock:has(.chat-share-toolbar-slot) {
+  z-index: var(--chat-bottom-control-layer, 5);
+}
+.chat-share-toolbar-slot {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 12px);
+  transform: translateX(-50%);
+  z-index: var(--chat-bottom-control-layer, 5);
+  width: calc(100% - 2 * var(--chat-message-side-padding, 0px));
+  max-width: calc(var(--chat-message-list-max-width, 1030px) - 2 * var(--chat-message-side-padding, 0px));
+  // Overlay controls do not add flow height or message-list tail padding.
+  margin: 0 auto;
+}
+.chat-share-toolbar-slot ~ .chat-scroll-to-bottom {
+  bottom: calc(100% + 12px + var(--chat-share-toolbar-height, 64px) + 12px);
+}
+@media (max-width: 1023px) {
+  .chat-share-toolbar-slot { width: calc(100% - 36px); }
+}
+@media (max-width: 520px) {
+  .chat-share-toolbar-slot { width: calc(100% - 20px); }
+  .chat-share-toolbar-slot ~ .chat-scroll-to-bottom {
+    bottom: calc(100% + 12px + var(--chat-share-toolbar-height, 64px) + 10px);
+  }
+}
+.chat-share-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 10px;
+  padding: 9px 10px 9px 14px;
+  margin: 0;
+  color: #e7e8f2;
+  border: 1px solid #465271;
+  border-radius: 16px;
+  background: #242e47;
+  font-size: 14px;
+}
+.chat-share-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #e7e8f2;
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 150ms ease;
+}
+.chat-share-count svg {
+  flex: none;
+  color: #b3a7e0;
+}
+.chat-share-count:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.chat-share-count:disabled {
+  cursor: default;
+  color: #a6abbf;
+}
+.chat-share-count:disabled svg {
+  color: #8a8fa6;
+}
+.chat-share-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.chat-share-cancel {
+  background: #2D3650;
+  border: 1px solid #46516F;
+  color: #C5CCDF;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease;
+}
+.chat-share-cancel:hover {
+  background: #37415D;
+  color: #D6DCEF;
+}
+.chat-share-generate {
+  gap: 7px;
+  border: 1px solid var(--preview-toggle-active-border);
+  border-radius: 11px;
+  background: var(--preview-toggle-active-bg);
+  color: #ffffff;
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease;
+}
+.chat-share-generate:not(:disabled):hover {
+  border-color: var(--preview-toggle-active-border);
+  background: var(--preview-toggle-active-bg);
+  color: #ffffff;
+}
+.chat-share-generate:disabled {
+  background: #29334a;
+  border-color: #39435c;
+  color: #8792ad;
+  cursor: default;
+}
+.chat-share-preview {
+  width: calc(100% - 24px);
+  max-width: 850px;
+  max-height: 92dvh;
+  overflow: hidden;
+  padding: 14px 16px 16px;
+  gap: 12px;
+  background: #18243a;
+  border-color: #536085;
+  color: #e3ddf5;
+  display: flex;
+  flex-direction: column;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.chat-share-preview h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.5;
+}
+.chat-share-preview [data-slot='alert-dialog-description'] {
+  margin: 0;
+  color: #b7b5cd;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* 固定顶部操作区（不随长图滚动） */
+.chat-share-preview-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.chat-share-preview-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.chat-share-preview-top-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.chat-share-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid;
+  border-radius: 11px;
+  box-shadow: none;
+  cursor: pointer;
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease;
+  > svg {
+    width: 18px;
+    height: 18px;
+  }
+}
+/* 下载按钮：稍突出 */
+.chat-share-icon-btn--download {
+  background: #303a59;
+  border-color: #555d86;
+  color: #d6c7ff;
+}
+.chat-share-icon-btn--download:not(:disabled):hover {
+  background: #394669;
+  border-color: #555d86;
+  color: #d6c7ff;
+}
+/* 关闭按钮：更低调 */
+.chat-share-icon-btn--close {
+  background: #242c43;
+  border-color: #3c4661;
+  color: #aab5d1;
+}
+.chat-share-icon-btn--close:not(:disabled):hover {
+  background: #303951;
+  border-color: #3c4661;
+  color: #aab5d1;
+}
+.chat-share-icon-btn:disabled {
+  cursor: default;
+  color: #7f869f;
+  background: rgba(40, 50, 76, 0.5);
+  border-color: #3a4561;
+}
+.chat-share-preview-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  color: #c9c3df;
+  font-size: 14px;
+}
+.chat-share-preview-image {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  .session-list-scrollbar();
+  // Match the surrounding chat scrollbar's transparent thumb inset.
+  &::-webkit-scrollbar-thumb { border: 2px solid transparent; background-clip: padding-box; }
+  &::-webkit-scrollbar-thumb:hover { background-clip: padding-box; }
+  &::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+}
+.chat-share-preview-image img {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-bottom: 12px;
+  border-radius: 8px;
+}
+.chat-share-error {
+  color: #f0c29e;
+  font-size: 14px;
+  white-space: pre-wrap;
+  flex: none;
+}
+.chat-share-retry {
+  align-self: flex-start;
+  font-size: 14px;
+  background: #2e3d5c;
+  color: #ded7f5;
+}
+
+/* 分享按钮选中态：复用 Preview Worker 高亮样式（渐变背景+边框+阴影） */
+.chat-header .chat-share-button.is-active {
+  border-color: var(--preview-toggle-active-border);
+  background: var(--preview-toggle-active-bg);
+  box-shadow: var(--preview-toggle-active-shadow);
+  color: #ffffff;
+}
+.chat-header .chat-share-button.is-active:hover {
+  transform: translateY(-1px);
+  border-color: var(--preview-toggle-active-border);
+  background: var(--preview-toggle-active-bg);
+  box-shadow: var(--preview-toggle-active-shadow);
+  color: #ffffff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-share-button,
+  .chat-share-icon-btn,
+  .chat-share-checkbox-visual,
+  .chat-share-checkbox-visual::before,
+  .chat-share-checkbox-visual svg {
+    transition: none !important;
+  }
+}

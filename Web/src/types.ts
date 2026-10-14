@@ -52,6 +52,7 @@ export interface ModelQuotaInfo {
 }
 
 export interface ProjectChange {
+  pending?: boolean;
   path: string;
   diff: string;
 }
@@ -255,6 +256,7 @@ export interface SearchTrace {
 }
 
 export interface ChatMessage {
+  thinkingTrace?: import('./utils/thinking').ThinkingTrace;
   id: string;
   role: 'user' | 'assistant';
   content: string;
@@ -281,6 +283,9 @@ export interface ChatMessage {
   videoUrl?: string;
   projectChanges?: ProjectChange[];
   previewChanges?: PreviewFileChange[];
+  /** ChangeSet emitted for this assistant turn; provider selects its host adapter. */
+  projectChangeSet?: { id: string; sessionId: string; provider: 'preview' | 'vscode' };
+  projectChangeSetAmbiguous?: boolean;
   /** Turn-specific Virtual FS snapshot, persisted with the assistant message to prevent source mixing. */
   previewSnapshot?: PreviewProjectSnapshot;
   /** True when the list is reconstructed from the persisted project snapshot (legacy messages). */
@@ -306,7 +311,16 @@ export interface SidebarProps {
   isCollapsed?: boolean;
 }
 
+export interface ShareSelection {
+  selectedIds: ReadonlySet<string>;
+  onToggle: (id: string) => void;
+}
 export interface ChatBoxProps {
+  shareSelection?: ShareSelection;
+  shareToolbar?: import('react').ReactNode;
+  fileEditMode?: 'instant' | 'review';
+  fileEditModeLoading?: boolean;
+  onFileEditModeChange?: (mode: 'instant' | 'review') => void;
   messages: ChatMessage[];
   currentPreviewProject?: PreviewProjectLabel;
   input: string;
@@ -336,6 +350,9 @@ export interface ChatBoxProps {
 }
 
 export interface InputAreaProps {
+  fileEditMode?: 'instant' | 'review';
+  fileEditModeLoading?: boolean;
+  onFileEditModeChange?: (mode: 'instant' | 'review') => void;
   input: string;
   setInput: (value: string) => void;
   isLoading: boolean;
@@ -355,6 +372,7 @@ export interface InputAreaProps {
 }
 
 export interface MessageListProps {
+  shareSelection?: ShareSelection;
   messages: ChatMessage[];
   currentPreviewProject?: PreviewProjectLabel;
   onPreviewFile?: (file: GeneratedFile) => void;

@@ -1,0 +1,58 @@
+.undo-confirm-overlay {
+  background: rgba(5, 9, 25, .64);
+  backdrop-filter: blur(5px);
+}
+.undo-confirm-modal.undo-confirm-modal {
+  box-sizing: border-box;
+  width: calc(100% - 32px);
+  max-width: 560px;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  padding: 40px 32px 28px;
+  border: 1px solid rgba(187, 157, 255, .85);
+  border-radius: 24px;
+  color: #f6f3ff;
+  background: radial-gradient(ellipse at 3% 0%, rgba(104, 81, 204, .28), transparent 48%),
+    radial-gradient(ellipse at 100% 100%, rgba(76, 59, 168, .24), transparent 50%), rgba(17, 26, 54, .88);
+  backdrop-filter: blur(22px);
+  box-shadow: inset 0 1px 0 rgba(227, 213, 255, .15), 0 18px 70px rgba(5, 5, 26, .55), 0 0 22px rgba(111, 72, 217, .14);
+  font-family: inherit;
+  .undo-confirm-close { position: absolute; z-index: 2; right: 18px; top: 18px; width: 32px; height: 32px; padding: 5px; border-radius: 8px; color: #a4a5d0; background: transparent; }
+  .undo-confirm-close svg { width: 24px; height: 24px; }
+  .undo-confirm-close:hover { background: rgba(162, 134, 232, .12); color: #e4d8ff; }
+  .undo-confirm-visual { position: relative; pointer-events: none; display: flex; align-items: center; justify-content: center; width: 100%; height: 116px; margin-bottom: 22px; }
+  .undo-confirm-emblem { display: flex; align-items: center; justify-content: center; width: 98px; height: 98px; border: 1px solid #9673e4; border-radius: 50%; background: radial-gradient(circle at 35% 30%, rgba(132, 94, 228, .34), rgba(79, 51, 145, .16)); box-shadow: 0 0 28px rgba(121, 74, 231, .18), inset 0 0 18px rgba(122, 85, 202, .12); color: #c3a0ff; }
+  .undo-confirm-emblem svg { width: 45px; height: 45px; stroke-width: 2.2; }
+  .undo-confirm-cloud { position: absolute; top: 59px; width: 68px; height: 12px; border-top: 2px solid rgba(126, 96, 208, .34); border-radius: 20px; }
+  .undo-confirm-cloud::before { content: '✦'; position: absolute; top: -32px; color: #9974f8; font-size: 14px; }
+  .undo-confirm-cloud::after { content: ''; position: absolute; top: 8px; width: 40px; height: 9px; border-radius: 20px; background: rgba(126, 96, 208, .22); }
+  .undo-confirm-cloud-left { right: calc(50% + 74px); }
+  .undo-confirm-cloud-right { left: calc(50% + 74px); transform: rotate(180deg); }
+  .undo-confirm-title { margin: 0; max-width: 100%; color: #f6f3ff; text-align: center; font-size: clamp(20px, 3vw, 28px); line-height: 1.5; font-weight: 700; overflow-wrap: anywhere; }
+  .undo-confirm-path { max-width: 100%; margin-top: 16px; padding: 8px 20px; border: 1px solid rgba(147, 117, 232, .35); border-radius: 13px; background: rgba(127, 105, 208, .2); color: #bfa5fc; font-size: 18px; line-height: 1.5; overflow-wrap: anywhere; word-break: break-word; text-align: center; }
+  .undo-confirm-description { margin: 16px 0 0; color: #babce4; font-size: 18px; line-height: 1.6; text-align: center; overflow-wrap: anywhere; }
+  .undo-confirm-description strong { color: #b497ff; font-weight: 650; }
+  .undo-confirm-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; width: 100%; margin-top: 32px; }
+  .undo-confirm-actions button { min-width: 0; height: 62px; margin: 0; border-radius: 18px; font-family: inherit; font-size: 18px; font-weight: 650; white-space: normal; }
+  .undo-confirm-cancel { border: 1px solid #4c5278; background: rgba(17, 24, 47, .4); color: #f3efff; }
+  .undo-confirm-cancel:hover { background: rgba(77, 61, 128, .3); color: #fff; }
+  .undo-confirm-submit { border: 1px solid #d7bdff; background: linear-gradient(180deg, #c4a8ff, #9673f7); color: #160d3c; box-shadow: inset 0 1px 1px rgba(255,255,255,.5), 0 0 20px rgba(148, 105, 247, .32); }
+  .undo-confirm-submit:hover { background: linear-gradient(180deg, #d0b9ff, #a181fb); }
+  button:focus-visible { outline: 2px solid #d9c5ff; outline-offset: 3px; }
+  @media (max-width: 480px) {
+    padding: 32px 20px 22px; border-radius: 20px;
+    .undo-confirm-visual { height: 100px; margin-bottom: 16px; }
+    .undo-confirm-emblem { width: 82px; height: 82px; }
+    .undo-confirm-emblem svg { width: 38px; height: 38px; }
+    .undo-confirm-cloud { width: 40px; }
+    .undo-confirm-cloud-left { right: calc(50% + 58px); }
+    .undo-confirm-cloud-right { left: calc(50% + 58px); }
+    .undo-confirm-path, .undo-confirm-description { font-size: 15px; }
+    .undo-confirm-actions { gap: 10px; margin-top: 24px; }
+    .undo-confirm-actions button { height: 48px; font-size: 15px; border-radius: 14px; padding: 0 8px; }
+  }
+}

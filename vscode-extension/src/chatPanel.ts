@@ -3,13 +3,17 @@ import { existsSync, watch as watchFileSystem } from 'node:fs';
 import * as http from 'node:http';
 import * as https from 'node:https';
 import * as path from 'node:path';
+import { homedir } from 'node:os';
 import * as vscode from 'vscode';
+import { decodeSharePng } from './shareImageSave';
 
 type WebviewRequest = {
   type?: string;
   requestId?: string;
   sessionId?: string;
   message?: string;
+  suggestedName?: string;
+  base64?: string;
 };
 
 type ActiveRequest = http.ClientRequest;
@@ -195,6 +199,17 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     if (!message || typeof message !== 'object') return;
     const requestId = typeof message.requestId === 'string' ? message.requestId : '';
     switch (message.type) {
+      case 'gor.saveShareImage': {
+        const targetWebview = this.webview;
+        try {
+          const bytes = decodeSharePng(message.base64);
+          const name = 'Gor-聊天.png';
+          const uri = await vscode.window.showSaveDialog({ defaultUri: vscode.Uri.file(path.join(homedir(), name)), filters: { 'PNG 图片': ['png'] } });
+          if (uri) await vscode.workspace.fs.writeFile(uri, bytes);
+          await targetWebview?.postMessage({ type: 'gor.shareImageSaved', requestId, saved: Boolean(uri) });
+        } catch (error) { await targetWebview?.postMessage({ type: 'gor.shareImageSaved', requestId, saved: false, error: this.errorText(error) }); }
+        break;
+      }
       case 'gor.workspaceContextReady':
         this.sendWorkspaceContext();
         break;

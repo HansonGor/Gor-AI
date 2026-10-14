@@ -153,7 +153,8 @@ Content-Type: application/json
 ```
 
 **SSE 事件类型**:
-- `thinking`: 模型思考中
+- `thinking`: 兼容的等待心跳，不代表模型返回了思考内容
+- `thinking_start` / `thinking_delta` / `thinking_end`: 模型适配层输出的单次调用思考事件，携带 roundId；delta 仅含真实返回的思考内容或摘要，end 不代表整轮 Agent 已结束
 - `tool_start`: 工具开始调用
 - `tool_end`: 工具调用完成
 - `token`: 文本片段（打字机效果）
@@ -165,6 +166,8 @@ Content-Type: application/json
 - `error`: 错误
 - `done`: 结束
 
+思考经 `models/thinking.py` 适配后沿用现有 SSE，不改 Agent 工具决策。工具模型启用流式观察，ainvoke 仍返回完整决策；Token 回调兼容 usage_metadata。整轮完成、取消或失败由终结事件及实际异常确定，思考历史独立保存到 `chat_messages.thinking_trace` JSONB，不进入模型历史正文，不改文件、ChangeSet 或 Diff。后台重载时 init_db 增加可空字段，旧消息无需补造记录。回归：`venv\Scripts\python.exe -X utf8 -m pytest tests/test_thinking.py -q`。
+
 ### 会话管理
 
 ```
@@ -174,6 +177,25 @@ GET  /api/chat/sessions?userId=default # 查询会话列表
 POST /api/chat/message/save            # 保存消息
 DELETE /api/chat/session/:id           # 删除会话
 ```
+
+### 文件变更撤销（共用 Diff UI 接入）
+
+`project_api/changes.py` 提供 ChangeRecorder 和统一 UndoService；`db/project_changes.py` 将完整恢复快照保存到 PostgreSQL JSONB，启动 init_db 创建表。每轮按会话、执行 UUID、ProjectRef/root 归属，首次 before/最终 after 合并；原始 Diff 历史不修改，撤销不重复记为 Agent 变更。
+
+```
+GET  /api/chat/session/:sessionId/change-sets/:id
+POST /api/chat/session/:sessionId/change-sets/:id/files/:fileId/undo
+POST /api/chat/session/:sessionId/change-sets/:id/undo
+```
+
+SSE `change_set` 返回 changeSetId/roundId/projectRef。UndoService 对整批 applied 文件先检查 Hash、版本、Dirty/root，冲突全部阻止；Provider 再在本地执行边界校验。Web 用 Virtual FS + 数据库 CAS，返回 previewProject/serverRevision；插件用 Extension RPC + 原生 WorkspaceEdit/save/fs。逐文件返回真实结果；重复成功不执行，部分保存失败保留已完成结果。applying/undoing 请求中断后需核对，不盲目重试。审阅确认接入 ApplyService，未实现拒绝、Redo 或历史项目自动切换；Web 非当前项目拒绝，既有 GLB/消息快照不覆写。完整边界与状态见根目录 project.md。
+
+快照不发送给 LLM：插件回执中的私有 changeSnapshots 被提取后删除；合计超过 2 MB 拒绝而非截断。数据库记录失败时插件不开始写入；Web applied 记录与项目保存同事务。部署需重载后台初始化表，并重载构建后的插件。本阶段测试使用存储/模型/VS Code 替身，未进行真实宿主或数据库迁移验收。
+
+Web 客户端位于 `Web/src/api/projectChanges.ts` 与 `webProjectChanges.ts`：显式宿主校验，拒绝本地未保存改动；撤销成功后只同步同一项目且未发生并发编辑的 Virtual FS，请求构建，不补造入口或覆写历史 GLB。插件客户端不接入 Preview。共用 Diff 单/批撤销按钮调用上述 API，回读真实状态后更新。sealed ChangeSet 保存精确 assistant client messageId；历史消息按会话和该 ID 返回紧凑 `project_change_sets` 引用，不返回 before/after。旧记录无可靠关联时不猜测绑定；多记录歧义保持禁用，不用最新记录代替。审阅接收复用同一客户端的 applyFile/applyChangeSet 和 Provider 保存边界；没有拒绝或 Redo。
+
+回归：`venv\Scripts\python.exe -X utf8 -m pytest tests/test_project_changes.py tests/test_preview_context_flow.py -q`；插件 `npm test`；Web `node --experimental-strip-types --test scripts/project-changes.test.ts`；两端构建命令见 project.md。
+
 
 ### 视频
 
@@ -202,9 +224,9 @@ GET /api/download/:filename
 - 生成/复合任务首次写入成功后继续模型循环，可再申请能力、完成剩余步骤；仅已验证的单一文字替换保留快速结束。气泡简述实际改动，源码只放 Diff，附加子任务按真实反馈区分完成、失败、仅调用，缺少能力如实说明。省 Token 优先去重复，不删除默认能力或静默跳过子任务。
 - **多项目限制未解除**：单次 Agent 仍绑定一个 Preview Workspace，`independent_projects` 在目录中不可用。React+3D 同轮独立双项目仍需多子任务上下文和快照发布支持；当前阻止新增入口/SceneSpec 混写，失败不改原文件，历史混合快照既有文件与无关样式仍可编辑，不清理历史产物。请分轮创建，不把本次协商入口当成双项目发布已完成。插件永远不因申请能力而挂载 Preview。完整流程和验收要求见根目录 `project.md`。
 - 用户要求不联网时仍保留搜索 Schema，但 Agent 拒绝实际搜索；私有路径/源码不发送到公开 Provider。本地任务查询公开依赖时只上传公共查询词，不附带私有原始气泡；公开 GitHub 文件名限定符不因文件名而被禁搜。当前宿主与连接能力决定文件操作，不得从 VS Code 降级到 Preview 或服务端磁盘。
-- Agent 搜索提示包含当前 Asia/Shanghai 日期与本轮实际能力，忽略历史“没有联网工具”的说法。时效性答复未先查询或错误否认联网时，最多提醒模型再调用一次；仍未调用则不发送未经核实的记忆答案。新闻/最新版本无论静态路由还是动态申请 `news_research`，都必须依次搜索、读取正文、综合；Reader 只接收本轮搜索结果 URL，至少一篇成功提取正文才算完成。搜索来源维持 `search_sources` SSE / `[S1]` 引用。新鲜度参与排序但没有固定 3 天截止；官方和官网用于核实一手事实，不排斥相关主流媒体、行业/技术媒体、专业博客和产品生态配套网站。当前型号查询要尝试独立来源交叉核对；精选来源没有独立材料时放宽搜索发现。最终按实际发布日期由新到旧排列，最新在最前；来源/官网名称在工具结果含对应 URL 时使用 Markdown 可点击链接，直达该 URL，禁止猜造或改写链接。气泡只用“序号. 标题 + 通俗摘要 + 来源/实际发布日期（有则显示）+ [S#]”资讯卡片；缺日期只省略日期，不解释。禁止输出检索轮数、搜索/读取过程、工具或网页错误、无关结果/旧闻排除、覆盖分析、边界与免责声明等过程噪音；没有可靠内容时只用一句话说明。只有确实有帮助时才用一行附官方查阅渠道或具体延伸方向，不强制追问或扩写。验证命令：`venv\Scripts\python.exe -X utf8 -m pytest tests/test_tool_negotiation.py tests/test_project_reply.py tests/test_web_skill_routing.py tests/test_tool_routing.py tests/test_search_orchestrator.py tests/test_web_reader.py tests/test_tool_prompt_compatibility.py -q`；Agent 以模型和服务替身验证流程，不保证线上搜索可用性。
+- Agent 搜索提示包含当前 Asia/Shanghai 日期与本轮实际能力，忽略历史“没有联网工具”的说法。时效性答复未先查询或错误否认联网时，最多提醒模型再调用一次；仍未调用则不发送未经核实的记忆答案。新闻/最新版本无论静态路由还是动态申请 `news_research`，都必须依次搜索、读取正文、综合；Reader 只接收本轮搜索结果 URL，至少一篇成功提取正文才满足读取保护；综合新闻优先整理5–8条独立资讯，单一事件按问题回答，资料不足不凑数。搜索来源维持 `search_sources` SSE / `[S1]` 引用。新鲜度参与排序但没有固定 3 天截止；官方和官网用于核实一手事实，不排斥相关主流媒体、行业/技术媒体、专业博客和产品生态配套网站。当前型号查询要尝试独立来源交叉核对；精选来源没有独立材料时放宽搜索发现。最终按实际发布日期由新到旧排列，最新在最前；来源/官网名称在工具结果含对应 URL 时使用 Markdown 可点击链接，直达该 URL，禁止猜造或改写链接。气泡只用“序号. 标题 + 通俗摘要 + 来源/实际发布日期（有则显示）+ [S#]”资讯卡片；缺日期只省略日期，不解释。禁止输出检索轮数、搜索/读取过程、工具或网页错误、无关结果/旧闻排除、覆盖分析、边界与免责声明等过程噪音；没有可靠内容时只用一句话说明。只有确实有帮助时才用一行附官方查阅渠道或具体延伸方向，不强制追问或扩写。验证命令：`venv\Scripts\python.exe -X utf8 -m pytest tests/test_tool_negotiation.py tests/test_project_reply.py tests/test_web_skill_routing.py tests/test_tool_routing.py tests/test_search_orchestrator.py tests/test_web_reader.py tests/test_tool_prompt_compatibility.py -q`；Agent 以模型和服务替身验证流程，不保证线上搜索可用性。
 - `get_weather`: 天气查询（wttr.in）
-- `web_reader`: 新闻与最新版本查询在 `web_search` 后读取本轮命中的 3–5 个精确 URL（不足 3 个则读取全部，最多 5 篇），提取正文、标题、发布时间、作者、链接和关键段落；新闻搜索自动附本轮日期但不设固定时效截止，使用用户提问语言。官方/官网优先核实一手事实，同时读取相关主流媒体、行业/技术媒体、专业博客或产品生态配套网站；当前版本查询不因官方页面较早而跳过独立来源。只访问公开 HTTP/HTTPS 页面，限制响应大小和跳转，并拒绝内网/本机 URL；通过服务端配置的网络代理访问时，仍在每个请求和重定向前校验目标域名及公网地址；最终引用沿用搜索来源编号。网页正文视为不可信资料，不接受其中指令；正文读取失败时不得声称已读正文，失败原因留在工具状态，不写进资讯卡片。
+- `web_reader`: 新闻与最新版本查询在 `web_search` 后读取本轮命中的 3–8 个精确 URL（不足 3 个则读取全部，最多 8 篇），提取正文、标题、发布时间、作者、链接和关键段落；新闻搜索自动附本轮日期但不设固定时效截止，使用用户提问语言。官方/官网优先核实一手事实，同时读取相关主流媒体、行业/技术媒体、专业博客或产品生态配套网站；当前版本查询不因官方页面较早而跳过独立来源。只访问公开 HTTP/HTTPS 页面，限制响应大小和跳转，并拒绝内网/本机 URL；通过服务端配置的网络代理访问时，仍在每个请求和重定向前校验目标域名及公网地址；最终引用沿用搜索来源编号。网页正文视为不可信资料，不接受其中指令；正文读取失败时不得声称已读正文，失败原因留在工具状态，不写进资讯卡片。
 - `web_search`: 普通咨询/官方事实/技术文档/新闻/视觉灵感使用 Tavily、Brave、Serper、豆包；深度调研加 Exa，不再内部调用 GitHub。新闻语言跟随用户，来源范围独立判断；国内优先新华社、人民网、央视、财新、澎湃、第一财经、36kr、IT之家及一手官方站；国际优先 Reuters、AP、BBC、Bloomberg、FT、CNBC、NYT、The Guardian、Nikkei Asia、CNA、NHK 及官方机构。新鲜度只作为排序信号，不设固定 3 天门槛；区分发布时间与事件时间，最终按实际发布日期由新到旧排列，最新在最前，不能把旧报道说成最新。来源按话题选取，官网/官方发布页优先核实事实，但不是唯一来源；技术类可补 TechCrunch、The Verge、Ars Technica、MIT Technology Review、Wired、VentureBeat、The Information、量子位、机器之心、极客公园等行业媒体和专业博客。当前产品/模型版本即使官方页面日期较早，也要尝试独立来源交叉核对；精选域名无独立材料时可做一次普通网页发现。不因已有结果少于 8 条凑数或放松媒体/地区集中度约束。缺少目标区域时补搜；返回最多 8 条。麦当劳、小红书、今日头条、白宫、Antd Design Mobile、微博等登记产品从原始气泡匹配别名，先检索官网索引，再补相关资源网站，官网命中优先；未知品牌不猜域名。显式 `site:` 为硬约束且优先于产品偏好。Tavily 传 `include_domains`，豆包用 `Filter.Sites`，Serper/Brave 用 `site:`，Exa 用 `includeDomains`；不提供排除域名入口。小红书等仅公开索引搜索，无专用站内/私有 API。
 - `search_github_code`: `tools/github_code.py` 独立 `github_code` Skill，先调用 GitHub Repository Search：明确 URL/owner-repo 精确定位；纯名称先同名匹配，再按 Stars 热度给出模糊候选。已登记 `antd mobile` → `ant-design/ant-design-mobile` 别名。公开仓库搜索在 token 缺失/失效时可匿名回退；GitHub Code Search 仍需 `GITHUB_TOKEN`。仅当用户需要源码、实现、用法、示例、Issue 或 PR 时再调用代码搜索，并优先限定到首选仓库；普通网页搜索不是其静默替代。只返回有界仓库信息、代码引用与摘要，回复简单总结，不铺满源码；仓库/代码搜索的未配置、错误、无结果和成功分别报告。新闻+代码可组合两个 Skill。多个搜索调用的来源编号同轮统一，避免覆盖。[RoutingAudit] 记录 `selected_skills`、`search_regions`、`source_domains`、`github_skill_used`、仓库候选数及代码搜索状态，来源事件补充 `officialDomains`。
 - `search_images`: 并行搜索可用的 Pexels、Pixabay、Unsplash、Openverse、Wikimedia Commons 图片候选，也可指定单一来源；支持横图/竖图/方图筛选，每个来源最多 6 个候选，返回图片地址、来源页、作者及可用许可元数据。Pexels/Pixabay/Unsplash 需各自配置 API Key，Openverse/Wikimedia Commons 可匿名查询。PPT 复用这一个 Provider 搜索实现，选中后再下载、嵌入并署名。Pixabay 候选图链仅短期使用，Unsplash 触发 API 下载记录，Openverse/Wikimedia 遵守单张素材的许可要求。
@@ -257,7 +279,7 @@ GET /api/download/:filename
 
 - Web：虚拟文件新增/覆盖仍由 write 承担；旧 Preview 名称保留兼容，不默认向模型提供。通用创建/删除和空目录尚不支持，不伪造能力。
 - Web 新项目的 React 生成规则要求模块入口与实际 JSX/TSX 路径一致、组件 import/export、CSS import，不生成 CDN/Babel 全局组件方案。这条规则仅在空 Web Preview 项目注入，不改变插件工作区规则；写入成功不等于前端构建成功。旧 Babel 项目由 Web 的本地编译兼容层处理，原源码不覆写。
-- VS Code：仅当前已连接工作区；write 修改编辑器文档但不保存，create 不覆盖，delete 保留原保护。不得降级到 Web Preview 或服务端磁盘。
+- VS Code：仅当前已连接工作区；write/patch/batch patch 通过 WorkspaceEdit 修改后自动保存本次文件，原本 Dirty 的目标先拒绝修改。保存失败返回明确错误及部分保存/Diff 回执，不能当作修改成功；create 原生创建且不覆盖，delete 保留原保护。不修改全局 Auto Save，不得降级到 Web Preview 或服务端磁盘。
 - expected_version：Web 项目版本；VS Code 文件版本（批量每项分别传），旧 expected_file_version 参数仍兼容。源码同步事件、Diff、产物发布流程不变。
 
 相关回归：`venv\Scripts\python.exe -X utf8 -m pytest tests/test_shared_project_tools.py tests/test_tool_routing.py tests/test_project_api.py tests/test_vscode_project_api.py tests/test_preview_context_flow.py -q`。两端构建验收命令见 `project.md`。
@@ -269,6 +291,26 @@ GET /api/download/:filename
 5. **模型额度**: 本地记账，需定期与服务商后台核对
 
 ## 故障排查
+
+### 新闻正文复用与补读
+
+综合新闻优先整理 5–8 条有真实来源的独立资讯，通常 3–8 条；同一事件多篇报道合并，少量可靠资讯按实际数量回答，聚焦问题不扩展无关条目。热点、爆点及影响必须由事实支撑。单批正文读取上限统一为 8（Agent、ReaderContext 与工具共用 MAX_PAGES）；显式较小数量保持有效，来源与资讯条数分别计算。
+
+`ReaderContext` 按当前 Agent Run、精确 URL 和全部读取条件复用成功页面；失败仍可重试，不合并独立来源，不跨轮缓存最新信息。`web_reader` 的 start_char 可根据 next_start_char 补读 8,000 字符容量之后的正文，返回截断标记、总长度和正文指纹；版本变化标记 snapshot_changed 并清除旧缓存，不能拼接不同版本。片段读取不代表整篇已核实。下载与提取阶段用 `[ReaderTiming]` 记录，命中及批次统计用 `[ReaderReuse]` 记录；不日志输出正文。安全上限、白名单与权限、3–8 篇来源核验规则继续生效。
+
+专项命令：`venv\Scripts\python.exe -X utf8 -m pytest tests/test_reader_context.py tests/test_web_reader.py tests/test_search_context.py tests/test_web_skill_routing.py tests/test_tool_prompt_compatibility.py -q`；公共验收见 project.md。
+
+### 同轮联网搜索复用
+
+`agent/search_context.py` 由当前 Agent Run 持有，Web / VS Code 共用。同工具、所有参数完全一致且先前结果成功时复用；空结果、错误和部分失败不缓存，取消及权限检查保持有效。来源展示和引用保持完整；只对模型上下文中完全相同的证据块、正文段落及已在正文中的关键段落去重，新事实保持完整。不会跨轮缓存实时信息、限制必要补搜或提前结束生成。`[SearchReuse]` 记录复用与耗时，Search Trace 不把缓存命中算成第二次 Provider 执行。
+
+专项测试：`venv\Scripts\python.exe -X utf8 -m pytest tests/test_search_context.py tests/test_web_reader.py tests/test_search_orchestrator.py tests/test_web_skill_routing.py -q`；其余公共验收遵循 project.md。
+
+### 公共历史上下文
+
+Web / VS Code 共用 `services/context_engine.py`：当前请求完整保留；达到 30,000 估算 Token 时，近期完整问答保留在 10,000 Token 预算内，旧轮次增量摘要。未达阈值不按固定消息条数丢弃历史。压缩/保存失败保留成功摘要并按完整轮次预算回退，缺失历史向模型明确说明；原始消息与摘要游标不因失败修改。超长旧轮次完整压缩，模型拒绝时降级，不截断原文。
+
+`[LLMInputBudget]` 记录每次 Agent 调用的输入分项估算及输出预留，真实输入用量沿用 Provider 返回的诊断；不记录内容。专项命令：`venv\Scripts\python.exe -X utf8 -m pytest tests/test_context_engine.py tests/test_agent_diagnostics.py -q`；完整验收沿用根目录 project.md。不会自动精简各工具或任务附加数据。
 
 ### 数据库连接失败
 - 检查 `SUPABASE_DB_URL` 是否正确
@@ -288,3 +330,13 @@ GET /api/download/:filename
 ## 许可证
 
 MIT
+
+### 思考展示摘要
+
+Thinking Adapter 观察实际思考与 Agent 阶段，不再额外调用 LLM 生成标题或摘要。ThinkingTrace 复用真实 tool_start / tool_end / 文件回执，生成中文任务标题和简述，通过 thinking_update 沿用 SSE 传输及既有 JSONB 历史保存。未知内容不强行编造，计划与实际执行分开，结果未明确成功时不报成功。模型调用结束到下一轮开始间的工具事件归属该轮；新轮开始冻结此前记录并清除旧工具关联，旧 roundId 和未配对结果不改写历史。thinking_end 不代表 Agent 整轮结束，文件/工具/ChangeSet 链路保持原样。运行 venv\Scripts\python.exe -X utf8 -m pytest tests/test_thinking.py -q 及根文档对应验收。
+
+### PPT 上下文与 revision 补丁
+
+`tools/presentation_revision.py` 按当前请求区分新稿、沿用要求和修改。局部请求提供目标页与目录，完整基准留在 Server；模糊范围保留所有页面，不额外调用 LLM。派生 referencePlan 不重复上传。create_ppt 新稿传 presentation，修改优先传 revision（精确 baseFingerprint、updates、deckChanges、appendSlides、removeSlideIds），对象合并、数组替换，完整校验后生成独立新快照，不覆写旧产物。未修改页面语义/布局/时间轴保留，受影响连续页组一起重排；既有图片缓存过期后不承诺照片逐像素一致。
+
+ChatRequest 可传 presentationMessageId，仅读取当前会话真实历史快照；找不到不回退猜测。未指定默认最近一次，明确要求更早版本但未绑定时先确认目标。公共逻辑适用于 Web/插件；插件不启用 Preview Worker。搜图、质量校验、PPTX 和下载机制保留。专项：`venv\Scripts\python.exe -X utf8 -m pytest tests/test_presentation_revision.py tests/test_presentation_design.py tests/test_presentation_motion.py tests/test_presentation_reference.py tests/test_presentation_pexels.py tests/test_project_files.py -q`；公共验收见 project.md。

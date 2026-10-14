@@ -5,19 +5,22 @@
 from functools import lru_cache
 
 from langchain_openai import ChatOpenAI
+from models.thinking import ThinkingChatOpenAI
 from config import config
 from tools.index import WORKSPACE_TOOLS
 from tools.project_api_tools import batch_patch_project_files
 
 
 def get_llm():
-    """获取大模型实例（非流式，用于工具调用检测）——低温度确保稳定调工具"""
-    return ChatOpenAI(
+    """低温度工具模型；流式仅供思考观察，ainvoke 仍返回完整工具决策。"""
+    return ThinkingChatOpenAI(
         model=config.Ark.MODEL_ID,
         api_key=config.Ark.API_KEY,
         base_url=config.Ark.API_URL,
         temperature=0.1,
         max_tokens=config.Ark.MAX_OUTPUT_TOKENS,
+        streaming=True,
+        stream_usage=True,
     )
 
 

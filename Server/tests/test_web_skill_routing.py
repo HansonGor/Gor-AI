@@ -17,6 +17,17 @@ HOSTS = [{}, {"has_preview": True}, {"vscode_client_mode": True},
          {"vscode_client_mode": True, "vscode_workspace_id": "workspace"}]
 
 
+@pytest.mark.parametrize("host", [{}, {"vscode_client_mode": True}])
+def test_news_prefers_five_to_eight_independent_items_without_padding(host):
+    prompt = route_request("整理今日热点新闻", **host).system_prompt
+    assert "优先 5–8 条" in prompt
+    assert "同一事件时合并成一条资讯" in prompt
+    assert "来源篇数不等于独立资讯条数" in prompt
+    assert "单一事件、型号或聚焦问题只回答所问" in prompt
+    assert "不能为了凑够" in prompt
+    assert "不编造热搜排名" in prompt
+
+
 @pytest.mark.parametrize("host", HOSTS)
 @pytest.mark.parametrize("question", [
     "你好", "好的", "现在继续", "讲个笑话", "revision 是什么？", "1+2是多少？",

@@ -2,12 +2,15 @@
 // 负责发送消息、接收 SSE 流式响应、管理消息状态
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useFeedback } from '../components/ui/feedback';
+import { useFileEditMode } from './useFileEditMode';
 import { sendChatMessage } from '../api/chat';
+import { acceptThinkingEvent, finishThinking } from '../utils/thinking';
 import { saveGeneratedGlb } from '../api/webProjectArtifacts';
 import { validateSceneSpec, type SceneSpec } from '../modeling/sceneSpec.ts';
 import { saveSceneArtifact } from '../modeling/sceneArtifact.ts';
 import { isNewPreviewProjectRequest } from '../preview/core/creationIntent.ts';
 import { getChatClientMode } from '../utils/clientMode';
+import { bindLiveChangeSet } from '../utils/changeSetReference';
 import { createMessagePreviewSnapshot } from '../preview/core/projectSnapshot.ts';
 import { MODEL_CONFIG } from '../config';
 import { useVideoPolling } from './useVideoPolling';
@@ -60,7 +63,8 @@ interface ContextRemain {
 }
 
 export function useMessage(sessionId: string | null) {
-  const { alert } = useFeedback();
+  const { alert, notify } = useFeedback();
+  const { fileEditMode, fileEditModeLoading, setFileEditMode, freezeFileEditMode } = useFileEditMode(sessionId, (message) => notify(message, 'error'));
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   // 使用 ref 跟踪 messages 最新值，避免 useCallback 依赖 messages 导致重渲染循环
   const messagesRef = useRef(messages);
@@ -90,6 +94,43 @@ export function useMessage(sessionId: string | null) {
   useEffect(() => {
     setPendingUploadSummary(null);
   }, [sessionId]);
+
+  useEffect(() => {
+    if (getChatClientMode() !== 'web') return;
+    const confirmed = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId: string; changeSetId: string; project: PreviewProject }>).detail;
+      if (detail.sessionId !== sessionId) return;
+      setMessages(previous => previous.map(message => {
+        if (message.projectChangeSet?.id !== detail.changeSetId) return message;
+        const changes = message.projectChanges ?? message.previewChanges ?? [];
+        const paths = changes.map(change => change.path);
+        return { ...message,
+          previewChanges: changes.map(change => ({ ...change, projectId: detail.project.id })),
+          projectChanges: undefined,
+          previewSnapshot: createMessagePreviewSnapshot(detail.project, message.id, paths),
+        };
+      }));
+      setProjectRevision(previous => previous + 1);
+      const target = messagesRef.current.find(message => message.projectChangeSet?.id === detail.changeSetId);
+      if (target && detail.project.template === 'html' && detail.project.files['/src/scene.json']) {
+        // Export only the confirmed scene, into the existing virtual artifact store.
+        // Bind to the initiating message rather than whichever reply is latest.
+        void (async () => {
+          try {
+            const scene = validateSceneSpec(JSON.parse(detail.project.files['/src/scene.json']));
+            const file = await saveSceneArtifact(scene, (blob, name) => saveGeneratedGlb(detail.sessionId, blob, name, target.id));
+            setMessages(previous => previous.map(message => message.id === target.id
+              ? { ...message, files: [...(message.files ?? (message.file ? [message.file] : [])), file], file }
+              : message));
+          } catch (error) {
+            notify(error instanceof Error ? error.message : '文件变更请求失败。', 'error');
+          }
+        })();
+      }
+    };
+    window.addEventListener('gor:review-project-confirmed', confirmed);
+    return () => window.removeEventListener('gor:review-project-confirmed', confirmed);
+  }, [sessionId, notify]);
 
   /**
    * 更新最后一条 assistant 消息
@@ -194,6 +235,9 @@ export function useMessage(sessionId: string | null) {
         attachments: attachments.length ? attachments : undefined,
         images: hasImages ? images : undefined,
       };
+      // Capture at send, not after flushing Preview or waiting for the network.
+      const frozenEditMode = freezeFileEditMode();
+      void frozenEditMode.catch(() => undefined);
       const assistantMsg: ChatMessage & { isStreaming?: boolean; toolStatus?: string } = {
         id: newMessageId(),
         role: 'assistant',
@@ -230,6 +274,7 @@ export function useMessage(sessionId: string | null) {
       let stagedProjectReady = false;
 
       try {
+        const editMode = await frozenEditMode;
         let previewReference: {
           previewProjectId?: string;
           previewServerRevision?: number;
@@ -307,8 +352,13 @@ export function useMessage(sessionId: string | null) {
             analysisContextMode,
             ...previewReference,
             assistantMessageId: assistantMsg.id,
+            editMode,
           },
           {
+            onThinking: (event) => {
+              setMessages(previous => previous.map(message => message.id === assistantMsg.id
+                ? { ...message, thinkingTrace: acceptThinkingEvent(message.thinkingTrace, event) } : message));
+            },
             onToken: (tokenContent: string) => {
               updateLastAssistant((last) => ({
                 ...last,
@@ -369,7 +419,7 @@ export function useMessage(sessionId: string | null) {
                 ...previous.filter((item) => item.path !== change.path),
                 change,
               ]);
-              setProjectRevision((revision) => revision + 1);
+              if (!change.pending) setProjectRevision((revision) => revision + 1);
               updateLastAssistant((last) => ({
                 ...last,
                 projectChanges: [
@@ -377,6 +427,9 @@ export function useMessage(sessionId: string | null) {
                   change,
                 ],
               }));
+            },
+            onChangeSet: (change) => {
+              updateLastAssistant((last) => ({ ...last, ...bindLiveChangeSet(last, change) }));
             },
             onPreviewFileChanged: (change: PreviewFileChange & { content: string }) => {
               const store = usePreviewProjectStore.getState();
@@ -651,8 +704,8 @@ export function useMessage(sessionId: string | null) {
                 };
               });
             },
-            onDone: () => {
-              completed = true;
+            onDone: (status = 'completed') => {
+              completed = status === 'completed';
               if (previewFilesChanged && !stagedProject) {
                 console.info(`[PreviewSync] local_vfs_updated=true build_triggered=true`);
                 usePreviewProjectStore.getState().requestBuildAndRun();
@@ -661,6 +714,7 @@ export function useMessage(sessionId: string | null) {
                 ...last,
                 isStreaming: false,
                 toolStatus: '',
+                thinkingTrace: finishThinking(last.thinkingTrace, status),
               }));
             },
             onError: (err: Error) => {
@@ -668,6 +722,7 @@ export function useMessage(sessionId: string | null) {
               updateLastAssistant((last) => ({
                 ...last,
                 content: last.content + `\n\n错误：${err.message || '服务异常'}`,
+                thinkingTrace: finishThinking(last.thinkingTrace, 'failed'),
                 isStreaming: false,
                 toolStatus: '',
               }));
@@ -715,7 +770,8 @@ export function useMessage(sessionId: string | null) {
           console.error('[Message] 发送消息失败:', err);
           updateLastAssistant((last) => ({
             ...last,
-            content: `错误：${err.message || '发送失败，请重试'}`,
+            content: `${last.content}\n\n错误：${err.message || '发送失败，请重试'}`,
+            thinkingTrace: finishThinking(last.thinkingTrace, 'failed'),
             isStreaming: false,
             toolStatus: '',
           }));
@@ -731,6 +787,7 @@ export function useMessage(sessionId: string | null) {
       isLoading,
       pendingImages,
       pendingUploadSummary,
+      freezeFileEditMode,
           sessionId,
       updateLastAssistant,
       startVideoPolling,
@@ -784,6 +841,7 @@ export function useMessage(sessionId: string | null) {
     updateLastAssistant((last) => ({
       ...last,
       isStreaming: false,
+      thinkingTrace: finishThinking(last.thinkingTrace, 'cancelled'),
       toolStatus: '',
     }));
     stopVideoPolling();
@@ -792,6 +850,9 @@ export function useMessage(sessionId: string | null) {
   return {
     // 状态
     messages,
+    fileEditMode,
+    fileEditModeLoading,
+    setFileEditMode,
     input,
     setInput,
     pendingImages,

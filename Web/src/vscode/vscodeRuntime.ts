@@ -1,4 +1,9 @@
 /** Runtime-only URL adaptation for the existing Gor chat page inside VS Code. */
+let vscodeApi: { postMessage: (message: unknown) => void } | undefined;
+export function postVscodeMessage(message: unknown): boolean {
+  if (!vscodeApi) return false;
+  vscodeApi.postMessage(message); return true;
+}
 export function installVscodeWebviewRuntime(): void {
   // Keep VS Code conversations in their own server-side session namespace.
   document.documentElement.dataset.gorClientMode = 'vscode';
@@ -16,7 +21,7 @@ export function installVscodeWebviewRuntime(): void {
       delete document.documentElement.dataset.gorWorkspaceId;
     }
   });
-  const vscodeApi = (window as any).acquireVsCodeApi?.();
+  vscodeApi = (window as any).acquireVsCodeApi?.();
   vscodeApi?.postMessage?.({ type: 'gor.workspaceContextReady' });
 
   const apiMeta = document.querySelector<HTMLMetaElement>('meta[name="gor-api-base"]');

@@ -13,6 +13,7 @@
 
 // 让长内容拥有稳定的阅读宽度，同时把输入区锁在同一条视觉轨道内。
 .input-dock {
+  --chat-bottom-control-layer: 5;
   position: relative;
   z-index: 2;
   padding: 0 0.24rem;
@@ -30,7 +31,7 @@
   left: 50%;
   right: auto;
   bottom: calc(100% + 12px);
-  z-index: 5;
+  z-index: var(--chat-bottom-control-layer, 5);
   display: grid;
   width: 42px;
   height: 42px;
@@ -613,7 +614,7 @@
   font-weight: 400;
   line-height: 1.35;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre;
 }
 
 .uploaded-preview-actions {
@@ -2158,6 +2159,8 @@
 // Gor glass-chat composition: preserve the existing message pipeline while
 // giving the conversation the asymmetric editorial rhythm from the reference.
 .chat-page .messages-container {
+  // Reserve the same scrollbar lane in both modes, only for a message list.
+  &:has(.message-list) { position: relative; z-index: 1; scrollbar-gutter: stable; margin-bottom: 4px; }
   background: transparent !important;
 }
 
@@ -2168,7 +2171,7 @@
   min-height: 100%;
   flex-direction: column;
   gap: 30px;
-  padding: 40px var(--chat-message-side-padding, clamp(22px, 4.2vw, 64px)) 44px;
+  padding: 40px var(--chat-message-side-padding, clamp(22px, 4.2vw, 64px)) 4px;
 }
 
 .chat-page .message-row {
@@ -2526,7 +2529,7 @@
 .chat-page .send-btn-stop { background: rgba(255, 255, 255, 0.18) !important; }
 
 @media (max-width: 1023px) {
-  .chat-page .message-list { gap: 23px; padding: 28px 18px 32px; }
+  .chat-page .message-list { gap: 23px; padding: 28px 18px 4px; --chat-share-row-gutter: 18px; }
   .chat-page .row-assistant { margin-left: 0; }
   .chat-page .input-dock { padding: 0 18px calc(18px + env(safe-area-inset-bottom)); }
   .chat-page .chat-composer-panel { grid-template-columns: 42px minmax(0, 1fr) auto; grid-template-rows: auto 42px; gap: 8px 5px; padding: 11px; }
@@ -2535,7 +2538,7 @@
 }
 
 @media (max-width: 520px) {
-  .chat-page .message-list { gap: 18px; padding: 20px 10px 24px; }
+  .chat-page .message-list { gap: 18px; padding: 20px 10px 4px; --chat-share-row-gutter: 10px; }
   .chat-page .row-user { padding-right: 0; }
   .chat-page .row-user .message-bubble { padding: 11px 13px !important; font-size: 13px !important; }
   .chat-page .row-assistant { width: 100%; margin-left: 0; }
@@ -2579,4 +2582,43 @@
   width: 44px !important;
   height: 44px !important;
   flex: 0 0 44px;
+}
+
+// Web phones keep the desktop composer controls and two-row arrangement.
+// The dock still owns the narrow viewport margins and safe-area inset.
+@media (max-width: 1023px) {
+  .chat-page:not(.is-vscode-plugin) .chat-composer-panel.chat-composer-panel {
+    grid-template-columns: 48px minmax(0, 1fr) auto;
+    grid-template-rows: auto 48px;
+    gap: 10px 8px;
+    padding: 13px 16px 13px 15px;
+    border-radius: 27px;
+  }
+  .chat-page:not(.is-vscode-plugin) .chat-composer-panel .upload-btn {
+    width: 44px !important;
+    height: 44px !important;
+  }
+  .chat-page:not(.is-vscode-plugin) .chat-composer-panel .chat-input {
+    min-height: 38px;
+    font-size: 17px !important;
+  }
+  .chat-page:not(.is-vscode-plugin) .chat-composer-panel .send-btn {
+    width: 58px !important;
+    height: 58px !important;
+  }
+  .chat-page:not(.is-vscode-plugin) .chat-composer-panel .file-edit-mode-trigger {
+    height: 36px;
+    gap: 8px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+}
+
+@media (max-width: 520px) {
+  .chat-page.is-empty-chat:not(.is-vscode-plugin) .chat-composer-panel.chat-composer-panel:has(.file-edit-mode-selector) {
+    grid-template-columns: 48px minmax(0, 1fr) auto;
+    grid-template-rows: auto 48px;
+    gap: 10px 8px;
+    padding: 13px 16px 13px 15px;
+  }
 }

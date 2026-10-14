@@ -36,6 +36,10 @@ import { createMessagePreviewSnapshot } from '../../preview/core/projectSnapshot
 import { linkGeneratedFileToProject } from '../../preview/core/artifactFormat';
 import { previewArtifactCreationOrder } from '../../preview/core/artifactSelection';
 import { useFeedback } from '../../components/ui/feedback';
+import { useChatShare } from '../../share/useChatShare';
+import { isShareableMessage } from '../../share/shareContent';
+import { ChatShareToolbar, ChatSharePreview } from '../../components/chat/ChatShareControls';
+import { saveBlob } from '../../preview/core/saveFile';
 
 function isUntouchedStarterProject(project: {
   name?: string;
@@ -62,6 +66,9 @@ export default function ChatPage() {
     isSessionReady,
     isSessionCacheLoading,
     messages,
+    fileEditMode,
+    fileEditModeLoading,
+    setFileEditMode,
     projectChanges,
     projectRevision,
     previewRevision,
@@ -85,6 +92,7 @@ export default function ChatPage() {
     removePendingImage,
     initApp,
   } = useChat();
+  const share = useChatShare(sessionId, messages);
 
   const {
     isPC,
@@ -192,7 +200,10 @@ export default function ChatPage() {
     if (!message.previewSnapshot && files.length === 0) return [];
     return [{ messageId: message.previewSnapshot?.messageId ?? message.id, snapshot: message.previewSnapshot ?? null, files }];
   }), [messages, previewProjectState.project.id, previewProjectState.project.serverRevision, hasServerPreviewProject]);
-  const activeProjectSnapshot = projectSnapshots.find((snapshot) => snapshot.messageId === activeProjectSnapshotMessageId) ?? null;
+  // Sidebar deduplication must not remove the source of a selected message.
+  const activeProjectSnapshot = messages.find((message) =>
+    message.role === 'assistant' && message.previewSnapshot?.messageId === activeProjectSnapshotMessageId,
+  )?.previewSnapshot ?? null;
   const loadedPreviewSessionRef = useRef<string | null>(null);
   const activeSessionRef = useRef(sessionId);
   const failedPersistenceSessionsRef = useRef(new Set<string>());
@@ -1015,6 +1026,14 @@ export default function ChatPage() {
           hasPreviewWorkerContent={hasPreviewWorkerContent}
           previewWorkerOpen={visiblePreviewWorkerOpen}
           previewableGeneratedFileCount={previewableGeneratedFileCount}
+          hasShareableMessages={!isVscodePluginMode && isSessionReady && !isSessionCacheLoading && messages.some(isShareableMessage)}
+          shareSelecting={!isVscodePluginMode && share.selecting}
+          onShare={() => {
+            if (isVscodePluginMode) return;
+            setPreviewWorkerOpen(false);
+            if (share.selecting) share.cancel();
+            else share.start();
+          }}
           onBack={goBack}
           onMenuClick={messages.length === 0 ? (isPC ? togglePCSidebar : openMobileSidebar) : handleHeaderLeft}
           onTogglePreviewWorker={() => {
@@ -1024,8 +1043,14 @@ export default function ChatPage() {
       )}
     >
       <div className="chat-conversation min-w-0 flex-1">
+        {!isVscodePluginMode && <ChatSharePreview share={share} save={saveBlob} />}
         {isSessionReady && !isSessionCacheLoading ? (
           <ChatBox
+            shareSelection={isVscodePluginMode ? undefined : share.selection}
+            shareToolbar={isVscodePluginMode ? undefined : <ChatShareToolbar share={share} />}
+            fileEditMode={fileEditMode}
+            fileEditModeLoading={fileEditModeLoading}
+            onFileEditModeChange={setFileEditMode}
             key={sessionId ?? 'chat'}
             messages={messages}
             currentPreviewProject={isVscodePluginMode ? undefined : currentPreviewProject}
@@ -1049,14 +1074,10 @@ export default function ChatPage() {
             onPreviewAttachment={isVscodePluginMode ? undefined : handlePreviewAttachment}
             onPreviewProject={isVscodePluginMode ? undefined : (file, intent = 'preview', sourcePath, snapshot) => {
               if (snapshot) {
-                const currentSnapshot = projectSnapshots.find((candidate) =>
-                  candidate.template === snapshot.template
-                  && (candidate.projectId || candidate.id) === (snapshot.projectId || snapshot.id),
-                ) ?? snapshot;
                 setPreviewOpen(false);
-                setActiveProjectSnapshotMessageId(currentSnapshot.messageId);
+                setActiveProjectSnapshotMessageId(snapshot.messageId);
                 setActiveProjectSourcePath(sourcePath);
-                restorePreviewArtifact(`project-snapshot:${currentSnapshot.messageId}`);
+                restorePreviewArtifact(`project-snapshot:${snapshot.messageId}`);
                 setPreviewWorkerTarget('project-snapshot');
                 setPreviewWorkerMode(intent === 'source' ? 'code' : 'preview');
                 setPreviewWorkerOpen(true);
