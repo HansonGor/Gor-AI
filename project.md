@@ -183,8 +183,15 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 
 - **公共历史上下文（2026-10-14）**：Web 与 VS Code 共用 Server `ContextEngine`，当前请求单独完整保留，不进入摘要。历史正文、已有摘要及当前请求估算达到 30,000 Token 后，近期历史按完整用户问答轮次保留在 10,000 Token 预算内，其余旧轮次增量压缩；未达到阈值时保留所有尚未压缩的历史，不按 29 条静默截掉。超长旧轮次单独完整送入压缩，不能截取原文冒充完整历史；极长轮次仍可能超过模型容量，失败按下面规则降级。摘要优先保留预算、日期、数量、用户要求、已确认决定及未完成事项；摘要与游标仅在整批压缩成功且保存成功后更新。原始聊天消息不修改，锁仅保障同一 Server 进程内的同会话串行压缩。
   - 压缩或保存失败保留上次成功摘要、按预算选择完整近期问答，不回退到固定最近 29 条；摘要加载失败则没有可用旧摘要。未附带且未被摘要覆盖的历史会向模型明确标记缺失，依赖该细节时应询问，不猜测或伪称记得。降级不推进摘要游标，下次可重新尝试。
-  - 每次 Agent 模型调用通过 `[LLMInputBudget]` 统计系统提示、历史摘要、近期正文、当前请求、任务数据、工具结果、Agent 响应及已绑定工具定义的估算 Token，并记录输出预留和当前配置的上下文容量。文本估算不等于 Provider 精确计费，也不包含图片的实际视觉 Token；只记录数量，不记录正文、参数或推理。此阶段不自动裁剪工具调用、源码、网页或 PPT Schema，不改变工具能力和端间隔离。
+  - 每次 Agent 模型调用通过 `[LLMInputBudget]` 统计系统提示、历史摘要、近期正文、当前请求、任务数据、工具结果、Agent 响应及已绑定工具定义的估算 Token，并记录输出预留和当前配置的上下文容量。文本估算不等于 Provider 精确计费，也不包含图片的实际视觉 Token；只记录数量，不记录正文、参数或推理。公共历史压缩本身不裁剪工具调用、源码、网页或 PPT Schema；项目读取/PPT 等任务内精简按各自专节执行，不改变工具能力和端间隔离。
   - 验收：Server `venv\Scripts\python.exe -X utf8 -m pytest tests --ignore=tests/test_project_generation_db.py --ignore=tests/test_context_engine_db.py -q --tb=short`；公共变更同时运行 Web TypeScript、Preview 测试和构建、插件 `npm test` / `npm run vscode:prepublish`。专项测试见 `test_context_engine.py` 和 `test_agent_diagnostics.py`；真实摘要语义质量、跨 Server 进程并发及 Provider 实际容量需另行验证。
+
+- **项目文件任务内上下文精简（2026-10-15，Web / VS Code 共用）**：`agent/project_read_context.py` 接在现有工具结果进入模型消息的位置，按 Provider、项目 ID、实际 root、规范化路径、完整文件状态和实际行范围建立任务内 readRef。初次读取保留正文；同版本重复范围引用此前正文，重叠范围只向模型补缺失行；很短的内容若引用反而更长则保留原文。原始回执、SSE、回调、文件、Diff 和 ChangeSet 不被裁剪，不跨任务/会话保存缓存，不额外调用 LLM。搜索后程序自动合并的 Web 范围读取也走同一规则。
+  - 只复用适配器提供可靠 readState 的完整、未截断范围。范围不会当作全文；空文件和最后空行按实际行号处理。每次模型调用前按文件通过原 Provider 的真实读取重新核对状态，状态变化/验证失败时撤销旧正文及所有旧引用，明确提示重新读取；发生本轮文件操作时保守失效当前项目读取上下文。缓存只代表模型正文复用，不跳过工具真实读取、权限校验或写入的 expected_version。旧插件、审阅候选或非 UTF-8 编码等无法确定状态的结果保留原文，不启用复用。
+  - Web readState 来自当前请求的 Virtual FS：项目 revision 加完整文件 SHA-256。项目版本、文件内容变化以及删除/重建会使旧引用失效；不读取开发机文件，也不使用插件 Dirty 规则。读取和状态计算间没有 await；其他请求仍受现有持久化版本提交保护。
+  - 插件 readState 来自实际 TextDocument：文件身份摘要、version、isDirty 和完整缓冲区 SHA-256。Dirty 文档依据内存正文；干净 UTF-8 文档额外读取磁盘核对，Git/终端改动尚未同步、读取过程中发生用户编辑时返回 VERSION_CONFLICT，旧引用失效后可重读；编码无法可靠核对则保留原有编辑器读取但禁用上下文缓存。沿用原工作区隔离、路径保护、Dirty 写入拒绝、WorkspaceEdit、变更监听与并发保护；不把缓存命中当成写入许可。
+  - `[ProjectReadContext]` 记录读取/重复读取、引用命中、部分命中、校验、失效、冲突，以及原始/精简后的估算 Token。首次 readRef 元数据可能增加少量 Token；节省量是文本估算，真实计费用量继续看现有 LLM 诊断。安全优先的真实读取与磁盘核对会增加部分 IO，不能据此承诺耗时下降。源码、宿主路径和工具参数不写入这条统计日志。
+  - 验收增加 `tests/test_project_read_context.py` 与插件 workspace-files 测试，覆盖重复/重叠/范围升级、版本/全文指纹变化、旧引用撤销、任务/项目/root 隔离、旧适配器降级、两端 Agent 原始回执保留、Dirty 缓冲区、外部磁盘变化及读取并发。公共验收继续运行完整 Server 离线 pytest、Web Preview/TypeScript/build、插件 npm test/prepublish。真实模型任务质量、Extension Host 和大工程 IO 延迟需另行实测。
 
 - **工具可发现性与按需调用（2026-10-08，公共能力）**：所有聊天模式每轮默认传入 `web_search` 与 `search_images`，包括闲聊、简短追问、文档和项目编辑；它们不是兜底工具。Web Preview / VS Code 模式同时默认提供当前 Provider 支持的公共项目工具，以及 Word、Excel、PPT、PDF、视频内容生成工具；是否调用由模型根据本轮需求及上下文决定，不再因动作词未命中或 SIMPLE_EDIT 快速路径裁掉这些工具。工具可用不等于必须执行或取得任意写入授权；Provider 能力、连接状态、版本校验与用户要求仍须遵守。天气、Python 执行、私有知识库等其他工具继续按原意图规则开放。
 - **模型主导的工具协商（2026-10-08，已接入公共 Agent）**：用户发消息 → 提供当前宿主默认工具和简短能力目录 → LLM 按上下文拆分复合任务并选择工具 → 默认工具不足时调用 `request_tools` 申请补充已有能力 → 系统校验后补充下一轮模型绑定的工具，再由 LLM 继续执行 → 根据实际结果简述完成项、限制和查看入口。补充能力不依赖再次命中一组严格关键词，不以节省 Token 为由直接拒绝；完整已登记任务能力可发现，完整 Schema / 专门规则按需加载。此实现不修改已有提示词卡片原文，也不改变其他工具的默认触发规则。
@@ -231,6 +238,11 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 - 插件 Webview 启用受限的本地资源根目录和 Content Security Policy；运行时将聊天 API、页面资源和图片地址映射到扩展 Webview 可访问的 URI。前端通过 VS Code 模式标识区分插件布局，插件会话使用 `default:vscode` 用户命名空间，与网页会话列表隔离。
 - 插件聊天使用 Gor Server 的 HTTP/SSE API；扩展 WebSocket 登记工作区并承接 `VSCodeProjectProvider` 读写请求。已接入目录/文件清单、搜索、读取、创建、覆盖、补丁、删除及目录操作，结果通过公共 Diff 展示；“Connected”本身不证明某次写入成功，需真实工具回执。会话 ID 可在用户询问时通过对话回复，无需专用 UI。
 - `npm run build:webview` / `npm run vscode:prepublish` 构建聊天页资源和扩展 TypeScript；开发态 `npm run watch:webview` 监听 Web 源码、重建扩展 Webview 资源，并通过构建信号刷新已打开的聊天视图。构建资源更新后，扩展宿主仍需运行或重载才能载入新的扩展代码。
+- **Git 提交与推送（2026-10-15，仅 VS Code 插件）**：`git_status` / `git_commit` / `git_push` 登记在 `PROJECT_TOOL_CAPABILITIES`，映射 Provider 能力 `git`。只有 `VSCodeProjectProvider` 声明 `git=True`，Web Preview 声明 `git=False`，路由与分发自动过滤，Web 端不可见、不可调用；未完成工作区登记的插件请求同样没有。扩展通过 VS Code 内置 Git 扩展 API（`vscode.git` v1）在当前连接工作区的真实仓库执行（`src/workspace/git.ts`，RPC 方法 `git.status` / `git.commit` / `git.push`），push 沿用用户在 VS Code 中已有的凭据，不经服务端磁盘、Runner 或 Web Preview。
+  - 提交：模型应先 `git_status`（可带受限 diff，排除敏感文件与未跟踪文件）再起草说明。扩展弹出原生模态确认，展示分支、提交说明和完整文件清单，可改写说明；确认后重新核对仓库状态，一致才暂存并 commit，变化返回 `GIT_STATE_CHANGED`。拒绝：未保存文件、合并冲突、游离 HEAD、`.env`/密钥类文件、当前工作区文件夹之外的改动、指定 paths 时暂存区还有其他文件。取消返回 `USER_CANCELLED`，不暂存、不提交。
+  - 推送：模态确认展示远端、分支、待推送提交和已去除用户名/令牌的远端地址；无上游时推送到 origin（或指定 remote）并设置上游。永不强制推送；本地落后远端、无远端、多远端未指定时不执行并说明原因；确认期间 HEAD 变化不推送。回执和错误信息中的远端 URL 凭据被移除。
+  - 桥接默认 10 秒超时不变；提交/推送单独使用 600 秒以等待用户确认，状态读取 30 秒。扩展请求仍串行执行，确认框打开期间其他工作区请求排队。思考面板显示“查看 Git 状态 / 提交代码 / 推送代码”，暂未单独配置 Git 图标。
+  - 验收：Server `tests/test_vscode_git_tools.py`（转发参数、长超时、默认超时不变、取消、Web 不可调用、路由仅插件可见）及完整离线 pytest；插件 `tests/git-workflow.test.cjs`（状态、确认、改写说明、取消、各类拒绝、确认期间状态变化、推送不强制、设置上游、凭据脱敏、请求路由），`npm test`、`npm run vscode:prepublish`；Web TypeScript、Preview 测试与构建。测试使用 vscode/Git API 替身，**未在真实 VS Code Extension Host 中对真实远端执行提交/推送**；Git 扩展 API 各版本行为差异与网络/认证失败的真实提示需人工验证。
 
 #### 联网检索与图像来源
 
@@ -263,6 +275,14 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 - **产品官网优先**：从原始用户气泡识别已登记产品别名，而不是只信模型缩短后的 Query；先检索产品官网索引页，再用相关资源网站补充，官网结果优先排列。麦当劳、小红书、今日头条、白宫、Antd Design Mobile（兼容 `desgin` 拼写）、新浪微博等示例已登记；未知品牌不凭空猜域名，官网无索引/请求失败不伪造命中。显式 `site:` 优先于产品偏好。当前是站点约束的公开搜索，不承诺登录官网站内检索或读取私有内容；`official_domains` 与来源事件用于检查实际计划。
 - `search_images` 默认并行搜索可用的 Pexels、Pixabay、Unsplash、Openverse、Wikimedia Commons，也可指定单一 Provider。支持横图、竖图、方图筛选，每个来源最多取 6 个候选；返回图片直链、来源页、作者和可用许可信息，不由搜索工具下载图片。PPT 直接复用同一搜索实现，再做内容匹配、下载、画质筛选、嵌入与署名，不重复实现 Provider/API。Pixabay 候选 URL 仅短时用于取图，不永久热链；Unsplash 触发下载记录并保留署名。
 - PPT Design Reference 在领域权重选出的公开网站（中文场景额外包含小红书）上进行带域限制的多源页面检索，只记录页面标题、摘要和来源链接，并以有上限的检索命中因子修正档案排序；不抓取 PPT 文件、模板预览图，也不做模板视觉分析。搜索不可用时回退静态设计档案。
+
+#### 评测基线（阶段 0，2026-10-15）
+
+- 目的：只测量、不改业务行为，量化回答“准不准”。代码位于 `Server/tests/eval/`：`cases/<domain>.jsonl` 题库（当前 news 24 题，国内/国际/科技/财经各 6），`run_eval.py` 通用运行脚本，`checkers/` 按 task_type 注册检查器（已实现 `fact_qa`；`code_run`、`file_produced` 仅留 TODO 接口），`metrics.py` 纯函数指标。
+- 运行（Server 目录，先启动后端）：`venv\Scripts\python.exe -X utf8 tests\eval\run_eval.py --domain news`；可选 `--only <id>`、`--base-url`（默认 `http://localhost:3001`）、`--out-dir`（默认仓库根 `.runlogs/eval`）、`--baseline <旧结果.json>`、`--timeout`、`--freshness-days`（默认 3）、`--rescore <结果.json>`（不调用后端，用已保存的原始回答按当前题库与指标重算）。每题用 `POST /api/chat/session/create`（userId=`gor-eval`）建独立会话，`POST /api/chat`（clientMode=web）取 SSE，结束后 `DELETE /api/chat/session/{id}`；只删除自己创建的会话，删除失败的 ID 写入报告，不直接改数据库。输出 `<domain>-<时间戳>.json/.md`，首次全量运行复制为 `<domain>-baseline.json`。脚本不读取或打印 `.env`。
+- 指标（均为启发式，定义详见 `metrics.py` 注释）：引用覆盖率 = 带有效 `[S#]`（编号存在于本题 search_sources）的事实句 ÷ 事实句（逐句为准；另报辅助“段落级覆盖率”，段内任一句带有效引用即算，反映段末统一标注的写法）；日期正确率 = 与所引来源 publishedDate/dateHint/页面 published_at 一致或出现在 snippet/web_reader 正文中的日期 ÷ 带引用日期，无引用日期单独计为无法核对；无来源陈述数分“无引用”和“无效编号”两类；事实正确率只对已填 gold_facts 且 `needs_review=false` 的题计算，规则匹配不能判定的标记待人工复核而不判错；新鲜度违规 = 称“最新/今天/昨天”等但所引来源均早于阈值；编造率只对 `expect_no_answer` 虚构前提题计算。
+- 限制：切句、事实句识别、日期和事实匹配均为规则，可能漏判/误判；只能检查日期与引用是否对得上，不能判断句子内容是否被来源支持。新闻随时间变化，标记 needs_review 的 gold_facts 需人工按运行日期确认后再计分。结果受当时模型、搜索 Provider 与网页可读性影响，同题多次运行可能不同。日期指标不区分发布日期与事件日期，选举日、任期截止日等事件日期即使正确也可能因不在来源元数据/摘要中被记为不符。回归 `tests/test_eval_metrics.py`（假数据，不联网）。
+- 首次基线（2026-10-15，`.runlogs/eval/news-baseline.json`，由同一次全量运行修复标题切句后 `--rescore` 得到）：24 题全部完成、无失败，测试会话全部删除。引用覆盖率 52.7%（117/222，段落级 82.4%），日期正确率 93.0%（107/115，另 40 个日期无引用无法核对），无来源陈述 105（全为无引用，无效编号 0），新鲜度违规 0，事实正确率 7/7（仅 4 道已确认题计分），编造率 0/4；15 道题标记 needs_review 待人工确认。稳定事实题（如 HTTP/3）可能完全不触发搜索，回答无来源。
 
 ### Preview Worker（聊天页内的产物与源码工作区）
 
@@ -370,7 +390,7 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 
 - Web 与 VS Code 共用 Server 的 PPT 上下文选择和 create_ppt。新稿不附加旧稿正文；明确沿用预算、天数、风格时附加原稿中可核对的要求依据，不由额外 LLM 提取。近期精确历史与公共摘要仍独立保留，当前请求始终完整。
 - 明确封面、末页或阿拉伯数字页码的局部修改只附加目标页、整稿设计配置和页面 ID/标题目录；范围不明确、中文页码、范围或全局设计修改保守保留所有页面。派生 referencePlan 不再作为模型任务数据重复上传。不能把部分页面上下文当作完整新稿。
-- 新稿继续使用完整 presentation；修改优先使用 revision（baseFingerprint、updates[{slideId,changes}]、deckChanges、appendSlides、removeSlideIds），严格二选一。服务端校验当前会话快照指纹、ID、字段和完整 Schema，深复制合并；对象递归合并，数组替换，null 遵循原字段校验。未修改页面的语义字段、布局与时间轴保留；连续分页属于同一逻辑页面组，受影响组一起重排。全局设计变更影响全稿。
+- 新稿继续使用完整 presentation；修改优先使用 revision（baseFingerprint、updates[{slideId,changes}]、deckChanges、appendSlides、removeSlideIds），严格二选一。服务端校验当前会话快照指纹、ID、字段和完整 Schema，深复制合并；对象递归合并，数组替换，null 遵循原字段校验。未修改页面的语义字段、布局与时间轴保留；连续分页属于同一逻辑页面组，受影响组一起重排；补丁模式不把已有续页合回前页，避免续页标题和内容丢失。全局设计变更影响全稿。
 - 历史基准只取本会话已保存的 PPT 消息快照，不读当前项目文件或按文件名猜测；默认最近一次。ChatRequest 可显式传 presentationMessageId 锁定历史消息，缺失则拒绝修改，不退回最近稿。没有明确 ID 的“第一份/更早/上一份”等指向先确认目标；本次未增加历史版本选择 UI。
 - 每次成功仍生成独立 artifact/project/snapshot ID，保留旧 PPTX 和消息快照；搜图、原生渲染、Visual/Motion QA、来源和下载沿用原管线。局部补丁有已有参考方案时复用它；图片依旧按现有缓存/Provider 解析，过期或服务变化后不保证未改页照片逐像素一致。原生动画写入失败仍按实际失败页安全降级并记录。
 - 插件仅使用公共 Office 产物事件和下载，不启用 Web Preview Worker、不接触另一端工程文件。测试：Server 完整离线 pytest（排除两个 DB 联机模块）；专项 tests/test_presentation_revision.py 以及 presentation_design/motion/reference/pexels、project_files。公共验收仍为 Web TypeScript/Preview/构建和插件 npm test/prepublish。测试覆盖上下文选择、原始要求保留、快照指纹、非法补丁、并发会话、真实 PPTX 新旧独立和两端 Agent 流程；真实模型遵从率、第三方图片及 Office 人工视觉需另验。
