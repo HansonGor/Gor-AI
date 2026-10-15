@@ -274,6 +274,14 @@ test('terminal fields cannot override real tool presentation or resurrect comple
    assert.equal(getThinkingIcon({title:'思考中',toolName:'read_project_file'}).name,'PencilLine');
    assert.equal(getThinkingIcon({title:'思考中',toolName:'unknown_tool'}).name,'PencilLine');
    assert.equal(getThinkingIcon({title:'思考中',toolName:'constructor'}).name,'PencilLine');
+   // 真实 Git 工具与根据其结果命名的最后一轮使用 GitBranch
+   for (const toolName of ['git_status','git_commit','git_push']) {
+     assert.equal(getThinkingIcon({title:'读取改动差异',toolName}).name,'GitBranch');
+   }
+   assert.equal(getThinkingIcon({title:'汇总提交结果'}).name,'GitBranch');
+   assert.equal(getThinkingIcon({title:'汇总推送结果'}).name,'GitBranch');
+   assert.equal(getThinkingIcon({title:'汇总修改结果'}).name,'FilePenLine');
+   assert.equal(getThinkingIcon({title:'汇总检索结果'}).name,'Search');
  });
 
  test('delayed title switches the icon once, summary deltas do not restart it, completion uses a book', async () => {

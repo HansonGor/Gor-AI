@@ -57,6 +57,29 @@ async def dispatch_project_tool(context, name: str, args: dict):
         result = await api.delete_file(ref, path, expected_version(args))
     elif name == "delete_project_directory":
         result = await api.delete_directory(ref, path, recursive=False)
+    elif name == "git_status":
+        result = await api.git_status(ref, args.get("include_diff") is True)
+    elif name == "git_commit":
+        paths = args.get("paths")
+        if paths is not None and (not isinstance(paths, list) or any(not isinstance(p, str) for p in paths)):
+            raise ProjectAPIError("INVALID_PATH", "paths 必须是工作区相对路径列表。")
+        result = await api.git_commit(ref, str(args.get("message") or ""), paths)
+    elif name == "git_push":
+        remote = args.get("remote")
+        result = await api.git_push(ref, remote if isinstance(remote, str) and remote.strip() else None)
+    elif name == "list_toolchains":
+        result = await api.toolchain_list(ref)
+    elif name == "run_toolchain_action":
+        toolchain, action = args.get("toolchain"), args.get("action")
+        if not isinstance(toolchain, str) or not toolchain.strip() or not isinstance(action, str) or not action.strip():
+            raise ProjectAPIError("INVALID_PARAMS", "toolchain 与 action 必须是非空字符串。")
+        params = args.get("params")
+        if params is not None and not isinstance(params, dict):
+            raise ProjectAPIError("INVALID_PARAMS", "params 必须是对象。")
+        cwd = args.get("cwd")
+        if cwd is not None and not isinstance(cwd, str):
+            raise ProjectAPIError("INVALID_PATH", "cwd 必须是工作区相对目录。")
+        result = await api.toolchain_run(ref, toolchain.strip(), action.strip(), params or {}, (cwd or "").strip() or None)
     else:
         raise ProjectAPIError("UNSUPPORTED_OPERATION", "未知项目操作。")
     if isinstance(result, dict):

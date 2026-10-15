@@ -41,6 +41,10 @@ PreviewSourceViewer retains its actual Textarea (there is no Monaco in this impl
 
 Plugin transport acceptance (2026-10-14): test:code 13, test:diff 25, test:preview 70, test:share 18 and plugin tests 29 pass (155 total); Web types and both builds pass. Worker tests exercise all 11 grammars, cloning, reuse, bootstrap termination and load failure. The production code-highlight-vscode fixture enforces Blob-only workers and strict CSP; browser checks confirm Markdown/Diff colors, copy and view switching without console warnings/errors. Physical devices and a real Extension Host remain unverified. Reload the extension development host to use the rebuilt local media; no VSIX installation was performed.
 
+## Toolchain (施行) cards
+
+`ToolchainRunCard` is presentation-only: it receives a `ToolchainRunView` plus approve / skip / stop-round / abort / open-URL / shown callbacks and performs no extension, filesystem or network I/O. Background dev servers render as a 常驻施行 row with their local URL (opened by the extension after it re-validates a localhost address) and 止令; stopped ones show 已收令. `MessageBubble` renders cards only when a `ToolchainRunsContext` value is provided; ChatPage provides it in VS Code mode only (via `vscode/toolchainRuns.ts`), so Web never shows them. Status words map in `toolchainRun.ts` (待施行、正施行、已施行、未施行、见疏漏 / 未施成、内容有异、逾时未施、逾时而止、中道而止、此令未开、不可施行、未得信任、常驻施行、已收令); stored statuses are unchanged. The pending card defaults focus to 搁置 and Escape skips. Run `npm run test:toolchain`.
+
 ## Shared thinking presentation
 
 `ThinkingPanel` receives `ThinkingTrace` through props and performs no host/provider I/O. The model adapter emits start/delta/end plus presentation-only thinking_update events; existing Agent phases and real tool start/end/file receipts provide accurate Chinese action titles and concise task summaries without another model request. Real tools outrank Agent phases, which outrank conservative model intentions/provider summaries. Unknown titles show 思考中, missing summaries occupy no space, and raw internal reasoning is not displayed. Plans and pending edits never claim completed execution.

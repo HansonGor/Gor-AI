@@ -11,6 +11,8 @@ import {
 import { applyProjectPatches, patchProjectFile, writeProjectFile } from './edits';
 import { normalizeWorkspaceRelativePath, WorkspaceRequestError } from './paths';
 import { inspectFiles, restoreFiles, validateExpected } from './changes';
+import { gitCommit, gitPush, gitStatus } from './git';
+import { cancelToolchainRun, listToolchains, runToolchainAction } from './toolchain/host';
 
 export type WorkspaceRequestPacket = {
   type: 'workspace_request';
@@ -43,6 +45,10 @@ export class WorkspaceRequestHandler {
     currentWorkspaceId: string | undefined,
     send: (response: WorkspaceResponsePacket) => boolean,
   ): Promise<void> {
+    // 工具链任务可能等待用户允准或运行数分钟，使用自己的队列，不阻塞文件读写；取消必须立即送达。
+    if (typeof request.method === 'string' && request.method.startsWith('toolchain.')) {
+      return this.execute(request, currentWorkspaceId, send);
+    }
     const task = workspaceRequests.then(() => this.execute(request, currentWorkspaceId, send));
     workspaceRequests = task.catch(() => undefined);
     return task;
@@ -171,6 +177,24 @@ export class WorkspaceRequestHandler {
           break;
         case 'project.deleteDirectory':
           result = await deleteProjectDirectory(params);
+          break;
+        case 'git.status':
+          result = await gitStatus(params);
+          break;
+        case 'git.commit':
+          result = await gitCommit(params);
+          break;
+        case 'git.push':
+          result = await gitPush(params);
+          break;
+        case 'toolchain.list':
+          result = await listToolchains(params);
+          break;
+        case 'toolchain.run':
+          result = await runToolchainAction(params);
+          break;
+        case 'toolchain.cancel':
+          result = cancelToolchainRun(params);
           break;
         default:
           throw new WorkspaceRequestError('UNSUPPORTED_OPERATION', '该 VS Code Workspace 操作尚未开放。');

@@ -214,5 +214,6 @@ class PreviewProjectProvider:
             "diagnostics": True,
             "terminal": False,
             "git": False,
+            "toolchain": False,
             "renameSymbol": False,
         }

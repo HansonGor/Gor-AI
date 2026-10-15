@@ -1,6 +1,6 @@
 import { isToolStatusInThinking } from '../../utils/thinking';
 ﻿// 单条消息气泡
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   Box,
   ChevronRight,
@@ -28,6 +28,8 @@ import type { MessageBubbleProps, SearchSource } from '../../types';
 import { Button } from '../ui/button';
 import ProjectChanges from '../chat/ProjectChanges';
 import ThinkingPanel from '../chat/ThinkingPanel';
+import ToolchainRunCard from '../chat/ToolchainRunCard';
+import { ToolchainRunsContext } from '../chat/toolchainRun';
 import { createProjectChangeClient } from '../../api/projectChanges';
 import { createWebProjectChangeClient } from '../../api/webProjectChanges';
 import { getChatClientMode } from '../../utils/clientMode';
@@ -196,6 +198,9 @@ export default function MessageBubble({
   }, []);
   const logoGradientId = useId().replace(/:/g, '');
   const isUser = message.role === 'user';
+  // 施行卡片只在宿主注入能力时出现（插件端）；Web 端没有 Provider，不渲染。
+  const toolchain = useContext(ToolchainRunsContext);
+  const toolchainRuns = !isUser && toolchain ? toolchain.runsFor(message) : [];
   const codeComponents = useMemo(() => markdownCodeComponents({ streaming: message.isStreaming }), [message.isStreaming]);
   const images = message.images ?? [];
   const hasImages = isUser && images.length > 0;
@@ -322,6 +327,13 @@ export default function MessageBubble({
         )}
 
         {hasThinking && message.thinkingTrace && <ThinkingPanel trace={message.thinkingTrace} />}
+
+        {toolchain && toolchainRuns.map((run) => (
+          <ToolchainRunCard key={run.runId} run={run}
+            onShown={() => toolchain.onShown(run)} onApprove={() => toolchain.onApprove(run)}
+            onSkip={() => toolchain.onSkip(run)} onStopRound={() => toolchain.onStopRound(run)}
+            onAbort={() => toolchain.onAbort(run)} onOpenUrl={() => toolchain.onOpenUrl(run)} />
+        ))}
 
         {showExecutionTimeline && !displayContent && (
           <div className="assistant-loading-indicator" role="status" aria-label="正在生成回答">

@@ -45,6 +45,13 @@ VSCODE_PROJECT_READ_PROMPT = """本轮只读当前已连接的 VS Code 工作区
 VSCODE_PROJECT_EDIT_PROMPT = """用户已明确要求操作当前 VS Code 工作区，本轮可直接执行，不要再向用户请求手动确认。只能通过通用 Project API 工具；当前已连接工作区就是默认目标，不要求用户重复说“工作区/文件”。按动作词选工具：创建/新建/增加文件或目录用 create_project_file/create_project_directory；修改/改回/恢复/还原已有内容，先搜索并读取，再用 write_project_file 或 patch/batch patch；查找/搜索/定位用 search_project_code；读取/查看用 list_project_files/read_project_file；删除/移除具体文件或目录用对应 delete 工具。复合请求按顺序组合相应工具。目标路径不明确时先用目录树或搜索定位；候选仍不唯一时再询问，不得猜路径或误删。开始文件操作前系统会自动确保当前工作区目录树已读取并缓存；未知时读一次，已知时复用，路径与实际冲突时自动刷新一次。修改已有文件时先读取完整的最新 TextDocument，默认用 write_project_file 直接覆盖目标文件，并传入最新 fileVersion 作为 expected_file_version；只有文件过大或确实不适合整文件覆盖时才使用 exact-text patch/batch patch，old_text 必须来自刚读取的内容且唯一匹配。多文件按各自最新版本分别写入。新文件父目录不存在时，只在目标路径已明确的前提下按需创建缺失父目录，再创建文件。目录删除仅允许空目录，绝不递归删除。遇到版本冲突时重新读取后再处理；遇到路径树冲突时系统已刷新，不要连续盲目重试。Agent 修改后由扩展自动保存本次涉及的文件；原文件已有未保存编辑时停止并提示用户先保存或撤销。保存失败不得报告修改成功，不盲目重试、回滚或覆盖后续编辑；批量保存可能部分完成，按工具回执说明并提示查看编辑器和 Diff。不修改全局 Auto Save，不运行终端、构建、Git 或诊断。成功仅依据工具真实返回确认。最终用通俗句子说明做了什么，明确未完成的保存；源码和逐行 diff 仅在 Diff 中展示，不重复列出源码。不要创建 Preview Project、触发 Preview Worker。"""
 VSCODE_ACCESS_CHECK_PROMPT = """用户只是在确认 Gor 是否能访问 VS Code 本地工作区。调用 list_project_files 验证工作区连接，但不要把完整文件列表倾倒给用户；成功时简洁说明可以读取当前打开的工作区文件，并请用户指定文件或路径。只有后续明确要求查看某个文件时才读取源码。"""
 VSCODE_UNREGISTERED_PROMPT = """当前请求来自 VS Code 插件，但工作区尚未成功注册或没有附带工作区标识。可以尝试调用只读工作区工具确认状态；如果返回 PROJECT_CONTEXT_UNAVAILABLE 或 WORKSPACE_NOT_FOUND，应明确说明 Gor 服务已连接但 VS Code 工作区桥接未就绪，请等待状态栏显示工作区已连接后重试。若用户要求修改文件而本轮没有可用工作区标识，不要调用修改工具或声称已读写文件，先提示连接尚未就绪。不要说插件完全不支持读取。"""
+TOOLCHAIN_PROMPT = """用户本轮要求在当前 VS Code 工作区运行命令（启动项目、测试、类型检查、lint、构建、package.json 脚本或安装依赖）。这是用户授权的执行请求，优先于通用文件编辑规则中“不运行终端、构建或诊断”的限制，但只能使用 run_toolchain_action，它不是任意终端；脚本名或包目录不确定时先调用 list_toolchains。按用户意图选动作：“运行/启动/跑起来项目、本地预览”指启动开发服务器，用 run_script 运行 dev（没有 dev 时依次考虑 start、serve），不要用 build 代替；“构建/打包”才用 build；测试、类型检查、lint 分别用 test、typecheck、lint。dev/start 等常驻进程会在后台运行，回执 status 为 background 并给出 url，应把地址告诉用户；需要看后续输出用 logs，用户要停止时用 stop（params.runId）。依赖缺失（list_toolchains 显示 dependenciesInstalled 为 false、回执 code 为 DEPENDENCIES_NOT_INSTALLED 或 hint 为 DEPENDENCIES_NOT_INSTALLED）时，先用一句话说明缺少依赖，再调用 install；install 完成后只重试一次原命令。用户没要求、依赖也不缺时不要主动安装。一次只发起一条命令，按回执决定下一步。是否放行由扩展决定：审阅落笔模式下每条命令都要用户在卡片中施行，安装依赖和常驻进程在即刻落笔模式下也要确认；status 为 user_cancelled 或 approval_timeout 表示命令没有执行，不要换写法重试同一命令；plan_changed 表示确认后脚本或依赖清单被改动。脚本里夹带的安装、发布、删除文件等命令仍会被拒绝，应如实说明并建议用户手动执行。结果以 status 为准：只有 completed 才能说通过或成功，background 表示已在后台运行；failed 时依据 diagnostics 与 stderr 概括失败项和位置，不粘贴完整日志。回执含 pendingReviewFiles 时说明本轮审阅候选尚未落笔，命令针对的是落笔前的磁盘文件。最终用通俗语言说明运行了什么、结果如何、哪些步骤未施行，以及可在 VS Code「输出」面板的 Gor 工具链中查看完整输出。"""
+TOOLCHAIN_INTENT = (
+    r"(?:(?:跑|运行|执行|run)\s*(?:一下|一遍|下)?\s*.{0,12}?(?:测试|单测|用例|\btests?\b|lint|eslint|类型检查|typecheck|type-check|\btsc\b|脚本|scripts?\b|build|构建)"
+    r"|(?:运行|启动|跑起来|跑一下|跑下|本地跑|本地运行|开启)\s*(?:一下|下)?\s*(?:这个|当前|我的)?\s*(?:项目|服务|前端|后端|页面|网站|应用|dev\b)"
+    r"|(?:项目|服务)\s*(?:跑起来|启动起来|运行起来)|安装依赖|装一下依赖|装依赖|本地预览|dev\s*server|开发服务器"
+    r"|\b(?:npm|pnpm|yarn)\s+(?:run\s+)?[\w:-]+|类型检查|跑测试|跑单测)"
+)
 PYTHON_PROMPT = """仅在用户明确要求运行、验证或调试代码时使用隔离 Python 工具。运行前确认代码和输入来自本轮任务；只汇报实际运行结果，不把普通代码编写问题误当成执行请求。"""
 KNOWLEDGE_PROMPT = """用户询问私有知识库或已上传资料。使用知识库检索，严格基于返回片段回答；无结果时说明未检索到，不补造资料内容。"""
 VIDEO_PROMPT = """用户明确要求生成视频。把需求整理为清晰的创作指令，只有必要时加入参考图；说明工具实际返回的任务状态，不把已提交说成已完成。"""
@@ -463,10 +470,16 @@ def route_request(
         profiles.append("video")
         instructions.append(VIDEO_PROMPT)
 
+    # VS Code 工作区里的“跑测试/类型检查/npm 脚本”走工具链，而不是隔离 Python 沙箱。
+    toolchain_intent = (vscode_client_mode or bool(vscode_workspace_id)) and not has_preview and _has(TOOLCHAIN_INTENT, text)
+    if toolchain_intent:
+        profiles.append("workspace_toolchain")
+        instructions.append(TOOLCHAIN_PROMPT)
+
     explicit_execution = _has(r"(?:运行|执行|测试|验证|调试)", text) and _has(
         r"(?:python|代码|脚本|程序|函数|算法)", text
     )
-    if explicit_execution and not (preview_intent or local_edit):
+    if explicit_execution and not (preview_intent or local_edit) and not (toolchain_intent and not _has(r"python", text)):
         selected.add("execute_python")
         profiles.append("python")
         instructions.append(PYTHON_PROMPT)
@@ -515,4 +528,5 @@ def route_request(
                      selected_skills=tuple(skill for skill, enabled in (
                          ("news_research", news_skill), ("github_code", github_skill),
                          ("web_search", "web_search" in selected),
+                         ("workspace_toolchain", toolchain_intent and "run_toolchain_action" in selected),
                      ) if enabled))

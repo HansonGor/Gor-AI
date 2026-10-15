@@ -11,6 +11,13 @@ PROJECT_TOOL_CAPABILITIES = {
     "create_project_directory": "createDirectory",
     "delete_project_file": "deleteFile",
     "delete_project_directory": "deleteDirectory",
+    # 真实 Git 仓库操作：只有 VS Code Provider 声明 git 能力，Web Preview 自动过滤
+    "git_status": "git",
+    "git_commit": "git",
+    "git_push": "git",
+    # 语言工具链（第一阶段 Node 验证类命令）：只有 VS Code Provider 声明 toolchain 能力
+    "list_toolchains": "toolchain",
+    "run_toolchain_action": "toolchain",
 }
 
 PREVIEW_TOOL_ALIASES = {

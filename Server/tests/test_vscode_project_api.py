@@ -310,7 +310,10 @@ def test_vscode_provider_advertises_crud_but_not_privileged_capabilities():
             "build": False,
             "diagnostics": False,
             "terminal": False,
-            "git": False,
+            # git 仅开放 status/commit/push，提交与推送由扩展弹窗确认；终端与构建仍不开放
+            "git": True,
+            # 工具链只开放验证类命令，执行前由扩展按审阅模式确认；不等于开放任意终端
+            "toolchain": True,
         }
         assert capabilities["terminal"] is False
         assert capabilities["build"] is False
