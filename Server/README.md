@@ -311,7 +311,7 @@ GET /api/download/:filename
 
 Web / VS Code 共用 `services/context_engine.py`：当前请求完整保留；达到 30,000 估算 Token 时，近期完整问答保留在 10,000 Token 预算内，旧轮次增量摘要。未达阈值不按固定消息条数丢弃历史。压缩/保存失败保留成功摘要并按完整轮次预算回退，缺失历史向模型明确说明；原始消息与摘要游标不因失败修改。超长旧轮次完整压缩，模型拒绝时降级，不截断原文。
 
-`[LLMInputBudget]` 记录每次 Agent 调用的输入分项估算及输出预留，真实输入用量沿用 Provider 返回的诊断；不记录内容。专项命令：`venv\Scripts\python.exe -X utf8 -m pytest tests/test_context_engine.py tests/test_agent_diagnostics.py -q`；完整验收沿用根目录 project.md。不会自动精简各工具或任务附加数据。
+`[LLMInputBudget]` 记录每次 Agent 调用的输入分项估算及输出预留，真实输入用量沿用 Provider 返回的诊断；不记录内容。专项命令：`venv\Scripts\python.exe -X utf8 -m pytest tests/test_context_engine.py tests/test_agent_diagnostics.py -q`；完整验收沿用根目录 project.md。公共历史压缩本身不裁剪工具数据；项目读取和 PPT 的任务内精简见各自专节。
 
 ### 数据库连接失败
 - 检查 `SUPABASE_DB_URL` 是否正确
@@ -338,6 +338,14 @@ Thinking Adapter 观察实际思考与 Agent 阶段，不再额外调用 LLM 生
 
 ### PPT 上下文与 revision 补丁
 
-`tools/presentation_revision.py` 按当前请求区分新稿、沿用要求和修改。局部请求提供目标页与目录，完整基准留在 Server；模糊范围保留所有页面，不额外调用 LLM。派生 referencePlan 不重复上传。create_ppt 新稿传 presentation，修改优先传 revision（精确 baseFingerprint、updates、deckChanges、appendSlides、removeSlideIds），对象合并、数组替换，完整校验后生成独立新快照，不覆写旧产物。未修改页面语义/布局/时间轴保留，受影响连续页组一起重排；既有图片缓存过期后不承诺照片逐像素一致。
+`tools/presentation_revision.py` 按当前请求区分新稿、沿用要求和修改。局部请求提供目标页与目录，完整基准留在 Server；模糊范围保留所有页面，不额外调用 LLM。派生 referencePlan 不重复上传。create_ppt 新稿传 presentation，修改优先传 revision（精确 baseFingerprint、updates、deckChanges、appendSlides、removeSlideIds），对象合并、数组替换，完整校验后生成独立新快照，不覆写旧产物。未修改页面语义/布局/时间轴保留，受影响连续页组一起重排且保留已有续页，不合并掉续页标题；既有图片缓存过期后不承诺照片逐像素一致。
 
 ChatRequest 可传 presentationMessageId，仅读取当前会话真实历史快照；找不到不回退猜测。未指定默认最近一次，明确要求更早版本但未绑定时先确认目标。公共逻辑适用于 Web/插件；插件不启用 Preview Worker。搜图、质量校验、PPTX 和下载机制保留。专项：`venv\Scripts\python.exe -X utf8 -m pytest tests/test_presentation_revision.py tests/test_presentation_design.py tests/test_presentation_motion.py tests/test_presentation_reference.py tests/test_presentation_pexels.py tests/test_project_files.py -q`；公共验收见 project.md。
+
+### 项目读取 readRef 上下文（2026-10-15）
+
+ProjectReadContext 仅在一次 run_agent 中工作：可靠同版本正文重复时引用前文，范围重叠只注入缺失行；原工具回执、SSE、回调不变。每次模型调用前经原 ProjectAPI 真实读取验证缓存，变化或失败撤销此前正文/引用并提示重读；文件操作保守使读取上下文失效。缓存不作为写入权限或并发保护，不引入第二套 Project Tools，也不节省/跳过原始读取 IO。
+
+Web readState 使用请求内 Virtual FS 的 revision 和完整文件哈希。插件 readState 使用实际文档身份、version、Dirty 和完整缓冲区哈希，干净 UTF-8 文档另核对磁盘并复检读期间版本；外部更新未同步或并发编辑报告冲突。旧插件、未知编码及无可靠状态的候选读取原文降级，不猜测有效性。原 expected_version、Dirty、WorkspaceEdit、ChangeSet、Diff、Undo 保持原验证。
+
+统计 `[ProjectReadContext]` 仅记录命中、重复、部分复用、校验/失效/冲突和估算 Token，实际计费仍看 Provider usage。专项运行 `venv\Scripts\python.exe -X utf8 -m pytest tests/test_project_read_context.py tests/test_shared_project_tools.py tests/test_vscode_project_api.py tests/test_preview_context_flow.py tests/test_review_changes.py -q`；插件 `npm test`。公共验收命令见 project.md。准确性优先，额外读取校验可能增加 IO；真实 Extension Host 与模型任务速度没有因离线测试而获得保证。
