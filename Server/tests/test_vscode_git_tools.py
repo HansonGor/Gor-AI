@@ -51,8 +51,10 @@ def test_git_tools_are_registered_schemas():
 @pytest.mark.parametrize("tool, args, method, params", [
     ("git_status", {"include_diff": True}, "git.status", {"includeDiff": True}),
     ("git_commit", {"message": "fix: 标题", "paths": ["/src/App.tsx"]}, "git.commit",
-     {"message": "fix: 标题", "paths": ["/src/App.tsx"]}),
-    ("git_commit", {"message": "chore: all"}, "git.commit", {"message": "chore: all"}),
+     {"message": "fix: 标题", "paths": ["/src/App.tsx"], "push": True}),
+    ("git_commit", {"message": "chore: all"}, "git.commit", {"message": "chore: all", "push": True}),
+    # 用户要求只提交本地时才不推送
+    ("git_commit", {"message": "local", "push": False}, "git.commit", {"message": "local", "push": False}),
     ("git_push", {"remote": "origin"}, "git.push", {"remote": "origin"}),
     ("git_push", {}, "git.push", {}),
 ])

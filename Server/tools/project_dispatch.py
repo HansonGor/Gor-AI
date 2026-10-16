@@ -63,7 +63,7 @@ async def dispatch_project_tool(context, name: str, args: dict):
         paths = args.get("paths")
         if paths is not None and (not isinstance(paths, list) or any(not isinstance(p, str) for p in paths)):
             raise ProjectAPIError("INVALID_PATH", "paths 必须是工作区相对路径列表。")
-        result = await api.git_commit(ref, str(args.get("message") or ""), paths)
+        result = await api.git_commit(ref, str(args.get("message") or ""), paths, push=args.get("push") is not False)
     elif name == "git_push":
         remote = args.get("remote")
         result = await api.git_push(ref, remote if isinstance(remote, str) and remote.strip() else None)

@@ -279,7 +279,7 @@ function modeParams(params: Record<string, unknown>): Record<string, unknown> {
  */
 async function legacyGit(action: 'commit' | 'push', params: Record<string, unknown>): Promise<Record<string, unknown>> {
   const args: Record<string, unknown> = {};
-  for (const key of ['message', 'paths', 'remote', 'force']) if (params[key] !== undefined) args[key] = params[key];
+  for (const key of ['message', 'paths', 'remote', 'force', 'push']) if (params[key] !== undefined) args[key] = params[key];
   const result = await runToolchainAction({ toolchain: 'git', action, args, root: params.root, ...modeParams(params) });
   const status = result.status;
   if (status === 'completed') return { ...((result.data as Record<string, unknown>) ?? {}), runId: result.runId };

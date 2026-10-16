@@ -260,7 +260,10 @@ function nativeSummary(action: string, data: Record<string, unknown> | undefined
   if (!data) return '已完成';
   if (data.committed === true) {
     const files = Array.isArray(data.files) ? data.files.length : 0;
-    return `已提交 ${files} 个文件到 ${data.branch ?? '当前分支'}` + (typeof data.commit === 'string' ? `，提交号 ${data.commit.slice(0, 8)}` : '');
+    const committed = `已提交 ${files} 个文件到 ${data.branch ?? '当前分支'}` + (typeof data.commit === 'string' ? `，提交号 ${data.commit.slice(0, 8)}` : '');
+    if (data.pushed === true) return committed + `，并推送到 ${data.upstream ?? `${data.remote}/${data.branch}`}` + (data.setUpstream ? '（已设置上游）' : '');
+    if (typeof data.pushError === 'string') return `${committed}；${data.pushError}`;
+    return typeof data.pushSkipped === 'string' ? `${committed}；${data.pushSkipped}` : committed;
   }
   if (data.pushed === true) return `已推送到 ${data.upstream ?? `${data.remote}/${data.branch}`}` + (data.setUpstream ? '，并设置了上游' : '');
   if (data.pushed === false) return typeof data.message === 'string' ? data.message : '没有需要推送的提交';

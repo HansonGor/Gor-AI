@@ -39,7 +39,7 @@ function preparedPlan(action: string, level: RiskLevel, prepared: PreparedGitOpe
   return {
     kind: 'git', cwd: context.cwd, cwdUri: context.cwdUri, timeoutMs: GIT_TIMEOUT_MS,
     level, allowKey: `git:${action}`, warnings,
-    display: { command: prepared.command, details: prepared.details, effects, ...(prepared.editable ? { editable: prepared.editable } : {}) },
+    display: { command: prepared.command, details: prepared.details, effects: prepared.effects ?? effects, ...(prepared.editable ? { editable: prepared.editable } : {}) },
     fingerprint: prepared.fingerprint,
     execute: async (_signal, input) => ({ ok: true, summary: '', data: await prepared.execute(input) }),
   };
@@ -86,7 +86,7 @@ export const gitProfile: ToolchainProfile = {
     readPlan('status', (params) => gitStatus(params), 'git status'),
     readPlan('diff', (params) => gitStatus({ ...params, includeDiff: true }), 'git diff'),
     readPlan('log', gitLog, 'git log'),
-    writeAction('commit', 1, '提交改动（params.message，可选 params.paths）', ['会在本地仓库新建一个提交'], prepareCommit),
+    writeAction('commit', 1, '提交改动并默认推送到远端（params.message，可选 params.paths；params.push=false 只提交本地）', ['会在本地仓库新建一个提交'], prepareCommit),
     writeAction('push', 1, '推送当前分支（可选 params.remote；永不强制推送）', ['推送后其他人可见'], preparePush),
     writeAction('pull', 1, '拉取并合并上游', ['会修改工作区文件'], (params) => prepareBranchOperation('pull', params)),
     writeAction('fetch', 1, '获取远端更新（不修改工作区）', [], (params) => prepareBranchOperation('fetch', params)),

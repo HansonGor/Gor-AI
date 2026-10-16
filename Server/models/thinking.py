@@ -123,9 +123,12 @@ def _tool_title(name, args, title):
         return "读取改动差异"
     if name == "git_commit":
         paths = [_basename(p) for p in args.get("paths") or [] if isinstance(p, str) and p.strip()]
+        suffix = "" if args.get("push") is False else "并推送"
         if not paths:
-            return "提交全部改动"
-        return "提交 " + "、".join(paths[:2]) + (f" 等 {len(paths)} 个文件" if len(paths) > 2 else "")
+            return "提交全部改动" + suffix
+        title = "提交 " + "、".join(paths[:2]) + (f" 等 {len(paths)} 个文件" if len(paths) > 2 else "")
+        # 文件名后接中文时留一个空格，读起来不粘连
+        return title + ((" " if title[-1].isascii() else "") + suffix if suffix else "")
     if name == "delete_project":
         return "删除项目 " + _basename(path) if path else title
     if name in {"read_external_file", "list_external_directory"}:
@@ -208,7 +211,12 @@ def _result_digest(name, args, result, payload):
     if name == "git_commit" and payload.get("committed") is True:
         files = payload.get("files") or []
         commit = short(payload.get("commit"), 8)
-        return "ok", f"已提交 {len(files)} 个文件到 {payload.get('branch') or '当前分支'}" + (f"，提交号 {commit}" if commit else "") + "。"
+        text = f"已提交 {len(files)} 个文件到 {payload.get('branch') or '当前分支'}" + (f"，提交号 {commit}" if commit else "")
+        if payload.get("pushed") is True:
+            text += f"，并推送到 {payload.get('upstream') or payload.get('remote')}" + ("（已设置上游）" if payload.get("setUpstream") else "")
+        elif payload.get("pushError") or payload.get("pushSkipped"):
+            text += "；" + short(payload.get("pushError") or payload.get("pushSkipped"), 60).rstrip("。")
+        return "ok", text + "。"
     if name == "git_push" and payload.get("pushed") is True:
         count = payload.get("pushedCommits")
         target = payload.get("upstream") or f"{payload.get('remote')}/{payload.get('branch')}"

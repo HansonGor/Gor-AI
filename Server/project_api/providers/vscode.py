@@ -535,8 +535,9 @@ class VSCodeProjectProvider:
         return await self._git(project_ref, "git.status", {"includeDiff": include_diff}, GIT_READ_TIMEOUT_SECONDS)
 
     async def git_commit(self, project_ref: ProjectRef, message: str,
-                         paths: list[str] | None = None) -> dict[str, Any]:
-        params: dict[str, Any] = {"message": message, **self._mode_params()}
+                         paths: list[str] | None = None, push: bool = True) -> dict[str, Any]:
+        # 提交默认同时推送到远端分支；只有用户要求只提交本地时才传 push=False。
+        params: dict[str, Any] = {"message": message, "push": push, **self._mode_params()}
         if paths is not None:
             params["paths"] = paths
         return await self._git(project_ref, "git.commit", params, GIT_CONFIRM_TIMEOUT_SECONDS)

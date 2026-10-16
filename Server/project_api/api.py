@@ -90,9 +90,9 @@ class ProjectAPI:
         return await self._provider(project_ref).git_status(project_ref, include_diff)
 
     async def git_commit(
-        self, project_ref: ProjectRef, message: str, paths: list[str] | None = None
+        self, project_ref: ProjectRef, message: str, paths: list[str] | None = None, push: bool = True,
     ) -> dict[str, Any]:
-        return await self._provider(project_ref).git_commit(project_ref, message, paths)
+        return await self._provider(project_ref).git_commit(project_ref, message, paths, push)
 
     async def git_push(self, project_ref: ProjectRef, remote: str | None = None) -> dict[str, Any]:
         return await self._provider(project_ref).git_push(project_ref, remote)

@@ -112,8 +112,8 @@ def git_status(include_diff: bool = False, root: str | None = None) -> str:
 
 
 @tool
-def git_commit(message: str, paths: list[str] | None = None, root: str | None = None) -> str:
-    """Commit in the real VS Code workspace repository only when the user explicitly asks to commit. Call git_status first and write a concise message describing the actual changes. paths limits the commit to those workspace-relative files; omit to commit all changes. The user must confirm (and may edit the message) in a VS Code dialog; USER_CANCELLED means nothing happened. Rejects unsaved files, conflicts, sensitive files and changes outside the workspace. Report success only when committed is true. Never pushes."""
+def git_commit(message: str, paths: list[str] | None = None, root: str | None = None, push: bool = True) -> str:
+    """Commit in the real VS Code workspace repository only when the user explicitly asks to commit, and by default push it to the remote branch in the same step (existing upstream, otherwise origin with upstream set). Set push=false only when the user asks to commit locally. Call git_status first and write a concise message describing the actual changes. paths limits the commit to those workspace-relative files; omit to commit all changes. Whether the user must confirm depends on the edit mode (the user may edit the message in the card); USER_CANCELLED means nothing happened. Rejects unsaved files, conflicts, sensitive files and changes outside the workspace. Report committed / pushed exactly as returned: pushed=false comes with pushSkipped (no remote, behind remote, local only) or pushError, and the commit still exists. Never force-pushes."""
     return _adapter_only("git_commit")
 
 

@@ -142,7 +142,9 @@ test('review mode: commit shows branch, message and files in the card, then stag
   assert.equal(approvals.length, 1);
   assert.equal(approvals[0].kind, 'git');
   assert.equal(approvals[0].reason, 'review');
-  assert.match(approvals[0].command, /git commit（2 个文件 → main）/);
+  assert.match(approvals[0].command, /git commit \+ push（2 个文件 → main）/);
+  assert.ok(approvals[0].details.some((line) => line.includes('提交后推送到 origin/main')));
+  assert.ok(approvals[0].effects.includes('提交后推送到远端，推送后其他人可见'));
   assert.ok(approvals[0].details.some((line) => line.includes('feat: 更新标题')));
   assert.ok(approvals[0].details.some((line) => line.includes('/src/App.tsx')));
   assert.deepEqual(approvals[0].editable, { field: 'message', label: '提交说明', value: 'feat: 更新标题' });
@@ -151,17 +153,58 @@ test('review mode: commit shows branch, message and files in the card, then stag
   assert.equal(result.status, 'completed');
   assert.equal(result.data.committed, true);
   assert.equal(result.data.commit, 'bbbbbbbbbbbb2222');
-  assert.match(result.summary, /已提交 2 个文件到 main/);
+  assert.match(result.summary, /已提交 2 个文件到 main，提交号 bbbbbbbb，并推送到 origin\/main/);
+  assert.equal(result.data.pushed, true);
+  assert.deepEqual(repo.pushes, [['origin', 'main', false]]);
 });
 
-test('auto mode: commit and push run without a card', async () => {
+test('auto mode: commit pushes by default without a card; a later push has nothing left', async () => {
   setup();
   const commit = await gitRun('commit', { message: 'm' }, 'auto');
   const push = await gitRun('push', {}, 'auto');
   assert.equal(approvals.length, 0);
   assert.equal(commit.approved, 'auto');
-  assert.equal(push.data.pushed, true);
+  assert.equal(commit.data.pushed, true);
+  assert.equal(push.data.reason, 'NOTHING_TO_PUSH');
   assert.deepEqual(repo.pushes, [['origin', 'main', false]]);
+});
+
+test('commit without upstream pushes to origin and sets the upstream', async () => {
+  setup({ HEAD: { name: 'feat/x', commit: 'f1' } });
+  const result = await gitRun('commit', { message: 'm' }, 'auto');
+  assert.deepEqual(repo.pushes, [['origin', 'feat/x', true]]);
+  assert.equal(result.data.setUpstream, true);
+  assert.match(result.summary, /已设置上游/);
+});
+
+test('push: false, no remote or being behind the remote commit locally only and say why', async () => {
+  setup();
+  const local = await gitRun('commit', { message: 'm', push: false }, 'review');
+  assert.ok(approvals[0].details.includes('只提交到本地，不推送。'));
+  assert.match(approvals[0].command, /^git commit（/);
+  assert.equal(local.data.pushed, false);
+  assert.deepEqual(repo.pushes, []);
+
+  setup({ remotes: [] });
+  const noRemote = await gitRun('commit', { message: 'm' }, 'auto');
+  assert.equal(noRemote.data.committed, true);
+  assert.match(noRemote.summary, /没有配置远端，只提交到本地/);
+
+  setup({ HEAD: { name: 'main', commit: 'a', upstream: { remote: 'origin', name: 'main' }, ahead: 1, behind: 2 } });
+  const behind = await gitRun('commit', { message: 'm' }, 'auto');
+  assert.match(behind.summary, /落后远端 2 个提交/);
+  assert.deepEqual(repo.pushes, []);
+});
+
+test('a failed push keeps the commit and reports the push error without credentials', async () => {
+  setup();
+  repo.push = async () => { throw Object.assign(new Error('failed'), { stderr: 'rejected https://user:ghp_SECRET@github.com/acme/app.git' }); };
+  const result = await gitRun('commit', { message: 'm' }, 'auto');
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(repo.commits, ['m']);
+  assert.equal(result.data.pushed, false);
+  assert.match(result.summary, /已提交 .*；git push 失败/);
+  assert.doesNotMatch(result.summary, /SECRET/);
 });
 
 test('the user can rewrite the commit message in the card', async () => {

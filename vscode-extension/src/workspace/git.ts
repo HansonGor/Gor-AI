@@ -224,6 +224,8 @@ export type PreparedGitOperation = {
   hookFiles: string[];
   fingerprint: () => Promise<string>;
   execute: (input?: { message?: string }) => Promise<Record<string, unknown>>;
+  /** 这次操作的影响说明；不提供时用动作的默认说明。 */
+  effects?: string[];
   /** 可在确认时改写的字段（提交说明）。 */
   editable?: { field: 'message'; label: string; value: string };
 };
@@ -251,16 +253,19 @@ export async function prepareCommit(params: Params): Promise<PreparedGitOperatio
   requireNoBlockers(repo, root);
   const plan = commitPlan(repo, root, requested);
   const branch = repo.state.HEAD.name;
+  const push: CommitPush = params.push === false ? { planned: false, note: '只提交到本地，不推送。' } : planCommitPush(repo);
   const fingerprint = async () => {
     await repo.status();
     requireNoBlockers(repo, root);
     return `${repo.state.HEAD?.name}\n${signature(commitPlan(repo, root, requested).files)}`;
   };
   return {
-    command: `git commit（${plan.files.length} 个文件 → ${branch}）`,
-    details: [`分支：${branch}`, `提交说明：${message}`, '文件：', ...fileLines(plan.files).split('\n')],
-    hookFiles: hookFiles(repo, ['pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit']),
+    command: `git commit${push.planned ? ' + push' : ''}（${plan.files.length} 个文件 → ${branch}）`,
+    details: [`分支：${branch}`, `提交说明：${message}`, push.planned ? `提交后推送到 ${push.remote}/${branch}${push.setUpstream ? '（该分支尚无上游，将设置上游）' : ''}` : push.note,
+      '文件：', ...fileLines(plan.files).split('\n')],
+    hookFiles: hookFiles(repo, ['pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit', ...(push.planned ? ['pre-push'] : [])]),
     fingerprint,
+    effects: push.planned ? ['会新建一个提交', '提交后推送到远端，推送后其他人可见'] : ['会在本地仓库新建一个提交'],
     editable: { field: 'message', label: '提交说明', value: message },
     async execute(input) {
       const finalMessage = input?.message?.trim() || message;
@@ -274,13 +279,44 @@ export async function prepareCommit(params: Params): Promise<PreparedGitOperatio
         throw new WorkspaceRequestError('GIT_COMMIT_FAILED', `git commit 失败：${redactCredentials(errorText(error))}`);
       }
       await repo.status();
-      return {
+      const committed = {
         committed: true, branch, commit: repo.state.HEAD?.commit ?? null, message: finalMessage,
         files: fresh.files.map(({ path: file, status }) => ({ path: file, status })),
-        ahead: repo.state.HEAD?.ahead ?? null, upstream: branchInfo(repo).upstream,
       };
+      if (!push.planned) {
+        return { ...committed, pushed: false, pushSkipped: push.note, ahead: repo.state.HEAD?.ahead ?? null, upstream: branchInfo(repo).upstream };
+      }
+      // 提交已经完成；推送失败不回滚提交，只如实报告。永不强制推送。
+      try {
+        await repo.push(push.remote, branch, push.setUpstream);
+      } catch (error) {
+        await repo.status();
+        return { ...committed, pushed: false, pushError: `git push 失败：${redactCredentials(errorText(error))}`,
+          ahead: repo.state.HEAD?.ahead ?? null, upstream: branchInfo(repo).upstream };
+      }
+      await repo.status();
+      return { ...committed, pushed: true, remote: push.remote, setUpstream: push.setUpstream,
+        ahead: repo.state.HEAD?.ahead ?? null, upstream: branchInfo(repo).upstream };
     },
   };
+}
+
+/** 提交后要推送到哪里：沿用上游，否则 origin（或唯一远端）并设置上游；没有远端或落后远端时只提交本地。 */
+type CommitPush = { planned: true; remote: string; setUpstream: boolean } | { planned: false; note: string };
+
+function planCommitPush(repo: GitRepository): CommitPush {
+  const head = repo.state.HEAD;
+  const remotes = repo.state.remotes;
+  if (!remotes.length) return { planned: false, note: '仓库没有配置远端，只提交到本地。' };
+  if (head?.upstream) {
+    if ((head.behind ?? 0) > 0) {
+      return { planned: false, note: `本地分支落后远端 ${head.behind} 个提交，推送会被拒绝；只提交到本地，请先拉取再推送。` };
+    }
+    return { planned: true, remote: head.upstream.remote, setUpstream: false };
+  }
+  const remote = remotes.some((item) => item.name === 'origin') ? 'origin' : remotes.length === 1 ? remotes[0].name : null;
+  if (!remote) return { planned: false, note: `有多个远端（${remotes.map((item) => item.name).join('、')}），未指定推送目标，只提交到本地。` };
+  return { planned: true, remote, setUpstream: true };
 }
 
 /** 没有需要推送的提交时返回结果对象，不需要确认。 */

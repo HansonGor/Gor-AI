@@ -43,7 +43,7 @@ def test_commit_session_replay_has_distinct_titles_and_concrete_summaries():
 
     titles = [r["title"] for r in trace.rounds]
     assert titles == ["查看 Git 状态", "读取改动差异", "读取 project.md 第 1–80 行", "搜索「2026-10-15」",
-                      "读取 project.md 第 236–245 行", "提交 project.md", "汇总提交结果"]
+                      "读取 project.md 第 236–245 行", "提交 project.md 并推送", "汇总提交结果"]
     summaries = [r["summary"] for r in trace.rounds]
     assert summaries[0] == "分支 main，未暂存 1 个文件。"
     assert summaries[1] == "分支 main，未暂存 1 个文件，差异已截断。"
@@ -64,13 +64,13 @@ def test_git_running_cancel_and_failure_are_truthful():
 
     cancelled = tool_presentation("git_commit", {}, json.dumps(
         {"success": False, "code": "USER_CANCELLED", "error": "用户取消了提交，未做任何改动。"}), True)
-    assert cancelled["title"] == "提交全部改动"
+    assert cancelled["title"] == "提交全部改动并推送"
     assert cancelled["summary"] == "你在确认框中取消了操作，未做任何改动。"
     assert cancelled["status"] == "cancelled"
 
     failed = tool_presentation("git_commit", {"paths": ["/a.ts", "/b.ts", "/c.ts"]}, json.dumps(
         {"success": False, "code": "DIRTY_DOCUMENTS", "error": "有未保存的文件，提交不会包含这些修改。"}), True)
-    assert failed["title"] == "提交 a.ts、b.ts 等 3 个文件"
+    assert failed["title"] == "提交 a.ts、b.ts 等 3 个文件并推送"
     assert failed["summary"] == "提交代码未成功：有未保存的文件，提交不会包含这些修改。"
     assert failed["status"] == "fail"
 
