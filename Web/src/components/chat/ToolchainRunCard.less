@@ -294,3 +294,152 @@
   &:hover { text-decoration: underline; }
   &:focus-visible { outline: 2px solid #d9c5ff; outline-offset: 2px; border-radius: 4px; }
 }
+
+// 风险警告、确认原因、改写说明、本轮不再询问与落笔并施行（与警告草图一致：可疑柔黄、高危浅红）。
+.toolchain-status-tag svg { width: 11px; height: 11px; margin-right: 3px; vertical-align: -1px; }
+
+.toolchain-approval-card.risk-warn { border-color: fade(@toolchain-pending, 60%); }
+.toolchain-approval-card.risk-high {
+  border-color: fade(@toolchain-fail, 70%);
+  .toolchain-approval-emblem { border-color: #d98a8a; background: rgba(216, 90, 90, .18); color: @toolchain-fail; }
+}
+
+.toolchain-approval-reason {
+  margin-top: 6px;
+  color: #9ea3cc;
+  font-size: 11px;
+}
+
+.toolchain-approval-warnings {
+  margin-top: 9px;
+  padding: 8px 9px;
+  border-radius: 10px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  &.level-warn { background: fade(@toolchain-pending, 10%); border: 1px solid fade(@toolchain-pending, 35%); color: #e6dcb8; }
+  &.level-high { background: fade(@toolchain-fail, 10%); border: 1px solid fade(@toolchain-fail, 40%); color: #ead0d0; }
+  code {
+    display: block;
+    margin-top: 2px;
+    padding: 3px 6px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, .18);
+    font-family: Consolas, 'Courier New', monospace;
+    font-size: 11px;
+    overflow-wrap: anywhere;
+  }
+}
+
+.toolchain-warning-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  .level-warn & { color: #f0d999; }
+  .level-high & { color: #f6b9b9; }
+}
+
+.toolchain-warning-item { margin-top: 4px; }
+.toolchain-warning-note { margin-top: 6px; color: #c4a4a4; font-size: 10.5px; }
+
+.toolchain-approval-pending {
+  margin-top: 8px;
+  padding: 6px 9px;
+  border-radius: 10px;
+  background: fade(@toolchain-pending, 10%);
+  color: #e6dcb8;
+  font-size: 11.5px;
+}
+
+.toolchain-approval-details {
+  margin-top: 8px;
+  padding: 6px 9px;
+  border: 1px solid #2f3860;
+  border-radius: 10px;
+  color: #d9d2f2;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.toolchain-approval-edit {
+  margin-top: 8px;
+  padding: 6px 9px;
+  border: 1px solid #2f3860;
+  border-radius: 10px;
+  font-size: 11.5px;
+  textarea {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 64px;
+    margin-top: 5px;
+    padding: 6px 8px;
+    border: 1px solid #4c5278;
+    border-radius: 8px;
+    background: #141b33;
+    color: #e4dcff;
+    font: inherit;
+    resize: vertical;
+    &:focus-visible { outline: 2px solid #d9c5ff; outline-offset: 1px; }
+  }
+}
+
+.toolchain-approval-edit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #c9c3ee;
+  button {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: #b8a3f0;
+    font: inherit;
+    cursor: pointer;
+    &:disabled { cursor: default; opacity: .6; }
+    &:focus-visible { outline: 2px solid #d9c5ff; outline-offset: 2px; border-radius: 4px; }
+  }
+}
+
+.toolchain-approval-edit-value { margin-top: 3px; color: #e4dcff; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.toolchain-approval-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 9px;
+  color: #d9d2f2;
+  font-size: 11.5px;
+  line-height: 1.5;
+  cursor: pointer;
+  input { margin: 2px 0 0; accent-color: #ad8ffb; }
+  &.is-risk input { accent-color: @toolchain-fail; }
+}
+
+.toolchain-approval-run.is-risk:disabled {
+  border-color: fade(@toolchain-fail, 35%);
+  background: transparent;
+  color: fade(@toolchain-fail, 45%);
+  opacity: 1;
+}
+
+.toolchain-approval-apply {
+  box-sizing: border-box;
+  width: 100%;
+  height: 34px;
+  margin-top: 8px;
+  border: 1px solid #d7bdff;
+  border-radius: 11px;
+  background: #ad8ffb;
+  color: #160d3c;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  &:not(:disabled):hover { background: #b99dfc; }
+  &:disabled { cursor: default; opacity: .65; }
+  &:focus-visible { outline: 2px solid #d9c5ff; outline-offset: 2px; }
+}

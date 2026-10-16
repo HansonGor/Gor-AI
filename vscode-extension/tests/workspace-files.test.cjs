@@ -201,6 +201,8 @@ Module._load = function (request, parent, isMain) {
   return originalLoad.call(this, request, parent, isMain);
 };
 const { WorkspaceRequestHandler } = require('../out/workspace/requestHandler.js');
+// 删除需要先在施行卡片中确认；这里的用例只验证文件操作本身，统一按已确认处理。
+require('../out/workspace/toolchain/host.js').configureToolchainUi({ requestApproval: async () => 'approve', update() {}, output() {} });
 Module._load = originalLoad;
 
 test('undo RPC restores one file and rejects repeated, dirty, version and hash conflicts', async () => {
@@ -333,6 +335,7 @@ test('read and search use the current unsaved TextDocument and return fileVersio
   reset();
   document.content = document.content.replace('unsaved title', 'manually edited unsaved title');
   document.version = 8;
+  document.isDirty = true;
   const handler = new WorkspaceRequestHandler({ appendLine() {} });
   const read = await invoke(handler, 'project.readFile', { path: '/src/App.tsx', startLine: 1, endLine: 2 });
   assert.equal(read.success, true);
@@ -344,6 +347,76 @@ test('read and search use the current unsaved TextDocument and return fileVersio
   assert.equal(search.success, true);
   assert.equal(search.result.results[0].path, '/src/App.tsx');
   assert.match(search.result.results[0].snippet, /manually edited unsaved title/);
+});
+
+test('read fingerprints describe the whole Dirty buffer across ranges and change with version/content', async () => {
+  reset();
+  document.isDirty = true;
+  document.content = `// unsaved\n${initialSource}`;
+  document.version += 1;
+  const handler = new WorkspaceRequestHandler({ appendLine() {} });
+  const first = await invoke(handler, 'project.readFile', { path: '/src/App.tsx', startLine: 1, endLine: 2 });
+  const second = await invoke(handler, 'project.readFile', { path: '/src/App.tsx', startLine: 2, endLine: 3 });
+  assert.equal(first.success, true);
+  assert.deepEqual(first.result.readState, second.result.readState);
+  assert.equal(first.result.readState.dirty, true);
+  assert.equal(first.result.readState.fileVersion, document.version);
+  assert.match(first.result.content, /unsaved/);
+  document.content += '// user edit\n';
+  document.version += 1;
+  const changed = await invoke(handler, 'project.readFile', { path: '/src/App.tsx', startLine: 1, endLine: 2 });
+  assert.notEqual(changed.result.readState.contentHash, first.result.readState.contentHash);
+  assert.notEqual(changed.result.readState.fileVersion, first.result.readState.fileVersion);
+  assert.equal(applyCalls, 0);
+  assert.equal(saveCalls, 0);
+});
+
+test('clean reads reject external disk changes until the editor synchronizes, without writes', async () => {
+  reset();
+  const handler = new WorkspaceRequestHandler({ appendLine() {} });
+  const before = await invoke(handler, 'project.readFile', { path: '/src/App.tsx' });
+  const updated = initialSource.replace('unsaved title', 'external Git change');
+  diskFiles.set(documentUri.path, new TextEncoder().encode(updated));
+  const stale = await invoke(handler, 'project.readFile', { path: '/src/App.tsx' });
+  assert.equal(stale.success, false);
+  assert.equal(stale.error.code, 'VERSION_CONFLICT');
+  document.content = updated;
+  document.version += 1;
+  const fresh = await invoke(handler, 'project.readFile', { path: '/src/App.tsx' });
+  assert.equal(fresh.success, true);
+  assert.match(fresh.result.content, /external Git change/);
+  assert.notEqual(fresh.result.readState.contentHash, before.result.readState.contentHash);
+  assert.equal(applyCalls, 0);
+  assert.equal(saveCalls, 0);
+});
+
+test('a user edit racing the disk validation invalidates the entire read', async () => {
+  reset();
+  const handler = new WorkspaceRequestHandler({ appendLine() {} });
+  const originalRead = workspace.fs.readFile;
+  workspace.fs.readFile = async function(uri) {
+    const bytes = await originalRead.call(this, uri);
+    document.content += '// concurrent typing';
+    document.version += 1;
+    document.isDirty = true;
+    return bytes;
+  };
+  try {
+    const result = await invoke(handler, 'project.readFile', { path: '/src/App.tsx', startLine: 1, endLine: 2 });
+    assert.equal(result.success, false);
+    assert.equal(result.error.code, 'VERSION_CONFLICT');
+    assert.equal(saveCalls, 0);
+  } finally { workspace.fs.readFile = originalRead; }
+});
+
+test('uncertain disk encoding preserves native text reads but does not authorize cache reuse', async () => {
+  reset();
+  diskFiles.set(documentUri.path, new Uint8Array([255, 254, 65, 0]));
+  const handler = new WorkspaceRequestHandler({ appendLine() {} });
+  const result = await invoke(handler, 'project.readFile', { path: '/src/App.tsx', startLine: 1, endLine: 2 });
+  assert.equal(result.success, true);
+  assert.equal(result.result.readState, undefined);
+  assert.match(result.result.content, /unsaved title/);
 });
 
 test('patch applies once and saves its target, retaining the original Diff', async () => {
@@ -663,7 +736,8 @@ test('deleteDirectory refuses roots, metadata, recursion, dirty descendants, and
   assert.equal((await invoke(handler, 'project.deleteDirectory', { path: '/' })).error.code, 'WORKSPACE_ROOT_PROTECTED');
   assert.equal((await invoke(handler, 'project.deleteDirectory', { path: '/.git' })).error.code, 'PROTECTED_PATH');
   assert.equal((await invoke(handler, 'project.deleteDirectory', { path: '/.vscode' })).error.code, 'PROTECTED_PATH');
-  assert.equal((await invoke(handler, 'project.deleteDirectory', { path: '/src/old', recursive: true })).error.code, 'UNSUPPORTED_OPERATION');
+  // 递归删除只用于整个项目（含 package.json 或 .git）；普通目录一律不递归删除。
+  assert.ok(['NOT_A_PROJECT', 'DIRECTORY_NOT_FOUND'].includes((await invoke(handler, 'project.deleteDirectory', { path: '/src/old', recursive: true })).error.code));
   assert.equal((await invoke(handler, 'project.deleteDirectory', { path: '/src/old' })).error.code, 'DIRECTORY_HAS_UNSAVED_CHANGES');
 
   oldDocument.isDirty = false;

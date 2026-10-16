@@ -56,7 +56,7 @@ def build_presentation_artifact(raw_presentation: dict, *, affected_slides: set[
     reference_design = (initial if local_revision and initial.referencePlan else apply_reference_system(
         initial, provider=PublicIndexedReferenceProvider()
     ))
-    design, qa = apply_deterministic_fixes(reference_design)
+    design, qa = apply_deterministic_fixes(reference_design, preserve_existing_pages=affected_slides is not None)
     if not qa["passed"]:
         raise ValueError("Presentation Visual QA 未通过：" + "；".join(issue["message"] for issue in qa["issues"] if issue["severity"] == "error"))
     design = preserve(compose_design(ensure_presentation_image_queries(design)))
@@ -119,7 +119,7 @@ def build_presentation_artifact(raw_presentation: dict, *, affected_slides: set[
             patched = apply_safe_critique_patches(design, critique_result)
             if patched.model_dump(mode="json") == design.model_dump(mode="json"):
                 break
-            design, _ = apply_deterministic_fixes(patched)
+            design, _ = apply_deterministic_fixes(patched, preserve_existing_pages=affected_slides is not None)
             design = preserve(compose_design(ensure_presentation_image_queries(design)))
         except (ValueError, TypeError):
             # Invalid model-proposed edits are ignored; the original valid deck remains deliverable.

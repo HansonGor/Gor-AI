@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { homedir } from 'node:os';
 import * as vscode from 'vscode';
 import { decodeSharePng } from './shareImageSave';
-import { cancelToolchainRun, type ApprovalAnswer, type ApprovalRequest, type RunUpdate } from './workspace/toolchain/host';
+import { cancelToolchainRun, type ApprovalReply, type ApprovalRequest, type RunUpdate } from './workspace/toolchain/host';
 
 type WebviewRequest = {
   type?: string;
@@ -37,7 +37,7 @@ const APPROVAL_SHOWN_TIMEOUT_MS = 1500;
 type PendingApproval = {
   shown: boolean;
   onShown: () => void;
-  onAnswer: (answer: ApprovalAnswer) => void;
+  onAnswer: (answer: ApprovalReply) => void;
 };
 
 type ActiveRequest = http.ClientRequest;
@@ -123,12 +123,12 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
    * 在聊天面板中展示施行审阅卡片并等待回答。
    * 面板不可见、或卡片未在限定时间内被展示时返回 undefined，由调用方退回原生确认框。
    */
-  async requestToolchainApproval(request: ApprovalRequest, signal: AbortSignal): Promise<ApprovalAnswer | undefined> {
+  async requestToolchainApproval(request: ApprovalRequest, signal: AbortSignal): Promise<ApprovalReply | undefined> {
     if (this.disposed || !this.webview || !this.view?.visible) return undefined;
-    return new Promise<ApprovalAnswer | undefined>((resolve) => {
+    return new Promise<ApprovalReply | undefined>((resolve) => {
       let settled = false;
       const timers: Array<ReturnType<typeof setTimeout>> = [];
-      const settle = (answer: ApprovalAnswer | undefined) => {
+      const settle = (answer: ApprovalReply | undefined) => {
         if (settled) return;
         settled = true;
         timers.forEach(clearTimeout);
@@ -286,8 +286,11 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         break;
       case 'gor.toolchainApprovalAnswer':
         if (typeof message.approvalId === 'string') {
-          const answer = message.answer === 'approve' || message.answer === 'stop' ? message.answer : 'skip';
-          this.pendingApprovals.get(message.approvalId)?.onAnswer(answer);
+          const allowed = ['approve', 'approve_round', 'apply_and_run', 'stop'] as const;
+          const answer = allowed.find((value) => value === message.answer) ?? 'skip';
+          // 只有提交说明这类可改写字段会随回答带回；长度在执行前还会再校验。
+          const edited = typeof message.message === 'string' && message.message.trim() ? message.message.slice(0, 5_000) : undefined;
+          this.pendingApprovals.get(message.approvalId)?.onAnswer(edited && answer !== 'stop' ? { answer, message: edited } : answer);
         }
         break;
       case 'gor.toolchainCancel':

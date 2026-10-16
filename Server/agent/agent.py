@@ -22,6 +22,9 @@ from models.model import get_model_for_tools, model_with_simple_preview_edit
 from models.thinking import ThinkingAdapter
 from services.context_audit import input_token_breakdown
 from agent.search_context import SearchContext, ReaderContext, compact_reader
+from agent.evidence import EvidenceLedger
+from agent import answer_verifier
+from agent.project_read_context import ProjectReadContext
 from tools.web_reader import MAX_PAGES as MAX_READER_PAGES
 from tools.presentation_revision import select_context as select_presentation_context, revision_source
 from models.vision import analyze_images
@@ -39,6 +42,30 @@ from project_api.preview_context import create_current_preview_project_api
 from tools.project_dispatch import dispatch_project_tool
 
 MAX_ITERATIONS = config.Agent.MAX_ITERATIONS
+# 只用了这些工具的回答才做引用核验；用过文件、生成、天气、代码执行等工具时跳过，
+# 避免把"已修改某文件"之类的执行回执当成缺少来源的事实句删除。
+RESEARCH_ONLY_TOOLS = frozenset({"web_search", "web_reader", "search_github_code", "request_tools", "search_images"})
+
+
+def _citation_revision_prompt(report: "answer_verifier.VerificationReport", evidence: EvidenceLedger) -> str:
+    ids = sorted(evidence.source_ids, key=lambda value: int(value[1:]))
+    lines = [f"- 缺少引用：{short_text}" for short_text in (s[:120] for s in report.uncited[:15])]
+    lines += [f"- 引用了本轮不存在的编号 {'、'.join(bad)}：{text[:120]}" for text, bad in report.invalid[:10]]
+    more = len(report.uncited) + len(report.invalid) - len(lines)
+    return (
+        "发送前引用核验未通过。以下事实句没有在本句标注有效来源：\n" + "\n".join(lines)
+        + (f"\n- 另有 {more} 处同类问题。" if more > 0 else "")
+        + f"\n本轮可用来源编号：{'、'.join(ids[:60])}。请输出完整的修订版回答：每条含数字、日期、机构、人名或引语的事实句，"
+          "都在该句末尾标注支持它的 [S#]（不能只在段末统一标注）；本轮来源不支持的内容直接删除，不要保留、不要改写成无来源的说法；"
+          "不得引用不存在的编号，不得新增来源以外的事实。必要时可用 web_reader 补读已返回的 URL。"
+          "仍未标注有效来源的事实句将在发送前被删除。"
+          "直接输出给用户看的最终回答本身：不要提及核验、修订、删除或本条提示，不要写“修订版如下”之类的开场。"
+    )
+
+
+def _log_answer_verification(action: str, report: "answer_verifier.VerificationReport", removed: int = 0) -> None:
+    print("[AnswerVerification] " + json.dumps({"action": action, **report.counts(), "removed": removed},
+                                               ensure_ascii=False))
 TYPING_CHUNK_SIZE = config.Agent.TYPING_CHUNK_SIZE
 TYPING_DELAY_MS = config.Agent.TYPING_DELAY_MS
 
@@ -668,8 +695,13 @@ async def run_agent(
     github_tool_attempted = False
     source_count = 0
     source_ids: dict[str, str] = {}
+    # 本轮真实来源，用于发送前核验回答引用；只在纯检索类回答上启用
+    evidence = EvidenceLedger()
+    executed_tool_names: set[str] = set()
+    answer_verification_retry = False
     search_context = SearchContext()
     reader_context = ReaderContext()
+    project_reads = ProjectReadContext(current_project_context)
     web_capability_retry = False
     # One assistant turn represents one user generation request. Models may
     # issue create_ppt more than once across tool rounds (or in one
@@ -690,6 +722,11 @@ async def run_agent(
         if signal and signal.is_set():
             print("[Agent] 检测到取消信号，中断 Agent 循环")
             send_event({"type": "token", "content": "\n\n（响应已中断）"})
+            break
+
+        await project_reads.validate(signal)
+        project_reads.audit()
+        if signal and signal.is_set():
             break
 
         # 立即发送思考状态，避免连接建立后长时间无数据
@@ -869,6 +906,27 @@ async def run_agent(
                     continue
                 await stream_content("工作区工具已连接，但模型本轮没有发起文件操作，没有改动任何文件。请重试；若要恢复原值，请确认前文是否包含原始内容。", send_event)
                 break
+            if content and evidence and executed_tool_names <= RESEARCH_ONLY_TOOLS:
+                report = answer_verifier.verify(content, evidence.source_ids)
+                if not report.ok and not answer_verification_retry and iterations > 0:
+                    answer_verification_retry = True
+                    _log_answer_verification("revise", report)
+                    messages.append(response)
+                    messages.append(SystemMessage(content=_citation_revision_prompt(report, evidence)))
+                    continue
+                if not report.ok:
+                    content, removed = answer_verifier.cleanup(content, evidence.source_ids)
+                    _log_answer_verification("cleanup", report, removed=removed)
+                    if not content.strip():
+                        content = "本轮检索到的来源不足以支持可靠的回答，请换个问法或稍后重试。"
+                    elif removed:
+                        content += f"\n\n（另有 {removed} 处内容未能在本轮来源中找到依据，已删除。）"
+                    send_event({"type": "answer_verification", "revised": answer_verification_retry,
+                                "removedSentences": removed, **report.counts()})
+                else:
+                    _log_answer_verification("pass", report)
+                    send_event({"type": "answer_verification", "revised": answer_verification_retry,
+                                "removedSentences": 0, **report.counts()})
             if content:
                 await stream_content(content, send_event)
             else:
@@ -883,6 +941,7 @@ async def run_agent(
         pending_tool_rules: list[str] = []
         for tc in tool_calls:
             tool_name = tc.get("name", "")
+            executed_tool_names.add(tool_name)
             if tool_name == "web_search" and tool_name in bound_tool_names:
                 web_tool_attempted = True
             if tool_name == "search_github_code" and tool_name in bound_tool_names:
@@ -1099,6 +1158,7 @@ async def run_agent(
                                         source["sourceId"] = assigned_id
                                         if "source_id" in source:
                                             source["source_id"] = assigned_id
+                                        evidence.add_source(source)
                                     result = re.sub(r"\[(S\d+)\]", lambda match: "[" + replacements.get(match[1], match[1]) + "]", result)
                                     if tool_name == "web_search" and not web_search_declined(latest_user_text):
                                         from tools.search_orchestrator import code_topic_from_search
@@ -1125,6 +1185,7 @@ async def run_agent(
                                     source_id = source_ids.get(_canonical_url(str(page.get("url", ""))))
                                     if source_id:
                                         page["sourceId"] = source_id
+                                        evidence.add_page(page)
                                 web_reader_succeeded = bool(reader_payload.get("success") and pages)
                                 result = json.dumps(reader_payload, ensure_ascii=False)
                                 print("[ReaderAudit] " + json.dumps({
@@ -1431,10 +1492,12 @@ async def run_agent(
                 tool_result_for_context = search_context.compact_search(tool_result_for_context)
             elif tool_name == "web_reader":
                 tool_result_for_context = compact_reader(tool_result_for_context)
-            messages.append(ToolMessage(
+            context_message = ToolMessage(
                 tool_call_id=tc.get("id", ""),
                 content=tool_result_for_context,
-            ))
+            )
+            project_reads.observe(canonical_project_tool(tool_name), tool_args, result, context_message)
+            messages.append(context_message)
 
         for rule in dict.fromkeys(pending_tool_rules):
             messages.append(SystemMessage(content=rule))
@@ -1480,16 +1543,16 @@ async def run_agent(
                     except (json.JSONDecodeError, TypeError):
                         read_data = {}
                     if read_data.get("success"):
-                        context_blocks.append(
-                            f"--- {path}:{read_data.get('startLine')}-{read_data.get('endLine')} (revision {read_data.get('revision')}) ---\n"
-                            + read_data.get("content", "")
-                        )
+                        source_message = HumanMessage(content=read_result)
+                        project_reads.observe("read_preview_file", read_args, read_result, source_message)
+                        messages.append(source_message)
+                        context_blocks.append(path)
                 if context_blocks:
                     messages.append(SystemMessage(content=(
                         "【程序合并读取的局部源码】\n"
                         "以下范围由本轮搜索命中自动合并读取，来源为当前 Preview revision。下一次请一次性生成所有需要的 patches 并调用 batch_patch_project_files，expected_version 使用最新 revision；"
-                        "使用最新 revision，old_text 必须逐字来自下列源码。不要再重复搜索或读取，除非这些范围确实不足以定位。\n\n"
-                        + "\n\n".join(context_blocks)
+                        "使用最新 revision，old_text 必须逐字来自此前读取的源码/readRef。"
+                        "readRef 只引用本轮同版本正文，失效时必须重读。不要再重复搜索或读取，除非这些范围确实不足以定位。"
                     )))
 
         if successful_preview_patch and task_kind == "SIMPLE_EDIT" and not tool_negotiation_seen:

@@ -18,6 +18,10 @@ PROJECT_TOOL_CAPABILITIES = {
     # 语言工具链（第一阶段 Node 验证类命令）：只有 VS Code Provider 声明 toolchain 能力
     "list_toolchains": "toolchain",
     "run_toolchain_action": "toolchain",
+    # 删除整个项目（递归进回收站）与项目外只读：只有 VS Code Provider 声明，两种模式都由扩展确认
+    "delete_project": "deleteProject",
+    "read_external_file": "externalRead",
+    "list_external_directory": "externalRead",
 }
 
 PREVIEW_TOOL_ALIASES = {

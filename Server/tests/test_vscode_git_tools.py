@@ -66,8 +66,12 @@ def test_dispatch_forwards_git_calls_to_extension_without_tree_or_changeset(tool
         result = await task
         # 不预取文件树、不经过审阅暂存：唯一请求就是 git 方法本身
         assert [item["method"] for item in socket.sent] == [method]
-        sent = {k: v for k, v in request["params"].items() if k not in {"workspaceVersion", "root"}}
+        mode_keys = {"approvalMode", "sessionId", "roundId"}
+        sent = {k: v for k, v in request["params"].items() if k not in {"workspaceVersion", "root", *mode_keys}}
         assert sent == params
+        # 提交/推送带上发送时冻结的模式（无记录器时按审阅），由扩展决定是否确认
+        if method != "git.status":
+            assert request["params"]["approvalMode"] == "review"
         assert result["ok"] is True and result["provider"] == "vscode"
 
     asyncio.run(scenario())

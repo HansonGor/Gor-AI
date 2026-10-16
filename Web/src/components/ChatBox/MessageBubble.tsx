@@ -330,7 +330,8 @@ export default function MessageBubble({
 
         {toolchain && toolchainRuns.map((run) => (
           <ToolchainRunCard key={run.runId} run={run}
-            onShown={() => toolchain.onShown(run)} onApprove={() => toolchain.onApprove(run)}
+            onShown={() => toolchain.onShown(run)} onApprove={(options) => toolchain.onApprove(run, options)}
+            onApplyAndRun={() => toolchain.onApplyAndRun(run)}
             onSkip={() => toolchain.onSkip(run)} onStopRound={() => toolchain.onStopRound(run)}
             onAbort={() => toolchain.onAbort(run)} onOpenUrl={() => toolchain.onOpenUrl(run)} />
         ))}

@@ -67,6 +67,17 @@ async def dispatch_project_tool(context, name: str, args: dict):
     elif name == "git_push":
         remote = args.get("remote")
         result = await api.git_push(ref, remote if isinstance(remote, str) and remote.strip() else None)
+    elif name == "delete_project":
+        if not isinstance(path, str) or not path.strip():
+            raise ProjectAPIError("INVALID_PATH", "path 必须是要删除的项目目录（工作区相对路径）。")
+        result = await api.delete_project(ref, path)
+    elif name in {"read_external_file", "list_external_directory"}:
+        if not isinstance(path, str) or not path.strip():
+            raise ProjectAPIError("INVALID_PATH", "path 必须是项目外文件或目录的完整绝对路径。")
+        if name == "read_external_file":
+            result = await api.external_read_file(ref, path, args.get("start_line"), args.get("end_line"))
+        else:
+            result = await api.external_list_directory(ref, path)
     elif name == "list_toolchains":
         result = await api.toolchain_list(ref)
     elif name == "run_toolchain_action":

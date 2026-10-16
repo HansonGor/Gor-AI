@@ -57,7 +57,7 @@ PLUGIN_FILES = PREVIEW_FILES | {"create_project_file", "create_project_directory
 # 真实 Git 操作只属于已注册的 VS Code 工作区；Web 默认工具集合中不得出现。
 PLUGIN_GIT = {"git_status", "git_commit", "git_push"}
 # 工具链同样只属于已注册的 VS Code 工作区，是否执行由扩展审阅决定。
-PLUGIN_TOOLCHAIN = {"list_toolchains", "run_toolchain_action"}
+PLUGIN_TOOLCHAIN = {"list_toolchains", "run_toolchain_action", "delete_project", "read_external_file", "list_external_directory"}
 WEB_DEFAULTS = COMMON | GENERATORS | PREVIEW_FILES | {"set_3d_scene"}
 PLUGIN_DEFAULTS = COMMON | GENERATORS | PLUGIN_FILES | PLUGIN_GIT | PLUGIN_TOOLCHAIN
 UNREGISTERED_DEFAULTS = COMMON | GENERATORS | {"list_project_files", "search_project_code", "read_project_file"}

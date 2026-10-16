@@ -1,5 +1,6 @@
+import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { isUriWithinWorkspaceRoot, normalizeWorkspaceRelativePath, selectWorkspaceRoot, WorkspaceRequestError } from './paths';
+import { isUriWithinWorkspaceRoot, normalizeWorkspaceRelativePath, selectWorkspaceRoot, toWorkspaceUri, WorkspaceRequestError } from './paths';
 
 // 只声明本模块用到的 VS Code 内置 Git 扩展 API（vscode.git，API 版本 1）。
 type GitChange = { uri: vscode.Uri; originalUri?: vscode.Uri; renameUri?: vscode.Uri; status: number };
@@ -23,6 +24,12 @@ type GitRepository = {
   log(options?: { maxEntries?: number }): Promise<GitCommit[]>;
   diffWithHEAD(path: string): Promise<string>;
   diffIndexWithHEAD(path: string): Promise<string>;
+  pull(): Promise<void>;
+  fetch(): Promise<void>;
+  createBranch(name: string, checkout: boolean): Promise<void>;
+  deleteBranch(name: string, force?: boolean): Promise<void>;
+  checkout(treeish: string): Promise<void>;
+  clean(paths: string[]): Promise<void>;
 };
 type GitAPI = { getRepository(uri: vscode.Uri): GitRepository | null };
 
@@ -38,19 +45,6 @@ const STATUS_LABELS: Record<number, string> = {
   0: 'modified', 1: 'added', 2: 'deleted', 3: 'renamed', 4: 'copied', 5: 'modified', 6: 'deleted',
   7: 'untracked', 8: 'ignored', 9: 'added', 10: 'renamed', 11: 'type_changed',
   12: 'conflict', 13: 'conflict', 14: 'conflict', 15: 'conflict', 16: 'conflict', 17: 'conflict', 18: 'conflict',
-};
-
-export type Confirm = (message: string, detail: string, ...actions: string[]) => Promise<string | undefined>;
-export type AskMessage = (value: string) => Promise<string | undefined>;
-
-// 确认交互集中在这里，测试可替换；纯模型请求不能绕过它直接提交或推送。
-export const gitUi: { confirm: Confirm; askMessage: AskMessage } = {
-  confirm: (message, detail, ...actions) =>
-    Promise.resolve(vscode.window.showWarningMessage(message, { modal: true, detail }, ...actions)),
-  askMessage: (value) => Promise.resolve(vscode.window.showInputBox({
-    title: 'Gor 提交说明', prompt: '修改后按回车返回确认；按 Esc 取消提交。', value, ignoreFocusOut: true,
-    validateInput: (text) => (text.trim() ? undefined : '提交说明不能为空'),
-  })),
 };
 
 async function gitApi(): Promise<GitAPI> {
@@ -222,62 +216,78 @@ function signature(entries: Entry[]): string {
   return entries.map((e) => `${e.status}:${e.path}`).sort().join('\n');
 }
 
-export async function gitCommit(params: Params): Promise<Record<string, unknown>> {
-  let message = typeof params.message === 'string' ? params.message.trim() : '';
+/** 一次准备好的 Git 写操作：先展示、再由工具链框架决定是否确认，最后复检并执行。 */
+export type PreparedGitOperation = {
+  command: string;
+  details: string[];
+  /** 会在本操作中自动执行的 Git 钩子文件（用于风险研判）。 */
+  hookFiles: string[];
+  fingerprint: () => Promise<string>;
+  execute: (input?: { message?: string }) => Promise<Record<string, unknown>>;
+  /** 可在确认时改写的字段（提交说明）。 */
+  editable?: { field: 'message'; label: string; value: string };
+};
+
+function hookFiles(repo: GitRepository, names: string[]): string[] {
+  const base = repo.rootUri.fsPath;
+  return names.flatMap((name) => [path.join(base, '.git', 'hooks', name), path.join(base, '.husky', name)]);
+}
+
+async function readCommitPaths(params: Params): Promise<string[] | null> {
+  if (params.paths === undefined || params.paths === null) return null;
+  if (!Array.isArray(params.paths) || !params.paths.length || params.paths.length > 500) {
+    throw new WorkspaceRequestError('INVALID_PATH', 'paths 必须是 1–500 个工作区相对路径。');
+  }
+  return [...new Set(params.paths.map((p) => normalizeWorkspaceRelativePath(p, false, false)))];
+}
+
+export async function prepareCommit(params: Params): Promise<PreparedGitOperation> {
+  const message = typeof params.message === 'string' ? params.message.trim() : '';
   if (!message) throw new WorkspaceRequestError('GIT_MESSAGE_REQUIRED', '提交说明不能为空。');
   if (message.length > MAX_MESSAGE_CHARS) throw new WorkspaceRequestError('GIT_MESSAGE_TOO_LONG', '提交说明过长。');
-  let requested: string[] | null = null;
-  if (params.paths !== undefined && params.paths !== null) {
-    if (!Array.isArray(params.paths) || !params.paths.length || params.paths.length > 500) {
-      throw new WorkspaceRequestError('INVALID_PATH', 'paths 必须是 1–500 个工作区相对路径。');
-    }
-    requested = [...new Set(params.paths.map((p) => normalizeWorkspaceRelativePath(p, false, false)))];
-  }
-
+  const requested = await readCommitPaths(params);
   const { root, repo } = await openRepository(params);
   if (!repo.state.HEAD?.name) throw new WorkspaceRequestError('GIT_DETACHED_HEAD', '当前处于游离 HEAD 状态，请先切换到分支。');
   requireNoBlockers(repo, root);
   const plan = commitPlan(repo, root, requested);
   const branch = repo.state.HEAD.name;
-
-  for (;;) {
-    const choice = await gitUi.confirm(
-      `Gor 请求提交 ${plan.files.length} 个文件到分支 ${branch}`,
-      `提交说明：\n${message}\n\n文件：\n${fileLines(plan.files)}\n\n确认后将暂存以上文件并执行 git commit。`,
-      '提交', '修改提交说明',
-    );
-    if (choice === '修改提交说明') {
-      const edited = await gitUi.askMessage(message);
-      if (edited === undefined) break;
-      message = edited.trim() || message;
-      continue;
-    }
-    if (choice !== '提交') break;
-
-    // 确认期间仓库可能被修改：重新核对，变化则不执行
+  const fingerprint = async () => {
     await repo.status();
     requireNoBlockers(repo, root);
-    const fresh = commitPlan(repo, root, requested);
-    if (signature(fresh.files) !== signature(plan.files) || repo.state.HEAD?.name !== branch) {
-      throw new WorkspaceRequestError('GIT_STATE_CHANGED', '确认期间仓库状态发生变化，未提交。请重新查看改动后再试。');
-    }
-    if (fresh.toStage.length) await repo.add(fresh.toStage.map((e) => e.uri.fsPath));
-    try {
-      await repo.commit(message);
-    } catch (error) {
-      throw new WorkspaceRequestError('GIT_COMMIT_FAILED', `git commit 失败：${redactCredentials(errorText(error))}`);
-    }
-    await repo.status();
-    return {
-      committed: true, branch, commit: repo.state.HEAD?.commit ?? null, message,
-      files: fresh.files.map(({ path, status }) => ({ path, status })),
-      ahead: repo.state.HEAD?.ahead ?? null, upstream: branchInfo(repo).upstream,
-    };
-  }
-  throw new WorkspaceRequestError('USER_CANCELLED', '用户取消了提交，未做任何改动。');
+    return `${repo.state.HEAD?.name}\n${signature(commitPlan(repo, root, requested).files)}`;
+  };
+  return {
+    command: `git commit（${plan.files.length} 个文件 → ${branch}）`,
+    details: [`分支：${branch}`, `提交说明：${message}`, '文件：', ...fileLines(plan.files).split('\n')],
+    hookFiles: hookFiles(repo, ['pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit']),
+    fingerprint,
+    editable: { field: 'message', label: '提交说明', value: message },
+    async execute(input) {
+      const finalMessage = input?.message?.trim() || message;
+      if (finalMessage.length > MAX_MESSAGE_CHARS) throw new WorkspaceRequestError('GIT_MESSAGE_TOO_LONG', '提交说明过长。');
+      // 确认期间仓库可能被修改：框架已比对指纹，这里再按最新状态取文件。
+      const fresh = commitPlan(repo, root, requested);
+      if (fresh.toStage.length) await repo.add(fresh.toStage.map((e) => e.uri.fsPath));
+      try {
+        await repo.commit(finalMessage);
+      } catch (error) {
+        throw new WorkspaceRequestError('GIT_COMMIT_FAILED', `git commit 失败：${redactCredentials(errorText(error))}`);
+      }
+      await repo.status();
+      return {
+        committed: true, branch, commit: repo.state.HEAD?.commit ?? null, message: finalMessage,
+        files: fresh.files.map(({ path: file, status }) => ({ path: file, status })),
+        ahead: repo.state.HEAD?.ahead ?? null, upstream: branchInfo(repo).upstream,
+      };
+    },
+  };
 }
 
-export async function gitPush(params: Params): Promise<Record<string, unknown>> {
+/** 没有需要推送的提交时返回结果对象，不需要确认。 */
+export async function preparePush(params: Params): Promise<PreparedGitOperation | Record<string, unknown>> {
+  if (params.force === true) {
+    throw new WorkspaceRequestError('GIT_FORCE_PUSH_REJECTED', 'Gor 不会强制推送（可能覆盖他人的提交）。如确有需要，请在终端手动执行。');
+  }
   const { repo } = await openRepository(params);
   const head = repo.state.HEAD;
   if (!head?.name) throw new WorkspaceRequestError('GIT_DETACHED_HEAD', '当前处于游离 HEAD 状态，无法推送。');
@@ -306,7 +316,7 @@ export async function gitPush(params: Params): Promise<Record<string, unknown>> 
   }
   if (head.upstream && (head.behind ?? 0) > 0) {
     throw new WorkspaceRequestError('GIT_BEHIND_REMOTE',
-      `本地分支落后远端 ${head.behind} 个提交，推送会被拒绝。请先在 VS Code 中拉取并处理后再推送（Gor 不会强制推送）。`);
+      `本地分支落后远端 ${head.behind} 个提交，推送会被拒绝。请先拉取并处理后再推送（Gor 不会强制推送）。`);
   }
 
   const count = head.upstream ? head.ahead ?? 0 : null;
@@ -314,32 +324,127 @@ export async function gitPush(params: Params): Promise<Record<string, unknown>> 
     .map((c) => `  ${c.hash.slice(0, 8)} ${c.message.split('\n')[0].slice(0, 120)}`);
   const remote = remotes.find((r) => r.name === remoteName);
   const url = redactCredentials(remote?.pushUrl ?? remote?.fetchUrl ?? '');
-  const choice = await gitUi.confirm(
-    `Gor 请求推送分支 ${branch} 到 ${remoteName}`,
-    [
+  return {
+    command: `git push ${remoteName} ${branch}`,
+    details: [
       count === null ? `该分支尚无上游，将推送并设置上游 ${remoteName}/${branch}。` : `将推送 ${count} 个提交：`,
       ...commits,
-      url ? `\n远端地址：${url}` : '',
+      ...(url ? [`远端地址：${url}`] : []),
       '推送后其他人可见。不会强制推送。',
-    ].filter(Boolean).join('\n'),
-    '推送',
-  );
-  if (choice !== '推送') throw new WorkspaceRequestError('USER_CANCELLED', '用户取消了推送，未做任何改动。');
-
-  await repo.status();
-  if (repo.state.HEAD?.name !== branch || repo.state.HEAD?.commit !== head.commit) {
-    throw new WorkspaceRequestError('GIT_STATE_CHANGED', '确认期间分支或提交发生变化，未推送。请重新确认。');
-  }
-  try {
-    await repo.push(remoteName, branch, setUpstream);
-  } catch (error) {
-    throw new WorkspaceRequestError('GIT_PUSH_FAILED', `git push 失败：${redactCredentials(errorText(error))}`);
-  }
-  await repo.status();
-  return {
-    pushed: true, branch, remote: remoteName, setUpstream, commit: repo.state.HEAD?.commit ?? head.commit ?? null,
-    pushedCommits: count, upstream: branchInfo(repo).upstream,
+    ],
+    hookFiles: hookFiles(repo, ['pre-push']),
+    fingerprint: async () => {
+      await repo.status();
+      return `${repo.state.HEAD?.name}\n${repo.state.HEAD?.commit}`;
+    },
+    async execute() {
+      try {
+        await repo.push(remoteName, branch, setUpstream);
+      } catch (error) {
+        throw new WorkspaceRequestError('GIT_PUSH_FAILED', `git push 失败：${redactCredentials(errorText(error))}`);
+      }
+      await repo.status();
+      return {
+        pushed: true, branch, remote: remoteName, setUpstream, commit: repo.state.HEAD?.commit ?? head.commit ?? null,
+        pushedCommits: count, upstream: branchInfo(repo).upstream,
+      };
+    },
   };
+}
+
+export async function gitLog(params: Params): Promise<Record<string, unknown>> {
+  const { repo } = await openRepository(params);
+  const count = typeof params.count === 'number' && params.count > 0 ? Math.min(Math.floor(params.count), 50) : 10;
+  const commits = await repo.log({ maxEntries: count }).catch(() => []);
+  return {
+    ...branchInfo(repo),
+    commits: commits.map((c) => ({ hash: c.hash.slice(0, 12), subject: c.message.split('\n')[0].slice(0, 200) })),
+  };
+}
+
+const BRANCH_NAME = /^(?!\/|.*(?:\/\.|\/\/|\.\.|@\{|\\))[^\s~^:?*[\x00-\x1f\x7f]{1,200}(?<![./]|\.lock)$/;
+
+function branchName(value: unknown): string {
+  if (typeof value !== 'string' || !BRANCH_NAME.test(value.trim()) || value.trim().startsWith('-')) {
+    throw new WorkspaceRequestError('INVALID_PARAMS', '分支名无效。');
+  }
+  return value.trim();
+}
+
+/** 新建 / 切换 / 删除分支、拉取、获取、放弃改动：都返回准备好的操作，由框架决定是否确认。 */
+export async function prepareBranchOperation(action: string, params: Params): Promise<PreparedGitOperation> {
+  const { root, repo } = await openRepository(params);
+  const head = repo.state.HEAD?.name ?? '（游离 HEAD）';
+  const headFingerprint = async () => {
+    await repo.status();
+    return `${repo.state.HEAD?.name}\n${repo.state.HEAD?.commit}`;
+  };
+  const wrap = async (label: string, run: () => Promise<unknown>) => {
+    try {
+      await run();
+    } catch (error) {
+      throw new WorkspaceRequestError('GIT_OPERATION_FAILED', `${label}失败：${redactCredentials(errorText(error))}`);
+    }
+    await repo.status();
+  };
+  switch (action) {
+    case 'pull':
+      return {
+        command: `git pull（${head}）`, details: [`当前分支：${head}`, branchInfo(repo).upstream ? `上游：${branchInfo(repo).upstream}` : '该分支没有上游'],
+        hookFiles: hookFiles(repo, ['post-merge', 'post-checkout']), fingerprint: headFingerprint,
+        async execute() { await wrap('git pull ', () => repo.pull()); return { pulled: true, ...branchInfo(repo) }; },
+      };
+    case 'fetch':
+      return {
+        command: 'git fetch', details: [`远端：${repo.state.remotes.map((r) => r.name).join('、') || '无'}`],
+        hookFiles: [], fingerprint: headFingerprint,
+        async execute() { await wrap('git fetch ', () => repo.fetch()); return { fetched: true, ...branchInfo(repo) }; },
+      };
+    case 'create_branch': {
+      const name = branchName(params.name);
+      const checkout = params.checkout !== false;
+      return {
+        command: `git branch ${name}${checkout ? '（并切换过去）' : ''}`, details: [`从 ${head} 新建分支 ${name}`],
+        hookFiles: checkout ? hookFiles(repo, ['post-checkout']) : [], fingerprint: headFingerprint,
+        async execute() { await wrap('新建分支', () => repo.createBranch(name, checkout)); return { created: name, checkedOut: checkout, ...branchInfo(repo) }; },
+      };
+    }
+    case 'switch_branch': {
+      const name = branchName(params.name);
+      requireNoBlockers(repo, root);
+      return {
+        command: `git checkout ${name}`, details: [`从 ${head} 切换到 ${name}`, '未提交的改动会随之带到新分支；有冲突时 Git 会拒绝切换。'],
+        hookFiles: hookFiles(repo, ['post-checkout']), fingerprint: headFingerprint,
+        async execute() { await wrap('切换分支', () => repo.checkout(name)); return { switched: name, ...branchInfo(repo) }; },
+      };
+    }
+    case 'delete_branch': {
+      const name = branchName(params.name);
+      if (name === repo.state.HEAD?.name) {
+        throw new WorkspaceRequestError('GIT_DELETE_CURRENT_BRANCH', '不能删除当前所在的分支，请先切换到其他分支。');
+      }
+      const force = params.force === true;
+      return {
+        command: `git branch ${force ? '-D' : '-d'} ${name}`,
+        details: [`删除本地分支 ${name}`, force ? '强制删除：分支上未合并的提交会丢失。' : '只删除已合并的分支；未合并时 Git 会拒绝。', '不会删除远端分支。'],
+        hookFiles: [], fingerprint: headFingerprint,
+        async execute() { await wrap('删除分支', () => repo.deleteBranch(name, force)); return { deleted: name, ...branchInfo(repo) }; },
+      };
+    }
+    case 'discard': {
+      const paths = await readCommitPaths(params);
+      if (!paths) throw new WorkspaceRequestError('INVALID_PATH', '请用 paths 指定要放弃改动的文件。');
+      const uris = paths.map((file) => toWorkspaceUri(file, root));
+      return {
+        command: `放弃 ${paths.length} 个文件的未提交改动`,
+        details: ['以下文件将恢复到最近一次提交的内容（未跟踪的文件会被删除）：', ...paths.slice(0, 30).map((file) => `  ${file}`)],
+        hookFiles: [], fingerprint: async () => { await repo.status(); return signature(changeSets(repo, root).unstaged); },
+        async execute() { await wrap('放弃改动', () => repo.clean(uris.map((uri) => uri.fsPath))); return { discarded: paths }; },
+      };
+    }
+    default:
+      throw new WorkspaceRequestError('TOOLCHAIN_ACTION_NOT_SUPPORTED', `git 没有动作 ${action}。`);
+  }
 }
 
 function errorText(error: unknown): string {

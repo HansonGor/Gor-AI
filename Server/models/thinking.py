@@ -57,6 +57,8 @@ TOOL_ACTIONS = {
     "git_status": ("查看 Git 状态", "查看 Git 状态"), "git_commit": ("提交代码", "提交代码"),
     "git_push": ("推送代码", "推送代码"),
     "list_toolchains": ("查看可运行的命令", "查看可运行的命令"), "run_toolchain_action": ("施行命令", "施行命令"),
+    "delete_project": ("删除项目", "删除项目"), "read_external_file": ("读取项目外文件", "读取项目外文件"),
+    "list_external_directory": ("查看项目外目录", "查看项目外目录"),
 }
 
 # 施行状态词与卡片一致：只在展示层映射，回执中的 status 不改名。
@@ -69,6 +71,9 @@ TOOLCHAIN_STATUS = {
 }
 TOOLCHAIN_TITLES = {"typecheck": "类型检查", "lint": "代码检查", "env": "查看 Node 版本", "install": "安装依赖",
                     "logs": "查看运行输出", "stop": "止令"}
+GIT_TITLES = {"status": "查看 Git 状态", "diff": "读取改动差异", "log": "查看提交记录", "commit": "提交代码",
+              "push": "推送代码", "pull": "拉取代码", "fetch": "获取远端更新", "discard": "放弃改动",
+              "create_branch": "新建分支", "switch_branch": "切换到分支", "delete_branch": "删除分支"}
 
 
 READ_TOOLS = {"read_project_file", "read_preview_file"}
@@ -121,6 +126,15 @@ def _tool_title(name, args, title):
         if not paths:
             return "提交全部改动"
         return "提交 " + "、".join(paths[:2]) + (f" 等 {len(paths)} 个文件" if len(paths) > 2 else "")
+    if name == "delete_project":
+        return "删除项目 " + _basename(path) if path else title
+    if name in {"read_external_file", "list_external_directory"}:
+        return title + (" " + _basename(path) if path else "")
+    if name == "run_toolchain_action" and args.get("toolchain") == "git":
+        action, params = args.get("action"), args.get("params") if isinstance(args.get("params"), dict) else {}
+        label = GIT_TITLES.get(action, "Git 操作")
+        branch = short(params.get("name"), 60)
+        return f"{label} {branch}" if branch and action in {"create_branch", "switch_branch", "delete_branch"} else label
     if name == "run_toolchain_action":
         action, params = args.get("action"), args.get("params") if isinstance(args.get("params"), dict) else {}
         if action == "run_script" and short(params.get("name"), 40):
@@ -152,9 +166,22 @@ def _result_digest(name, args, result, payload):
             return "unknown", ""
         command = short(payload.get("command"), 60)
         text = f"{label}：" + (f"{command}，" if command else "") + (summary.rstrip("。") or "无更多信息") + "。"
+        warnings = [w for w in payload.get("warnings") or [] if isinstance(w, dict) and w.get("reason")]
+        if warnings:
+            label_text = "高度可疑" if any(w.get("level") == "high" for w in warnings) else "疑似风险"
+            text += f"（{label_text}：{short(warnings[0]['reason'], 40)}）"
+        if payload.get("appliedReviewFiles"):
+            text += f"已先落笔 {payload['appliedReviewFiles']} 个审阅候选。"
         if payload.get("pendingReviewFiles"):
             text += f"另有 {payload['pendingReviewFiles']} 个审阅候选尚未落笔，命令针对的是落笔前的文件。"
         return state, text
+    if name == "delete_project" and payload.get("deleted") is True:
+        return "ok", f"已删除项目（{payload.get('fileCount', '若干')} 个文件，在系统回收站中）。"
+    if name == "read_external_file" and isinstance(payload.get("content"), str):
+        return "ok", f"已读取项目外文件（共 {payload.get('totalLines')} 行）。"
+    if name == "list_external_directory" and isinstance(payload.get("entries"), list):
+        return "ok", f"共 {payload.get('total', len(payload['entries']))} 项" + (
+            f"，{payload['hiddenProtected']} 项受保护已隐藏" if payload.get("hiddenProtected") else "") + "。"
     if name == "list_toolchains" and isinstance(payload.get("toolchains"), list):
         packages = [p for t in payload["toolchains"] if isinstance(t, dict) for p in t.get("packages") or [] if isinstance(p, dict)]
         scripts = sum(len(p.get("scripts") or {}) for p in packages)
@@ -223,6 +250,8 @@ def tool_presentation(name, args, result=None, finished=False):
     if not finished:
         if name in {"git_commit", "git_push"}:
             return {"title": title, "summary": "正在等待你在 VS Code 确认框中确认" + action + "。"}
+        if name in {"delete_project", "read_external_file", "list_external_directory"}:
+            return {"title": title, "summary": "静候确认：两种模式下都需你在卡片中确认后才会执行。"}
         if name == "run_toolchain_action" and args.get("action") in {"logs", "stop"}:
             return {"title": title, "summary": "正在" + title + "。"}
         if name == "run_toolchain_action":

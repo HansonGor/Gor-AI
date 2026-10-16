@@ -5,8 +5,6 @@ import { fileURLToPath } from 'node:url';
 import Module, { createRequire } from 'node:module';
 import { build } from 'esbuild';
 import { JSDOM } from 'jsdom';
-import React, { act } from 'react';
-import { createRoot } from 'react-dom/client';
 
 const dom = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost/' });
 globalThis.window = dom.window;
@@ -15,6 +13,9 @@ globalThis.Node = dom.window.Node;
 globalThis.HTMLElement = dom.window.HTMLElement;
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+// react-dom 必须在 jsdom 全局就绪之后加载，否则它判定没有 DOM，不监听输入框的 input/change 事件。
+const { default: React, act } = await import('react');
+const { createRoot } = await import('react-dom/client');
 
 const filename = fileURLToPath(new URL('./toolchain-run.fixture.cjs', import.meta.url));
 async function load(entry) {
@@ -39,11 +40,19 @@ const Card = (await load('../src/components/chat/ToolchainRunCard.tsx')).default
 const store = await load('../src/vscode/toolchainRuns.ts');
 const { toolchainStatusLabel } = await load('../src/components/chat/toolchainRun.ts');
 
+// 每项测试结束后卸载仍挂着的卡片：断言中途失败时，倒计时定时器不会让测试进程一直挂住。
+const mounted = new Set();
 async function render(element) {
   const root = createRoot(document.getElementById('root'));
+  const unmount = root.unmount.bind(root);
+  root.unmount = () => { mounted.delete(root); unmount(); };
+  mounted.add(root);
   await act(async () => root.render(element));
   return root;
 }
+test.afterEach(async () => {
+  for (const root of [...mounted]) await act(async () => root.unmount());
+});
 
 const pendingRun = {
   runId: 'r1', approvalId: 'a1', pending: true, status: 'awaiting_approval', command: 'npm run test',
@@ -210,5 +219,109 @@ test('store keeps only local URLs and asks the extension to open them', async ()
   host.onOpenUrl(local);
   host.onOpenUrl({ runId: 'x', status: 'background', url: 'https://evil.example.com/' });
   assert.deepEqual(posted, [{ type: 'gor.toolchainOpenUrl', url: 'http://localhost:5173/' }]);
+  await act(async () => root.unmount());
+});
+
+test('warnings show reasons and evidence; a high-risk card cannot be approved until acknowledged', async () => {
+  const calls = [];
+  const run = {
+    ...pendingRun, runId: 'risk', approvalId: 'risk-a', reason: 'suspicious', scripts: undefined,
+    warnings: [
+      { level: 'high', reason: '读取 SSH 私钥或云服务凭据', evidence: 'scripts/init.js:14 · readFileSync(...id_rsa)' },
+      { level: 'warn', reason: '下载远程内容并直接执行', evidence: 'scripts.setup:1 · curl x | sh' },
+    ],
+  };
+  const root = await render(React.createElement(Card, { run, onApprove: (options) => calls.push(['approve', options]) }));
+  const card = document.querySelector('.toolchain-approval-card');
+  assert.ok(card.classList.contains('risk-high'));
+  assert.match(card.querySelector('.toolchain-approval-reason').textContent, /疑似风险改为请你确认/);
+  assert.match(card.querySelector('.toolchain-warning-title').textContent, /发现 1 处高危行为/);
+  assert.match(card.textContent, /读取 SSH 私钥或云服务凭据/);
+  assert.match(card.textContent, /scripts\/init\.js:14/);
+  assert.match(card.textContent, /不代表一定有害/);
+  const runButton = card.querySelector('.toolchain-approval-run');
+  assert.equal(runButton.disabled, true);
+  const acknowledge = [...card.querySelectorAll('.toolchain-approval-check')].find((label) => label.textContent.includes('仍要施行')).querySelector('input');
+  await act(async () => acknowledge.click());
+  assert.equal(runButton.disabled, false);
+  await act(async () => runButton.click());
+  assert.deepEqual(calls, [['approve', {}]]);
+  // 可疑内容不提供「本轮不再询问」
+  assert.ok(![...card.querySelectorAll('.toolchain-approval-check')].some((label) => label.textContent.includes('不再询问')));
+  await act(async () => root.unmount());
+});
+
+test('review card offers 本轮不再询问 and an editable commit message', async () => {
+  const calls = [];
+  const run = {
+    ...pendingRun, runId: 'git', approvalId: 'git-a', kind: 'git', reason: 'review', allowRemember: true, scripts: undefined,
+    command: 'git commit（2 个文件 → main）', details: ['分支：main', '提交说明：draft', '文件：', '  modified  /src/App.tsx'],
+    editable: { field: 'message', label: '提交说明', value: 'draft' },
+  };
+  const root = await render(React.createElement(Card, { run, onApprove: (options) => calls.push(options) }));
+  const card = document.querySelector('.toolchain-approval-card');
+  assert.match(card.querySelector('.toolchain-approval-reason').textContent, /审阅落笔：不在白名单内/);
+  assert.match(card.querySelector('.toolchain-approval-details').textContent, /\/src\/App\.tsx/);
+  assert.equal(card.querySelector('.toolchain-approval-command').textContent.startsWith('$'), false, 'Git 操作不显示 $ 提示符');
+  await act(async () => [...card.querySelectorAll('.toolchain-approval-edit button')][0].click());
+  const textarea = card.querySelector('textarea');
+  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value').set;
+  await act(async () => { setter.call(textarea, 'fix: 改写后的说明'); textarea.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
+  const remember = [...card.querySelectorAll('.toolchain-approval-check')].find((label) => label.textContent.includes('不再询问')).querySelector('input');
+  await act(async () => remember.click());
+  await act(async () => card.querySelector('.toolchain-approval-run').click());
+  assert.deepEqual(calls, [{ remember: true, message: 'fix: 改写后的说明' }]);
+  await act(async () => root.unmount());
+});
+
+test('pending review files show the notice and a 落笔并施行 button', async () => {
+  const calls = [];
+  const root = await render(React.createElement(Card, {
+    run: { ...pendingRun, runId: 'p', approvalId: 'p-a', pendingReviewFiles: 3 },
+    onApprove: () => calls.push('approve'), onApplyAndRun: () => calls.push('apply'),
+  }));
+  const card = document.querySelector('.toolchain-approval-card');
+  assert.match(card.querySelector('.toolchain-approval-pending').textContent, /3 个审阅候选尚未落笔/);
+  assert.equal(card.querySelector('.toolchain-approval-run').textContent, '仅施行');
+  await act(async () => card.querySelector('.toolchain-approval-apply').click());
+  assert.deepEqual(calls, ['apply']);
+  await act(async () => root.unmount());
+});
+
+test('collapsed rows keep the risk tag and note an acknowledged run', async () => {
+  const root = await render(React.createElement(Card, { run: {
+    runId: 'done', status: 'completed', command: 'npm run postinstall', summary: '命令已完成', warningLevel: 'high', approved: 'user',
+  } }));
+  const row = document.querySelector('.toolchain-run-row');
+  assert.match(row.textContent, /高度可疑/);
+  assert.match(row.textContent, /你已知悉风险并施行/);
+  assert.match(row.textContent, /已施行/);
+  await act(async () => root.unmount());
+});
+
+test('store keeps validated risk fields and sends round / apply / edited answers', async () => {
+  const posted = [];
+  store.resetToolchainRunsForTest((message) => { posted.push(message); return true; });
+  store.acceptToolchainMessage({ type: 'gor.toolchain', kind: 'approval', request: {
+    runId: 'r9', approvalId: 'a9', sessionId: 's', command: 'git commit', kind: 'git', reason: 'review', allowRemember: true,
+    pendingReviewFiles: 2, warnings: [{ level: 'warn', reason: '下载远程内容并直接执行', evidence: 'x' }, { level: 'bogus', reason: 'y' }],
+    details: ['a', 5], editable: { field: 'message', label: '提交说明', value: 'draft' },
+  } });
+  const [run] = store.getToolchainRuns();
+  assert.equal(run.kind, 'git');
+  assert.equal(run.reason, 'review');
+  assert.deepEqual(run.warnings, [{ level: 'warn', reason: '下载远程内容并直接执行', evidence: 'x' }]);
+  assert.deepEqual(run.details, ['a']);
+  assert.equal(run.pendingReviewFiles, 2);
+  let host;
+  function Probe() { host = store.useVscodeToolchainRuns('s', [], () => undefined); return null; }
+  const root = await render(React.createElement(Probe));
+  host.onApprove(run, { remember: true, message: 'fix: 新说明' });
+  assert.deepEqual(posted.at(-1), { type: 'gor.toolchainApprovalAnswer', approvalId: 'a9', answer: 'approve_round', message: 'fix: 新说明' });
+  store.acceptToolchainMessage({ type: 'gor.toolchain', kind: 'approval', request: { runId: 'r10', approvalId: 'a10', sessionId: 's', command: 'npm run check', pendingReviewFiles: 1 } });
+  host.onApplyAndRun(store.getToolchainRuns()[1]);
+  assert.deepEqual(posted.at(-1), { type: 'gor.toolchainApprovalAnswer', approvalId: 'a10', answer: 'apply_and_run' });
+  store.acceptToolchainMessage({ type: 'gor.toolchain', kind: 'update', update: { runId: 'r10', status: 'completed', warningLevel: 'high', approved: 'user' } });
+  assert.equal(store.getToolchainRuns()[1].warningLevel, 'high');
   await act(async () => root.unmount());
 });

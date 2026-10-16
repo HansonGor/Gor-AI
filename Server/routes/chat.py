@@ -434,6 +434,13 @@ async def chat(request: Request, body: ChatRequest):
                         "stored_in_chat_history=false included_in_llm_prompt=false"
                     )
                     return
+                if event.get("type") == "answer_verification":
+                    # 引用核验摘要随 search_trace 持久化（只有数量，没有正文）
+                    full_search_trace = dict(full_search_trace or {})
+                    full_search_trace["answerVerification"] = {
+                        key: event.get(key) for key in ("revised", "removedSentences", "factSentences",
+                                                        "citedFactSentences", "uncited", "invalidCitations", "coverage")
+                    }
                 if event.get("type") == "search_sources":
                     # 合并多次搜索（Agent 单轮可能调用 web_search 两次）：按 url 去重
                     for src in event.get("sources") or []:

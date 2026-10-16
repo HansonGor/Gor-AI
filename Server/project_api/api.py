@@ -97,6 +97,17 @@ class ProjectAPI:
     async def git_push(self, project_ref: ProjectRef, remote: str | None = None) -> dict[str, Any]:
         return await self._provider(project_ref).git_push(project_ref, remote)
 
+    async def delete_project(self, project_ref: ProjectRef, path: str) -> dict[str, Any]:
+        return await self._provider(project_ref).delete_project(project_ref, path)
+
+    async def external_read_file(
+        self, project_ref: ProjectRef, path: str, start_line: int | None = None, end_line: int | None = None,
+    ) -> dict[str, Any]:
+        return await self._provider(project_ref).external_read_file(project_ref, path, start_line, end_line)
+
+    async def external_list_directory(self, project_ref: ProjectRef, path: str) -> dict[str, Any]:
+        return await self._provider(project_ref).external_list_directory(project_ref, path)
+
     async def toolchain_list(self, project_ref: ProjectRef) -> dict[str, Any]:
         return await self._provider(project_ref).toolchain_list(project_ref)
 

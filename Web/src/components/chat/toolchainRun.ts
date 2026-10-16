@@ -5,7 +5,12 @@ import type { ChatMessage } from '../../types';
 export type ToolchainRunStatus =
   | 'awaiting_approval' | 'running' | 'completed' | 'failed' | 'user_cancelled' | 'approval_timeout'
   | 'timed_out' | 'cancelled' | 'plan_changed' | 'not_enabled' | 'rejected' | 'workspace_untrusted'
-  | 'background' | 'stopped';
+  | 'background' | 'stopped' | 'apply_requested';
+
+/** 为什么要问：审阅模式不在白名单 / 删除类 / 项目外 / 疑似风险。 */
+export type ToolchainConfirmReason = 'review' | 'destructive' | 'external' | 'suspicious';
+export type ToolchainOperationKind = 'command' | 'git' | 'file' | 'external';
+export type ToolchainWarning = { level: 'warn' | 'high'; reason: string; evidence?: string };
 
 export interface ToolchainRunView {
   runId: string;
@@ -18,15 +23,28 @@ export interface ToolchainRunView {
   /** 已回答，等待扩展回执。 */
   answering?: boolean;
   status: ToolchainRunStatus;
+  kind?: ToolchainOperationKind;
+  reason?: ToolchainConfirmReason;
+  warnings?: ToolchainWarning[];
+  /** 卡片收起后保留的风险标签。 */
+  warningLevel?: 'warn' | 'high';
+  allowRemember?: boolean;
+  /** 审阅模式下本轮尚未落笔的文件数；大于 0 时可「落笔并施行」。 */
+  pendingReviewFiles?: number;
   command?: string;
   cwd?: string;
   scripts?: Array<{ name: string; body: string }>;
   scriptSource?: string;
+  /** 额外说明：提交说明与文件清单、要删除的路径等。 */
+  details?: string[];
+  /** 确认时可改写的字段（提交说明）。 */
+  editable?: { field: 'message'; label: string; value: string };
   effects?: string[];
   deadline?: number;
   summary?: string;
   startedAt?: number;
   durationMs?: number;
+  approved?: 'user' | 'allowlist' | 'auto' | 'remembered';
   /** 后台常驻进程（dev server）的本地访问地址。 */
   url?: string;
   diagnostics?: { failed?: number; items?: Array<{ file?: string; line?: number; message?: string }> };
@@ -50,14 +68,26 @@ export function toolchainStatusLabel(run: Pick<ToolchainRunView, 'status' | 'dia
     case 'workspace_untrusted': return { label: '未得信任', tone: 'muted' };
     case 'background': return { label: '常驻施行', tone: 'running' };
     case 'stopped': return { label: '已收令', tone: 'muted' };
+    case 'apply_requested': return { label: '先行落笔', tone: 'pending' };
   }
 }
+
+/** 卡片上「为什么要问」的说明；风险信息保持直白。 */
+export const CONFIRM_REASON_TEXT: Record<ToolchainConfirmReason, string> = {
+  review: '审阅落笔：不在白名单内',
+  destructive: '删除类操作：两种模式都需确认',
+  external: '项目外的文件：两种模式都需确认',
+  suspicious: '即刻落笔模式下本应直接运行，因发现疑似风险改为请你确认',
+};
+
+export type ToolchainApproveOptions = { remember?: boolean; message?: string };
 
 /** 宿主注入的施行能力；Web 端不提供（为 null），消息气泡因此不渲染任何施行卡片。 */
 export interface ToolchainRunsHost {
   runsFor(message: Pick<ChatMessage, 'id' | 'role' | 'isStreaming'>): ToolchainRunView[];
   onShown(run: ToolchainRunView): void;
-  onApprove(run: ToolchainRunView): void;
+  onApprove(run: ToolchainRunView, options?: ToolchainApproveOptions): void;
+  onApplyAndRun(run: ToolchainRunView): void;
   onSkip(run: ToolchainRunView): void;
   onStopRound(run: ToolchainRunView): void;
   onAbort(run: ToolchainRunView): void;

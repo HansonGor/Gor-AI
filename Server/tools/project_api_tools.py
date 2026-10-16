@@ -118,6 +118,24 @@ def git_commit(message: str, paths: list[str] | None = None, root: str | None = 
 
 
 @tool
+def delete_project(path: str, root: str | None = None) -> str:
+    """Delete a whole project folder (recursive, moved to the system trash) only when the user explicitly asks to delete that project. path is a workspace-relative directory that must contain package.json or .git; the workspace root is never deletable. The user must confirm in a card in both edit modes; USER_CANCELLED means nothing was deleted. Gor's undo does not cover it (restore from the trash). Not for ordinary folders: delete their files individually."""
+    return _adapter_only("delete_project")
+
+
+@tool
+def read_external_file(path: str, start_line: int | None = None, end_line: int | None = None, root: str | None = None) -> str:
+    """Read a text file OUTSIDE the connected VS Code workspace, only when the user asks to look at that file. path must be a full absolute local path (for example D:\\notes\\todo.md). Read-only: there is no way to create, modify or delete files outside the project. The user must confirm every read in a card. System folders, keys, credentials, .env and browser profile paths are refused (EXTERNAL_PATH_DENIED); paths inside the workspace must use read_project_file."""
+    return _adapter_only("read_external_file")
+
+
+@tool
+def list_external_directory(path: str, root: str | None = None) -> str:
+    """List a directory OUTSIDE the connected VS Code workspace (absolute local path), only when the user asks. Read-only, confirmed by the user every time; protected entries (keys, credentials, .env) are hidden and system folders are refused."""
+    return _adapter_only("list_external_directory")
+
+
+@tool
 def list_toolchains(root: str | None = None) -> str:
     """List language toolchains of the connected VS Code workspace (currently node): availability, actions with risk, and package.json scripts per package directory (cwd). Read-only; call it before run_toolchain_action when the script name or package directory is unknown."""
     return _adapter_only("list_toolchains")

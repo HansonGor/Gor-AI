@@ -1,6 +1,7 @@
 """Per-chat in-memory working copy of a server-persisted Preview Project; never touches local disk."""
 
 import difflib
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -103,6 +104,8 @@ class PreviewProjectWorkspace:
             if normalized not in self.files:
                 raise ValueError("虚拟文件不存在。")
             content = self.files[normalized]
+            read_state = {"provider": "preview", "projectVersion": self.revision,
+                          "contentHash": hashlib.sha256(content.encode()).hexdigest()}
             if start_line is None and end_line is None:
                 total_lines = len(content.splitlines())
                 print(
@@ -115,6 +118,7 @@ class PreviewProjectWorkspace:
                     "content": content,
                     "totalLines": total_lines,
                     "revision": self.revision,
+                    "readState": read_state,
                 }, ensure_ascii=False)
 
             if start_line is not None and (type(start_line) is not int or start_line < 1):
@@ -144,6 +148,7 @@ class PreviewProjectWorkspace:
                 "totalLines": total_lines,
                 "content": selected_content,
                 "revision": self.revision,
+                "readState": read_state,
             }, ensure_ascii=False)
         except ValueError as exc:
             return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)

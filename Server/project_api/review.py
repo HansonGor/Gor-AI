@@ -22,13 +22,19 @@ async def stage_vscode(provider, ref, method, params, recorder):
     prior = recorder.sets.get((ref.provider, ref.project_id, ref.root), {})
     records = {f["path"]: f for f in prior.get("files", [])}
     before, after = {}, {}
+    # 本轮中途已落笔的文件：磁盘应等于落笔后的内容，之后的候选以它为落笔基线。
+    applied_baselines = {}
     # Inspect validates raw paths at the native boundary; normalized keys are authoritative.
     normalized = {path: "/" + path.lstrip("/") for path in paths}
     for raw in paths:
         path = normalized[raw]
         baseline = actual[path]
         previous = records.get(path)
-        expected = previous["before"] if previous else baseline
+        if previous and previous.get("status") == "applied":
+            expected = previous["after"]
+            applied_baselines[path] = copy.deepcopy(previous["after"])
+        else:
+            expected = previous["before"] if previous else baseline
         error = conflict(baseline, expected)
         if error:
             raise ProjectAPIError(error, "文件在本轮修改之间发生变化，请重新发起请求。")
@@ -80,6 +86,9 @@ async def stage_vscode(provider, ref, method, params, recorder):
     item = await recorder.record(ref, before, after, {p: "pending" for p in before})
     # A staged net no-op is not an actionable pending change.
     for file in item["files"]:
+        if file["path"] in applied_baselines:
+            file["applyBaseline"] = applied_baselines[file["path"]]
+            file.pop("applyExpectedVersion", None)
         if file["before"]["content"] == file["after"]["content"]:
             file["status"] = "unchanged"
     await recorder.store.put(item)
@@ -93,6 +102,61 @@ async def stage_vscode(provider, ref, method, params, recorder):
         path = next(iter(before))
         result.update(path=path, diff=changed[0]["diff"] if changed else "", fileVersion=actual[path]["version"])
     return result
+
+
+def apply_expected(file):
+    """落笔时磁盘应有的内容：一般是本轮开始前的原文；本轮中途已落笔过的文件是落笔后的内容。"""
+    base = file.get("applyBaseline") or file["before"]
+    return {**base, "version": file.get("applyExpectedVersion", base["version"])}
+
+
+async def apply_round_pending(recorder, ref, provider):
+    """「落笔并施行」：本轮尚未封存时，按落笔按钮同样的恢复边界把审阅候选写入磁盘。
+
+    基线不一致（用户在此期间改过文件）时整批不写；写入后回读核对，未核对上的文件不算落笔。
+    """
+    item = recorder.sets.get((ref.provider, ref.project_id, ref.root))
+    targets = [f for f in (item or {}).get("files", []) if f.get("status") == "pending"]
+    if not targets:
+        return {"success": True, "applied": 0, "results": []}
+    async with recorder.store.lock(item["id"]):
+        current = await provider.inspect_files(ref, [f["path"] for f in targets])
+        expected = {f["id"]: apply_expected(f) for f in targets}
+        errors = {f["id"]: conflict(current[f["path"]], expected[f["id"]]) for f in targets}
+        if any(errors.values()):
+            return {"success": False, "code": "VERSION_CONFLICT", "message": "有文件在审阅期间被改动，未落笔",
+                    "results": [{"fileId": f["id"], "path": f["path"], "success": False,
+                                 "code": errors[f["id"]] or "BATCH_BLOCKED"} for f in targets]}
+        execution = [{**f, "before": f["after"], "after": expected[f["id"]]} for f in targets]
+        for file in targets:
+            file["status"] = "applying"
+        await recorder.store.put(item)
+        try:
+            results = await provider.restore_files(ref, execution)
+        except Exception as error:
+            code = getattr(error, "code", "APPLY_FAILED")
+            for file in targets:
+                file["status"] = "pending" if code in {"VERSION_CONFLICT", "HASH_CONFLICT", "FILE_HAS_UNSAVED_CHANGES"} else "failed"
+            await recorder.store.put(item)
+            return {"success": False, "code": code, "message": getattr(error, "message", str(error)), "results": []}
+        states = await provider.inspect_files(ref, [f["path"] for f in targets])
+        by_id = {r["fileId"]: r for r in results}
+        applied = 0
+        for file in targets:
+            result = by_id.get(file["id"])
+            state = states[file["path"]]
+            if result and result.get("success") and (state.get("dirty") or state["hash"] != file["after"]["hash"]):
+                result.update(success=False, changed=True, code="RESTORE_CONTENT_MISMATCH")
+            ok = bool(result and result.get("success"))
+            file["status"] = "applied" if ok else ("failed" if result and result.get("changed") else "pending")
+            if ok:
+                applied += 1
+                file["after"] = state
+                file.pop("applyBaseline", None)
+                file["appliedMidRound"] = True
+        await recorder.store.put(item)
+        return {"success": applied == len(targets), "applied": applied, "results": results,
+                **({} if applied == len(targets) else {"code": "APPLY_PARTIAL", "message": "部分文件未能落笔"})}
 
 
 def candidate_files(recorder, ref):
@@ -130,7 +194,7 @@ class ApplyService:
             ref = ProjectRef(**item["projectRef"])
             provider = await self.provider_factory(ref, item)
             current = await provider.inspect_files(ref, [f["path"] for f in targets])
-            expected = {f["id"]: {**f["before"], "version": f.get("applyExpectedVersion", f["before"]["version"])} for f in targets}
+            expected = {f["id"]: apply_expected(f) for f in targets}
             errors = {f["id"]: conflict(current[f["path"]], expected[f["id"]]) for f in targets}
             if any(errors.values()):
                 return {"success": False, "code": "VERSION_CONFLICT", "changeSetId": id,

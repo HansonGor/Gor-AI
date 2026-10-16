@@ -27,8 +27,8 @@ def test_unrelated_instruction_cards_remain_unchanged():
         "VSCODE_UNREGISTERED_PROMPT": "678075f3898caa2713a98400cd47cfde5224e92aee6bf87893f1e64b31daba5b",
         "PYTHON_PROMPT": "16613c7db289ddd3d50ba760a499c111a3f2d1cd9f9d2b1e432a3f5a476efb52",
         "KNOWLEDGE_PROMPT": "9c16346952e40da57b2fb1f108901a46a5c90e342973f5a9e8e34bf7e0753d26",
-        # 2026-10-15 新增、2026-10-16 按用户要求扩展（启动项目 / 安装依赖）：VS Code 工具链施行规则卡
-        "TOOLCHAIN_PROMPT": "3b48e784bb80a7a19e84f4d7b53ea9822be10584f86b80ba68ef1d3906c0fbae",
+        # 2026-10-15 新增、2026-10-16 按用户要求扩展（启动项目 / 安装依赖 / 两种模式分级 / Git / 删除项目 / 项目外只读）：VS Code 工具链施行规则卡
+        "TOOLCHAIN_PROMPT": "115722df63080451a6262a2ab7c8d28e4ce2e11e2cd97e8cc11ba39fa3984ef2",
         "VIDEO_PROMPT": "1c4d41ae8f02b6e109120c37e7135c3e7b419821b346261678a625cfe79e9261",
     }
     for name, checksum in expected.items():

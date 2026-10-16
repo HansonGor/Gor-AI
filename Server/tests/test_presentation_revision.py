@@ -170,6 +170,31 @@ def test_langchain_async_context_is_request_local():
     assert revision_source.get() is None
 
 
+def test_revision_keeps_existing_continuation_title_and_content():
+    source = {"title": "原稿", "slides": [
+        {"id": "cover", "type": "cover", "title": "原稿"},
+        {"id": "route", "type": "title-content", "title": "安排", "supportingPoints": ["上午游览"]},
+        {"id": "route-cont-1", "type": "title-content", "title": "安排（续）", "supportingPoints": ["下午游览"]},
+    ]}
+    merged, affected = merge_revision(source, {"baseFingerprint": fingerprint(source),
+        "updates": [{"slideId": "route-cont-1", "changes": {"title": "第二段行程"}}]})
+    with tempfile.TemporaryDirectory() as directory, \
+         patch("tools.presentation.GENERATED_ROOT", Path(directory)), \
+         patch("tools.presentation.ensure_storage_dirs"), \
+         patch("tools.presentation.PublicIndexedReferenceProvider.search", return_value=[]), \
+         patch("tools.presentation.create_render_provider", return_value=None), \
+         patch("tools.presentation.create_presentation_asset_provider") as assets:
+        assets.return_value.resolve.return_value = {}
+        result = build_presentation_artifact(merged, affected_slides=affected)
+        slides = result["presentationSchema"]["slides"]
+        assert [slide["id"] for slide in slides] == ["cover", "route", "route-cont-1"]
+        assert slides[-1]["title"] == "第二段行程"
+        assert [point for slide in slides for point in slide["supportingPoints"]] == ["上午游览", "下午游览"]
+        ppt = Presentation(Path(directory, result["artifactId"] + ".pptx"))
+        assert len(ppt.slides) == 3
+        assert any("第二段行程" in shape.text for shape in ppt.slides[2].shapes if shape.has_text_frame)
+
+
 @pytest.mark.parametrize("vscode", [False, True])
 def test_agent_context_and_patch_flow_in_both_clients(vscode):
     source = deck()
