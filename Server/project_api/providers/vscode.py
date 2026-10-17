@@ -22,6 +22,18 @@ CONFIRM_TIMEOUT_SECONDS = 630.0
 _cancel_tasks: set[asyncio.Task] = set()
 
 
+TEST_REPORT_GUIDE = (
+    "汇报前先用 read_project_file 读取这次运行的测试文件，逐条说明用例名、断言、期望值与实际值："
+    "通过的用例框架不打印实际值，按断言推出（如 assertEqual(1 + 1, 2) 通过即 1 + 1 的结果是 2）并注明由断言通过得出；"
+    "失败的以输出里的 AssertionError 为准；推不出的值不要猜。用例很多时只说明失败的和用户问到的。"
+)
+
+
+def _is_test_run(action: str, params: dict[str, Any] | None) -> bool:
+    module = (params or {}).get("module") if isinstance(params, dict) else None
+    return action == "test" or (action == "run_module" and module in {"unittest", "pytest"})
+
+
 class VSCodeProjectProvider:
     def __init__(self, bridge: VSCodeBridgeClient = vscode_bridge):
         self._bridge = bridge
@@ -579,6 +591,8 @@ class VSCodeProjectProvider:
             result = await self._run_toolchain(project_ref, resume, resume["runId"])
             result["appliedReviewFiles"] = applied.get("applied", 0)
         result.pop("resumeToken", None)
+        if _is_test_run(action, params) and isinstance(result.get("diagnostics"), dict):
+            result["reportGuide"] = TEST_REPORT_GUIDE
         pending = self._pending_review_files(recorder, project_ref)
         if pending:
             # 审阅候选还没落笔，命令跑的是落笔前的磁盘内容

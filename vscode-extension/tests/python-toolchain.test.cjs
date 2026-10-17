@@ -144,7 +144,7 @@ test('check tools follow what the interpreter has installed, never with --fix (a
   fakePython({ modules: { pytest: true, ruff: true, mypy: true } });
   assert.deepEqual(await commands(), ['pytest -q a.py', 'ruff check .', 'mypy .', 'ruff format --check .']);
   fakePython({ modules: { flake8: true, pyright: true, black: true } });
-  assert.deepEqual(await commands(), ['python -m unittest a.py', 'flake8 .', 'pyright .', 'black --check .']);
+  assert.deepEqual(await commands(), ['python -m unittest a', 'flake8 .', 'pyright .', 'black --check .']);
   assert.equal(approvals.length, 0, '检查类动作在审阅模式白名单内');
 });
 
@@ -288,5 +288,34 @@ test('real Python (skipped when not installed): run_file and unittest through th
     const tests = await run('test', {}, 'auto');
     assert.equal(tests.status, 'completed');
     assert.equal(tests.diagnostics.total, 1);
+    // 详细版：test 带 -v，以及直接 -m unittest -v，卡片都能拿到「1 项」结果
+    const verbose = await run('test', { args: ['-v'] }, 'auto');
+    assert.equal(verbose.command, 'python -m unittest discover -v');
+    assert.ok(verbose.stderr.includes('test_ok (test_x.T.test_ok) ... ok'));
+    assert.equal(verbose.diagnostics.total, 1);
+    const viaModule = await run('run_module', { module: 'unittest', args: ['discover', '-v'] }, 'auto');
+    assert.equal(viaModule.diagnostics.total, 1);
+    assert.equal(viaModule.diagnostics.failed, 0);
   }
+});
+
+test('test passes extra arguments through; pytest drops -q when asked for verbose output', async () => {
+  workspace({ 'test_a.py': '' });
+  fakePython({ modules: { pytest: true } });
+  assert.equal((await run('test', { args: ['-v'] })).command, 'pytest -v');
+  assert.equal((await run('test', { path: '/test_a.py', args: ['-k', 'add'] })).command, 'pytest -q test_a.py -k add');
+  fakePython({ modules: {} });
+  assert.equal((await run('test', { path: '/test_a.py', args: ['-v'] })).command, 'python -m unittest test_a -v');
+  await assert.rejects(run('test', { args: '-v' }), { code: 'INVALID_PARAMS' });
+  assert.equal(approvals.length, 0, '带参数的测试仍在白名单内');
+});
+
+test('test paths may be written relative to the command directory', async () => {
+  workspace({ 'test-demo/test_math.py': '', 'other.py': '' });
+  fakePython({ modules: {} });
+  const result = await run('test', { path: 'test_math.py', args: ['-v'] }, 'auto', { cwd: 'test-demo' });
+  assert.equal(result.command, 'python -m unittest test_math -v');
+  assert.equal((await run('test', { path: '/test-demo/test_math.py' }, 'auto', { cwd: 'test-demo' })).command, 'python -m unittest test_math');
+  await assert.rejects(run('test', { path: '/other.py' }, 'auto', { cwd: 'test-demo' }), { code: 'INVALID_PATH' });
+  await assert.rejects(run('test', { path: '../other.py' }, 'auto', { cwd: 'test-demo' }), (error) => ['INVALID_PATH', 'INVALID_PARAMS'].includes(error.code));
 });

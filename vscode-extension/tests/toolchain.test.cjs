@@ -302,6 +302,14 @@ test('working directory and targets cannot leave the workspace', async () => {
   await assert.rejects(run({ action: 'test', cwd: '/missing' }), { code: 'INVALID_PATH' });
   await assert.rejects(run({ action: 'lint', cwd: '/pkg', args: { path: '/other' } }), (error) => ['INVALID_PATH', 'TOOLCHAIN_TOOL_NOT_FOUND'].includes(error.code));
   await assert.rejects(run({ action: 'test', args: { path: 'C:/Windows' } }), { code: 'INVALID_PATH' });
+  // 相对命令目录的写法也接受（cwd 为 pkg 时写 a.test.js）；以 / 开头的仍按工作区根解析
+  fs.writeFileSync(path.join(folders[0].uri.fsPath, 'pkg', 'a.test.js'), '');
+  fs.writeFileSync(path.join(folders[0].uri.fsPath, 'pkg', 'package.json'), JSON.stringify({ devDependencies: { vitest: '1' } }));
+  fs.mkdirSync(path.join(folders[0].uri.fsPath, 'pkg', 'node_modules', 'vitest'), { recursive: true });
+  fs.writeFileSync(path.join(folders[0].uri.fsPath, 'pkg', 'node_modules', 'vitest', 'vitest.mjs'), '');
+  const relative = await run({ approvalMode: 'auto', action: 'test', cwd: '/pkg', args: { path: 'a.test.js' } });
+  assert.match(relative.command, /a.test.js$/);
+  await assert.rejects(run({ action: 'test', cwd: '/pkg', args: { path: '/a.test.js' } }), { code: 'INVALID_PATH' });
   await assert.rejects(run({ action: 'rm' }), { code: 'TOOLCHAIN_ACTION_NOT_SUPPORTED' });
   await assert.rejects(host.runToolchainAction({ toolchain: 'cobol', action: 'test' }), { code: 'TOOLCHAIN_NOT_SUPPORTED' });
 });

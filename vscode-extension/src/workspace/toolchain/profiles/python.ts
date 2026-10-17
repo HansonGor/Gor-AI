@@ -1,14 +1,16 @@
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { constants as fsConstants } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { normalizeWorkspaceRelativePath, toWorkspaceUri, WorkspaceRequestError } from '../../paths';
+import { WorkspaceRequestError } from '../../paths';
 import { parsePythonCheckOutput, parsePytestSummary, parseUnittestSummary } from '../diagnostics';
 import { mergeWarnings, scanFiles, type RiskLevel } from '../risk';
 import { buildChildEnv, currentPath } from '../runner';
 import type { ActionContext, ActionSpec, Diagnostics, ExecPlan, Params, ToolchainEnv, ToolchainProfile } from '../types';
+import {
+  BASE_EXCLUDED_DIRS, cwdDirOf, exists, findOnPath, findProjectDirs, hash, readArgs as readArgsFor, requireLocalFolder, targetPath as sharedTargetPath,
+  workspaceRelativeDir,
+} from './shared';
 
 /**
  * Python 工具链：开放程度与 Node 一致（R0–R4 同一套分级）。
@@ -18,14 +20,13 @@ import type { ActionContext, ActionSpec, Diagnostics, ExecPlan, Params, Toolchai
 
 export const PYTHON_TIMEOUT_MS = 10 * 60 * 1000;
 const PROBE_TIMEOUT_MS = 15_000;
-const EXCLUDED_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', 'out', 'vendor', '.venv', 'venv', 'env',
+const EXCLUDED_DIRS = new Set([...BASE_EXCLUDED_DIRS, '.venv', 'venv', 'env',
   '__pycache__', '.mypy_cache', '.pytest_cache', '.ruff_cache', '.tox', '.nox', 'site-packages']);
 const PROJECT_MARKERS = ['pyproject.toml', 'requirements.txt', 'setup.py', 'setup.cfg', 'Pipfile', 'manage.py'];
 const MANIFESTS = ['pyproject.toml', 'requirements.txt', 'requirements-dev.txt', 'setup.py', 'setup.cfg', 'uv.lock', 'poetry.lock', 'Pipfile.lock'];
 const VENV_DIRS = ['.venv', 'venv', 'env'];
 const PROBED_MODULES = ['pytest', 'ruff', 'flake8', 'mypy', 'pyright', 'black'];
 const MAX_PROJECTS = 30;
-const MAX_ARGS = 20;
 
 export type PythonProbe = { executable: string; version: string; inVenv: boolean; modules: Record<string, boolean> };
 export type PythonEnv = ToolchainEnv & {
@@ -37,15 +38,6 @@ export type PythonEnv = ToolchainEnv & {
   inVenv?: boolean;
   modules?: Record<string, boolean>;
 };
-
-async function exists(file: string): Promise<boolean> {
-  try {
-    await fs.access(file, fsConstants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 function isStoreStub(file: string): boolean {
   return /[\\/]WindowsApps[\\/]/i.test(file);
@@ -94,14 +86,11 @@ async function fromProjectVenv(rootDir: string, cwdDir: string): Promise<string 
 
 /** PATH 中的 Python：Windows 优先 py 启动器（交给 probe 解析成真实解释器），跳过微软商店占位程序。 */
 async function fromPath(): Promise<string[] | undefined> {
-  const dirs = currentPath().split(path.delimiter).filter(Boolean);
+  // 按名字优先：PATH 里任何位置的 py 启动器都先于 python.exe。
   const names = process.platform === 'win32' ? ['py.exe', 'python.exe', 'python3.exe'] : ['python3', 'python'];
   for (const name of names) {
-    for (const dir of dirs) {
-      const candidate = path.join(dir, name);
-      if (isStoreStub(candidate) || !await exists(candidate)) continue;
-      return name === 'py.exe' ? [candidate, '-3'] : [candidate];
-    }
+    const found = await findOnPath([name], isStoreStub);
+    if (found) return name === 'py.exe' ? [found, '-3'] : [found];
   }
   return undefined;
 }
@@ -134,12 +123,6 @@ async function probe(command: string[]): Promise<PythonProbe | undefined> {
 
 // 定位集中在这里，测试可替换；扩展只执行这里找到的解释器。
 export const pythonLocator = { fromExtension, fromProjectVenv, fromPath, probe };
-
-function requireLocalFolder(root: vscode.WorkspaceFolder): void {
-  if (root.uri.scheme !== 'file') {
-    throw new WorkspaceRequestError('TOOLCHAIN_UNAVAILABLE', '工具链目前只支持本地文件工作区。');
-  }
-}
 
 /** 按优先级找到解释器并探测；label 只描述来源和版本，不含本机路径。 */
 export async function resolvePython(root: vscode.WorkspaceFolder, cwdDir?: string): Promise<PythonEnv> {
@@ -175,14 +158,6 @@ function pythonEnv(context: ActionContext): PythonEnv & { python: string } {
   return env as PythonEnv & { python: string };
 }
 
-function cwdDirOf(context: ActionContext): string {
-  return path.resolve(context.cwdUri.fsPath);
-}
-
-function hash(text: string): string {
-  return createHash('sha256').update(text).digest('hex');
-}
-
 /** 子进程环境：UTF-8 输出；用虚拟环境时设置 VIRTUAL_ENV 并把它的脚本目录放到 PATH 最前面。 */
 function childEnv(env: PythonEnv & { python: string }): Record<string, string> {
   // 不缓冲输出：管道下 Python 默认整块缓冲，常驻服务打印的访问地址会迟迟收不到。
@@ -197,23 +172,11 @@ function childEnv(env: PythonEnv & { python: string }): Record<string, string> {
 
 /** 工作区内的目标路径，返回相对 cwd 的写法（参数里不出现本机绝对路径）。 */
 function targetPath(value: unknown, context: ActionContext, mustBePy = false): string | undefined {
-  if (value === undefined || value === null || value === '') return undefined;
-  const normalized = normalizeWorkspaceRelativePath(value);
-  if (mustBePy && !/\.pyw?$/i.test(normalized)) throw new WorkspaceRequestError('INVALID_PARAMS', 'file 必须是工作区内的 .py 文件。');
-  const absolute = path.resolve(toWorkspaceUri(normalized, context.root).fsPath);
-  const cwd = cwdDirOf(context);
-  if (absolute !== cwd && !absolute.startsWith(cwd + path.sep)) {
-    throw new WorkspaceRequestError('INVALID_PATH', '目标路径必须位于命令的工作目录之内。');
-  }
-  return path.relative(cwd, absolute) || '.';
+  return sharedTargetPath(value, context, mustBePy ? { pattern: /\.pyw?$/i, message: 'file 必须是工作区内的 .py 文件。' } : undefined);
 }
 
 function readArgs(value: unknown): string[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value) || value.length > MAX_ARGS || value.some((item) => typeof item !== 'string' || item.length > 500 || item.includes('\0'))) {
-    throw new WorkspaceRequestError('INVALID_PARAMS', `args 必须是最多 ${MAX_ARGS} 个字符串（参数直接传给 Python，不经过 shell）。`);
-  }
-  return value as string[];
+  return readArgsFor(value, 'Python');
 }
 
 async function readText(file: string): Promise<string> {
@@ -309,16 +272,19 @@ const envAction: ActionSpec = {
 };
 
 const testAction: ActionSpec = {
-  id: 'test', level: 1, description: '运行测试（pytest；没有 pytest 时用 unittest），可用 params.path 指定文件或目录',
+  id: 'test', level: 1, description: '运行测试（pytest；没有 pytest 时用 unittest），可用 params.path 指定文件或目录，params.args 传测试参数（如 ["-v"]、["-k", "名字"]，最多 20 个）',
   async plan(params, context) {
     const env = pythonEnv(context);
     const target = targetPath(params.path, context);
+    const args = readArgs(params.args);
     if (hasModule(context, 'pytest')) {
-      return plan(context, { argv: [env.python, '-m', 'pytest', '-q', ...(target ? [target] : [])], command: `pytest -q${target ? ' ' + target : ''}`,
-        allowKey: 'python:test', parse: parsePytestSummary });
+      // -q 与 -v 会互相抵消：要详细输出时不再加 -q。
+      const quiet = args.some((arg) => /^(?:-v+|--verbose)$/.test(arg)) ? [] : ['-q'];
+      const argv = ['pytest', ...quiet, ...(target ? [target] : []), ...args];
+      return plan(context, { argv: [env.python, '-m', ...argv], command: argv.join(' '), allowKey: 'python:test', parse: parsePytestSummary });
     }
-    return plan(context, { argv: [env.python, '-m', 'unittest', ...(target ? [target.replace(/\.py$/, '').split(path.sep).join('.')] : ['discover'])],
-      command: `python -m unittest ${target ?? 'discover'}`, allowKey: 'python:test', parse: parseUnittestSummary });
+    const argv = ['unittest', ...(target ? [target.replace(/\.py$/, '').split(path.sep).join('.')] : ['discover']), ...args];
+    return plan(context, { argv: [env.python, '-m', ...argv], command: ['python -m', ...argv].join(' '), allowKey: 'python:test', parse: parseUnittestSummary });
   },
 };
 
@@ -394,6 +360,8 @@ const runModuleAction: ActionSpec = {
       argv: [env.python, '-m', module, ...args], command: ['python -m', module, ...args].join(' '), allowKey: `python:run_module:${module}`,
       level: graded.level, effects: graded.effects, rejectReason: graded.rejectReason,
       warnings: mergeWarnings(await scanFiles(scanned, cwdDir)), background: isLongRunning(head, args),
+      // 直接用 -m unittest / -m pytest 跑测试时同样解析结果，卡片才能显示「几项通过」。
+      ...(module === 'unittest' ? { parse: parseUnittestSummary } : module === 'pytest' ? { parse: parsePytestSummary } : {}),
     });
   },
 };
@@ -413,14 +381,7 @@ const createVenvAction: ActionSpec = {
 
 /** 在 PATH 中查找可执行文件（uv / poetry）；只接受 .exe 或无扩展名的可执行文件，不调用 .cmd/.bat。 */
 async function findExecutable(name: string): Promise<string | undefined> {
-  const names = process.platform === 'win32' ? [`${name}.exe`] : [name];
-  for (const dir of currentPath().split(path.delimiter).filter(Boolean)) {
-    for (const file of names) {
-      const candidate = path.join(dir, file);
-      if (await exists(candidate)) return candidate;
-    }
-  }
-  return undefined;
+  return findOnPath(process.platform === 'win32' ? [`${name}.exe`] : [name]);
 }
 export const pythonTools = { findExecutable };
 
@@ -459,25 +420,7 @@ const installAction: ActionSpec = {
 };
 
 async function listProjects(rootDir: string): Promise<string[]> {
-  const found: string[] = [];
-  const walk = async (dir: string, depth: number) => {
-    if (found.length >= MAX_PROJECTS || depth > 3) return;
-    for (const marker of PROJECT_MARKERS) {
-      if (await exists(path.join(dir, marker))) { found.push(dir); break; }
-    }
-    let entries: Array<import('node:fs').Dirent>;
-    try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.') || EXCLUDED_DIRS.has(entry.name.toLowerCase())) continue;
-      await walk(path.join(dir, entry.name), depth + 1);
-    }
-  };
-  await walk(rootDir, 0);
-  return found;
+  return findProjectDirs(rootDir, { markers: PROJECT_MARKERS, excluded: EXCLUDED_DIRS, max: MAX_PROJECTS });
 }
 
 export const pythonProfile: ToolchainProfile = {
@@ -490,11 +433,10 @@ export const pythonProfile: ToolchainProfile = {
     const python = env as PythonEnv;
     const projects = [];
     for (const dir of await listProjects(rootDir)) {
-      const relative = path.relative(rootDir, dir).split(path.sep).join('/');
       const markers = [];
       for (const name of [...PROJECT_MARKERS, 'uv.lock', 'poetry.lock']) if (await exists(path.join(dir, name))) markers.push(name);
       const venv = (await Promise.all(VENV_DIRS.map(async (name) => (await exists(venvPython(path.join(dir, name))) ? name : '')))).find(Boolean);
-      projects.push({ cwd: relative ? `/${relative}` : '/', markers, venv: venv ?? null,
+      projects.push({ cwd: workspaceRelativeDir(rootDir, dir), markers, venv: venv ?? null,
         entryFiles: (await Promise.all(['main.py', 'app.py', 'manage.py'].map(async (name) => (await exists(path.join(dir, name)) ? name : '')))).filter(Boolean) });
     }
     return {

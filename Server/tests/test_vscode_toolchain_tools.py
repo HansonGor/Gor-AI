@@ -294,3 +294,45 @@ def test_python_thinking_titles():
     assert py("test", path="tests/test_a.py") == "运行测试 test_a.py"
     assert py("lint") == "代码检查"
     assert tool_presentation("run_toolchain_action", {"toolchain": "node", "action": "env"})["title"] == "查看 Node 版本"
+
+
+@pytest.mark.parametrize("text", ["输出结果是什么", "测试结果怎么样", "再跑一次，告诉我输出了什么", "运行结果给我看看", "用 -v 跑测试，告诉我详细结果"])
+def test_asking_for_results_loads_the_reporting_rules(text):
+    caps = {"listFiles": True, "rangeRead": True, "toolchain": True}
+    route = route_request(text, vscode_client_mode=True, vscode_workspace_id="ws-1", project_capabilities=caps)
+    assert TOOLCHAIN_PROMPT in route.system_prompt
+    # 整理答复：命令、结论、失败项；要看输出时摘录 stdout/stderr 原文；追问只依据回执
+    for phrase in ("实际执行的命令与目录", "stdout 与 stderr", "放进代码块", "回执里没有的内容不要补造",
+                   "read_project_file 读取对应测试文件", "期望值与实际值", "由断言通过得出", "无法从断言确定的值不要猜"):
+        assert phrase in TOOLCHAIN_PROMPT
+    # Web 端不受影响
+    assert TOOLCHAIN_PROMPT not in route_request(text, has_preview=True).system_prompt
+
+
+def test_short_followups_after_a_workspace_run_keep_the_toolchain_rules():
+    caps = {"listFiles": True, "rangeRead": True, "toolchain": True}
+    history = [{"role": "user", "content": "帮我用python跑下test-demo的测试用例"}]
+    for text in ("用详细版再跑一次", "再运行一次", "要的", "-v 再来"):
+        route = route_request(text, vscode_client_mode=True, vscode_workspace_id="ws-1",
+                              project_capabilities=caps, conversation_context=history)
+        assert TOOLCHAIN_PROMPT in route.system_prompt, text
+    # 连续追问不打断：这次真实会话的顺序
+    chain = [{"role": "user", "content": c} for c in ("帮我用python跑下test-demo的测试用例", "再运行一次", "要的", "用详细版再跑一次", "用详细版再跑一次")]
+    assert TOOLCHAIN_PROMPT in route_request("用详细版再跑一次", vscode_client_mode=True, vscode_workspace_id="ws-1",
+                                             project_capabilities=caps, conversation_context=chain).system_prompt
+    # 中间插入别的话题就不再沿用
+    broken = chain[:1] + [{"role": "user", "content": "解释一下这个函数为什么这样写，顺便讲讲命名规范和注释风格"}] + chain[1:]
+    assert TOOLCHAIN_PROMPT not in route_request("要的", vscode_client_mode=True, vscode_workspace_id="ws-1",
+                                                 project_capabilities=caps, conversation_context=broken).system_prompt
+    # 没有最近的执行请求、或是长篇的新话题，不沿用
+    assert TOOLCHAIN_PROMPT not in route_request("要的", vscode_client_mode=True, vscode_workspace_id="ws-1",
+                                                 project_capabilities=caps,
+                                                 conversation_context=[{"role": "user", "content": "解释一下这个函数"}]).system_prompt
+    long_text = "要的，不过先解释一下这个函数为什么要这样写，以及它和上一个版本的区别在哪里，顺便说说命名"
+    assert TOOLCHAIN_PROMPT not in route_request(long_text, vscode_client_mode=True, vscode_workspace_id="ws-1",
+                                                 project_capabilities=caps, conversation_context=history).system_prompt
+    # Web 端不受影响
+    assert TOOLCHAIN_PROMPT not in route_request("再运行一次", has_preview=True, conversation_context=history).system_prompt
+    # 规则卡：详细输出走 test 的 params.args，输出面板说明到下拉框
+    assert '[\"-v\"]' in TOOLCHAIN_PROMPT and "不要改用 run_module 跑测试" in TOOLCHAIN_PROMPT
+    assert "右上角下拉框选择「Gor 工具链」" in TOOLCHAIN_PROMPT

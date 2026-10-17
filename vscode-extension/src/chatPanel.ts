@@ -40,7 +40,9 @@ type PendingApproval = {
   onAnswer: (answer: ApprovalReply) => void;
 };
 
-type ActiveRequest = http.ClientRequest;
+type ActiveRequest = { destroy(error?: Error): unknown };
+// 后端重启或网络抖动后插件会重新登记工作区；这几秒内发出的消息会缺工作区 ID，先等登记完成。
+const WORKSPACE_WAIT_MS = 5000;
 
 export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
   static readonly viewType = 'gor.chatView';
@@ -57,6 +59,7 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     extensionUri: vscode.Uri,
     output: vscode.OutputChannel,
     private readonly getWorkspaceId: () => string | undefined,
+    private readonly waitForWorkspaceId: (timeoutMs: number) => Promise<string | undefined>,
   ) {
     this.extensionUri = extensionUri;
     this.output = output;
@@ -68,8 +71,9 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     extensionUri: vscode.Uri,
     output: vscode.OutputChannel,
     getWorkspaceId: () => string | undefined = () => undefined,
+    waitForWorkspaceId: (timeoutMs: number) => Promise<string | undefined> = async () => undefined,
   ): ChatView {
-    const provider = new ChatView(extensionUri, output, getWorkspaceId);
+    const provider = new ChatView(extensionUri, output, getWorkspaceId, waitForWorkspaceId);
     provider.registration = vscode.window.registerWebviewViewProvider(
       ChatView.viewType,
       provider,
@@ -393,6 +397,22 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
   }
 
   private streamChat(requestId: string, sessionId: string, message: string): void {
+    const workspaceId = this.getWorkspaceId();
+    if (workspaceId) {
+      this.sendChat(requestId, sessionId, message, workspaceId);
+      return;
+    }
+    let cancelled = false;
+    this.activeRequests.set(requestId, { destroy: () => { cancelled = true; } });
+    void this.waitForWorkspaceId(WORKSPACE_WAIT_MS).catch(() => undefined).then((registered) => {
+      if (cancelled || this.disposed) return;
+      this.activeRequests.delete(requestId);
+      // 超时仍未登记就照常发出，服务端会如实说明工作区未连接。
+      this.sendChat(requestId, sessionId, message, registered ?? this.getWorkspaceId());
+    });
+  }
+
+  private sendChat(requestId: string, sessionId: string, message: string, workspaceId: string | undefined): void {
     let url: URL;
     try {
       url = new URL('/api/chat', this.getBaseUrl());
@@ -401,7 +421,6 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       return;
     }
     const transport = url.protocol === 'https:' ? https : http;
-    const workspaceId = this.getWorkspaceId();
     const payload = Buffer.from(JSON.stringify({
       sessionId,
       message,

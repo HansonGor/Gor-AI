@@ -1,12 +1,12 @@
-import { createHash } from 'node:crypto';
-import { constants as fsConstants } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import * as vscode from 'vscode';
-import { normalizeWorkspaceRelativePath, toWorkspaceUri, WorkspaceRequestError } from '../../paths';
+import { WorkspaceRequestError } from '../../paths';
 import { parseAny, parseEslintOutput, parseTestSummary, parseTscOutput } from '../diagnostics';
 import { mergeWarnings, scanFiles, scanText, scriptEntryFiles, type RiskLevel, type RiskWarning } from '../risk';
 import type { ActionContext, ActionSpec, ExecPlan, Params, ToolchainEnv, ToolchainProfile } from '../types';
+import {
+  BASE_EXCLUDED_DIRS, cwdDirOf, exists, findOnPath, findProjectDirs, hash, requireLocalFolder, rootDirOf, targetPath, workspaceRelativeDir,
+} from './shared';
 
 /**
  * Node 工具链。
@@ -14,7 +14,7 @@ import type { ActionContext, ActionSpec, ExecPlan, Params, ToolchainEnv, Toolcha
  */
 
 export const NODE_TIMEOUT_MS = 10 * 60 * 1000;
-const EXCLUDED_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', 'out', 'vendor', '.next', '.nuxt', '.turbo', '.cache']);
+const EXCLUDED_DIRS = new Set([...BASE_EXCLUDED_DIRS, '.next', '.nuxt', '.turbo', '.cache']);
 const MAX_PACKAGES = 30;
 const MAX_SCRIPT_CHARS = 2_000;
 
@@ -28,30 +28,9 @@ type PackageJson = {
 
 export type NodeEnv = ToolchainEnv & { node?: string; npmCli?: string; packageManager?: string };
 
-async function exists(file: string): Promise<boolean> {
-  try {
-    await fs.access(file, fsConstants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function pathEntries(): string[] {
-  const key = Object.keys(process.env).find((name) => name.toLowerCase() === 'path');
-  return (key ? process.env[key] ?? '' : '').split(path.delimiter).filter(Boolean);
-}
-
 /** 在 PATH 中查找 node 可执行文件（不通过 shell，也不执行 PATH 中的其他程序）。 */
 export async function resolveNode(): Promise<string | undefined> {
-  const names = process.platform === 'win32' ? ['node.exe'] : ['node'];
-  for (const dir of pathEntries()) {
-    for (const name of names) {
-      const candidate = path.join(dir, name);
-      if (await exists(candidate)) return candidate;
-    }
-  }
-  return undefined;
+  return findOnPath(process.platform === 'win32' ? ['node.exe'] : ['node']);
 }
 
 async function resolveNpmCli(node: string): Promise<string | undefined> {
@@ -81,12 +60,6 @@ async function resolvePackageManagerCli(node: string, manager: 'pnpm' | 'yarn'):
 
 // 定位集中在这里，测试可替换；扩展只执行这里找到的 node 与包管理器入口。
 export const nodeLocator = { resolveNode, resolveNpmCli, resolvePackageManagerCli };
-
-function requireLocalFolder(root: vscode.WorkspaceFolder): void {
-  if (root.uri.scheme !== 'file') {
-    throw new WorkspaceRequestError('TOOLCHAIN_UNAVAILABLE', '工具链目前只支持本地文件工作区。');
-  }
-}
 
 async function readPackage(dir: string): Promise<{ data: PackageJson; text: string } | undefined> {
   let text: string;
@@ -197,36 +170,12 @@ async function scanScripts(scripts: Array<{ name: string; body: string }>, cwdDi
   return mergeWarnings(warnings);
 }
 
-function hash(text: string): string {
-  return createHash('sha256').update(text).digest('hex');
-}
-
 function nodeEnv(context: ActionContext): { node: string; npmCli?: string } {
   const env = context.env as NodeEnv;
   if (!env.available || !env.node) {
     throw new WorkspaceRequestError('TOOLCHAIN_UNAVAILABLE', env.reason ?? '未找到 Node.js，请确认已安装并在 PATH 中。');
   }
   return { node: env.node, npmCli: env.npmCli };
-}
-
-function rootDirOf(context: ActionContext): string {
-  return path.resolve(context.root.uri.fsPath);
-}
-
-function cwdDirOf(context: ActionContext): string {
-  return path.resolve(context.cwdUri.fsPath);
-}
-
-/** 测试/检查目标：工作区相对路径，必须位于 cwd 之内。 */
-function targetPath(value: unknown, context: ActionContext): string | undefined {
-  if (value === undefined || value === null || value === '') return undefined;
-  const normalized = normalizeWorkspaceRelativePath(value);
-  const absolute = path.resolve(toWorkspaceUri(normalized, context.root).fsPath);
-  const cwd = cwdDirOf(context);
-  if (absolute !== cwd && !absolute.startsWith(cwd + path.sep)) {
-    throw new WorkspaceRequestError('INVALID_PATH', '目标路径必须位于命令的工作目录之内。');
-  }
-  return path.relative(cwd, absolute) || '.';
 }
 
 async function packageFingerprint(context: ActionContext): Promise<string> {
@@ -443,28 +392,7 @@ const lintAction: ActionSpec = {
 };
 
 async function listPackages(rootDir: string): Promise<string[]> {
-  const found: string[] = [];
-  const walk = async (dir: string, depth: number) => {
-    if (found.length >= MAX_PACKAGES || depth > 3) return;
-    if (await exists(path.join(dir, 'package.json'))) found.push(dir);
-    let entries: Array<import('node:fs').Dirent>;
-    try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.') || EXCLUDED_DIRS.has(entry.name.toLowerCase())) continue;
-      await walk(path.join(dir, entry.name), depth + 1);
-    }
-  };
-  await walk(rootDir, 0);
-  return found;
-}
-
-function workspaceRelativeDir(rootDir: string, dir: string): string {
-  const relative = path.relative(rootDir, dir).split(path.sep).join('/');
-  return relative ? `/${relative}` : '/';
+  return findProjectDirs(rootDir, { markers: ['package.json'], excluded: EXCLUDED_DIRS, max: MAX_PACKAGES });
 }
 
 export const nodeProfile: ToolchainProfile = {

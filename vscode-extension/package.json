@@ -59,6 +59,11 @@
           "default": "http://localhost:3001",
           "description": "Base HTTP URL for Gor chat APIs."
         },
+        "gor.toolchain.revealOutput": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "施行命令时自动把「输出」面板切换到「Gor 工具链」，显示完整输出（不抢编辑器焦点）。"
+        },
         "gor.toolchain.allowlist": {
           "type": "array",
           "items": { "type": "string" },

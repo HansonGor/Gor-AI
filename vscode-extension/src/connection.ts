@@ -39,6 +39,7 @@ export class GorConnection implements vscode.Disposable {
   private registeredWorkspaceId: string | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectAttempt = 0;
+  private readonly workspaceWaiters = new Set<() => void>();
 
   constructor(
     private readonly serverUrl: string,
@@ -57,6 +58,28 @@ export class GorConnection implements vscode.Disposable {
 
   get workspaceId(): string | undefined {
     return this.registeredWorkspaceId;
+  }
+
+  /** 工作区已登记就立即返回；正在（重新）连接时最多等 timeoutMs，超时返回 undefined。 */
+  waitForWorkspace(timeoutMs: number): Promise<string | undefined> {
+    if (this.registeredWorkspaceId || this.disposed) return Promise.resolve(this.registeredWorkspaceId);
+    // 正在按退避间隔等下一次重连：有消息要发，就立即重连，不再干等退避时间。
+    if (!this.socket && this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+      void this.connect().catch(() => {
+        // 失败时由连接错误处理安排下一次重连。
+      });
+    }
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        this.workspaceWaiters.delete(done);
+        resolve(this.registeredWorkspaceId);
+      };
+      const timer = setTimeout(done, timeoutMs);
+      this.workspaceWaiters.add(done);
+    });
   }
 
   notifyWorkspaceTreeChanged(root?: string): void {
@@ -151,6 +174,11 @@ export class GorConnection implements vscode.Disposable {
     }
     this.status = 'disconnected';
     this.registeredWorkspaceId = undefined;
+    this.releaseWorkspaceWaiters();
+  }
+
+  private releaseWorkspaceWaiters(): void {
+    for (const done of [...this.workspaceWaiters]) done();
   }
 
   private createWorkspaceMessage(): WorkspaceConnectedMessage {
@@ -194,6 +222,7 @@ export class GorConnection implements vscode.Disposable {
     this.registeredWorkspaceId = registered.workspaceId;
     this.output.appendLine(`[Gor] Workspace registered: ${registered.workspaceId}`);
     this.onStatusChange(this.status, this.registeredWorkspaceId);
+    this.releaseWorkspaceWaiters();
   }
 
   private setStatus(status: GorConnectionStatus): void {

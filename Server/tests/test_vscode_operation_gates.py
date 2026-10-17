@@ -312,3 +312,31 @@ def test_routing_and_thinking_cover_git_delete_and_external_reads():
         "success": False, "status": "user_cancelled", "command": "npm run setup", "summary": "你未允准，没有执行",
         "warnings": [{"level": "warn", "reason": "下载远程内容并直接执行"}]}, True)
     assert "疑似风险：下载远程内容并直接执行" in warned["summary"]
+
+
+def test_test_receipts_carry_the_report_guide():
+    async def scenario():
+        bridge = Bridge()
+        provider = VSCodeProjectProvider(bridge)
+        diagnostics = {"passed": 1, "failed": 0, "total": 1, "items": []}
+        cases = [
+            ("python", "test", {"args": ["-v"]}, True),
+            ("python", "run_module", {"module": "unittest", "args": ["discover", "-v"]}, True),
+            ("node", "test", {}, True),
+            ("python", "run_module", {"module": "uvicorn"}, False),
+            ("node", "run_script", {"name": "build"}, False),
+        ]
+        for toolchain, action, params, expected in cases:
+            bridge.toolchain_replies = [{"success": True, "status": "completed", "summary": "1 项全部通过", "diagnostics": diagnostics}]
+            result = await provider.toolchain_run(REF, toolchain, action, params)
+            assert ("reportGuide" in result) is expected, (toolchain, action, params)
+        # 没解析出结果（如被拒绝、取消）时不附带
+        bridge.toolchain_replies = [{"success": False, "status": "user_cancelled", "summary": "未施行"}]
+        assert "reportGuide" not in await provider.toolchain_run(REF, "python", "test", {})
+        assert "read_project_file" in result_guide() and "由断言通过得出" in result_guide()
+
+    def result_guide():
+        from project_api.providers.vscode import TEST_REPORT_GUIDE
+        return TEST_REPORT_GUIDE
+
+    asyncio.run(scenario())
