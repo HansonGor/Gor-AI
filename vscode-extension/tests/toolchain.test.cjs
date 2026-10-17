@@ -303,7 +303,7 @@ test('working directory and targets cannot leave the workspace', async () => {
   await assert.rejects(run({ action: 'lint', cwd: '/pkg', args: { path: '/other' } }), (error) => ['INVALID_PATH', 'TOOLCHAIN_TOOL_NOT_FOUND'].includes(error.code));
   await assert.rejects(run({ action: 'test', args: { path: 'C:/Windows' } }), { code: 'INVALID_PATH' });
   await assert.rejects(run({ action: 'rm' }), { code: 'TOOLCHAIN_ACTION_NOT_SUPPORTED' });
-  await assert.rejects(host.runToolchainAction({ toolchain: 'python', action: 'test' }), { code: 'TOOLCHAIN_NOT_SUPPORTED' });
+  await assert.rejects(host.runToolchainAction({ toolchain: 'cobol', action: 'test' }), { code: 'TOOLCHAIN_NOT_SUPPORTED' });
 });
 
 test('list reports scripts per package without host paths', async () => {

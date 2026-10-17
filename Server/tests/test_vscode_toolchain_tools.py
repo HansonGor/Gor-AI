@@ -263,3 +263,34 @@ def test_background_install_and_management_presentation():
     missing = tool_presentation("run_toolchain_action", {"action": "typecheck"}, json.dumps({
         "success": False, "code": "DEPENDENCIES_NOT_INSTALLED", "error": "尚未安装依赖（没有找到 node_modules）"}), True)
     assert "尚未安装依赖" in missing["summary"] and missing["status"] == "fail"
+
+
+@pytest.mark.parametrize("text", ["跑一下 pytest", "运行 main.py", "帮我启动 uvicorn", "创建虚拟环境", "python manage.py runserver", "运行 scripts/seed.py 看看"])
+def test_python_workspace_requests_use_the_toolchain_not_the_sandbox(text):
+    caps = {"listFiles": True, "rangeRead": True, "toolchain": True}
+    route = route_request(text, vscode_client_mode=True, vscode_workspace_id="ws-1", project_capabilities=caps)
+    assert TOOLCHAIN_PROMPT in route.system_prompt
+    assert TOOLCHAIN_TOOLS <= set(route.tool_names)
+    assert "execute_python" not in route.tool_names
+    assert "toolchain 为 node、python 或 git" in TOOLCHAIN_PROMPT and "create_venv" in TOOLCHAIN_PROMPT
+
+
+def test_pasted_python_snippets_still_use_the_sandbox():
+    caps = {"listFiles": True, "rangeRead": True, "toolchain": True}
+    pasted = "帮我运行这段 python 代码\n```python\nprint(1)\n```"
+    assert "execute_python" in route_request(pasted, vscode_client_mode=True, vscode_workspace_id="ws-1", project_capabilities=caps).tool_names
+    # Web 端没有工具链，原有沙箱路由不变
+    assert "execute_python" in route_request("运行这段 Python 代码").tool_names
+    assert not TOOLCHAIN_TOOLS & set(route_request("运行 main.py", has_preview=True).tool_names)
+
+
+def test_python_thinking_titles():
+    py = lambda action, **params: tool_presentation("run_toolchain_action", {"toolchain": "python", "action": action, "params": params})["title"]
+    assert py("run_file", file="src/app/main.py") == "运行 main.py"
+    assert py("run_module", module="uvicorn") == "运行 python -m uvicorn"
+    assert py("create_venv") == "创建虚拟环境"
+    assert py("env") == "查看 Python 环境"
+    assert py("install") == "安装 Python 依赖"
+    assert py("test", path="tests/test_a.py") == "运行测试 test_a.py"
+    assert py("lint") == "代码检查"
+    assert tool_presentation("run_toolchain_action", {"toolchain": "node", "action": "env"})["title"] == "查看 Node 版本"

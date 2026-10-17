@@ -7,10 +7,11 @@ import { highestWarning, type RiskLevel, type RiskWarning } from './risk';
 import { buildChildEnv, redactSecrets, runProcess, type ProcessOutcome, type RunHandle } from './runner';
 import { gitProfile } from './profiles/git';
 import { nodeProfile } from './profiles/node';
+import { pythonProfile } from './profiles/python';
 import type { ApprovalMode, Diagnostics, ExecPlan, OperationKind, Params, RunResult, RunStatus, ToolchainProfile } from './types';
 
-/** 登记所有工具链；以后加 python / java 只需在这里加一行。 */
-export const TOOLCHAINS: ToolchainProfile[] = [nodeProfile, gitProfile];
+/** 登记所有工具链；以后加 java 等只需在这里加一行。 */
+export const TOOLCHAINS: ToolchainProfile[] = [nodeProfile, pythonProfile, gitProfile];
 
 export const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
 /** 常驻进程启动后最多等这么久检测访问地址，然后先把结果交回对话。 */
@@ -219,7 +220,7 @@ export async function listToolchains(params: Params): Promise<Record<string, unk
 }
 
 // 依赖缺失的常见报错：模块找不到、命令不存在。
-const MISSING_DEPENDENCY = /Cannot find module|ERR_MODULE_NOT_FOUND|Cannot find package|is not recognized as an internal or external command|command not found|:\s*not found\b/i;
+const MISSING_DEPENDENCY = /Cannot find module|ERR_MODULE_NOT_FOUND|Cannot find package|is not recognized as an internal or external command|command not found|:\s*not found\b|ModuleNotFoundError|No module named/i;
 // 开发服务器打印的本地访问地址。
 const LOCAL_URL = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):\d{2,5}(?:\/[^\s'"<>]*)?/i;
 
@@ -363,7 +364,7 @@ export async function runToolchainAction(params: Params): Promise<Record<string,
   }
   const root = selectWorkspaceRoot(params.root);
   const { cwd, cwdUri } = await resolveCwd(root, params.cwd);
-  const env = await profile.detect(root);
+  const env = await profile.detect(root, cwdUri.fsPath);
   let plan: ExecPlan;
   try {
     plan = await spec.plan(args, { root, cwd, cwdUri, env });
@@ -459,7 +460,7 @@ export async function runToolchainAction(params: Params): Promise<Record<string,
       const handle = runProcess({
         argv: plan.argv ?? [],
         cwd: plan.cwdUri.fsPath,
-        env: buildChildEnv(process.env),
+        env: buildChildEnv(process.env, plan.env),
         timeoutMs: plan.timeoutMs,
         onOutput: (chunk) => ui.output(redactSecrets(chunk)),
       });
@@ -533,7 +534,7 @@ async function startBackground(plan: ExecPlan, context: {
   run.handle = runProcess({
     argv: plan.argv ?? [],
     cwd: plan.cwdUri.fsPath,
-    env: buildChildEnv(process.env),
+    env: buildChildEnv(process.env, plan.env),
     timeoutMs: 0,
     onOutput: (chunk) => {
       ui.output(redactSecrets(chunk));

@@ -16,6 +16,9 @@ const ENV_ALLOWLIST = new Set([
   'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy', 'npm_config_registry', 'npm_config_proxy',
   'npm_config_https_proxy', 'npm_config_strict_ssl', 'npm_config_cache', 'yarn_registry', 'corepack_npm_registry',
   'node_extra_ca_certs',
+  // Python：pip / uv 的镜像与证书（带凭据的地址会在输出中脱敏）
+  'pip_index_url', 'pip_extra_index_url', 'pip_trusted_host', 'pip_cert', 'uv_index_url', 'uv_extra_index_url',
+  'requests_ca_bundle', 'ssl_cert_file',
 ]);
 const SECRET_NAME = /(?:token|secret|password|passwd|credential|api[_-]?key|private[_-]?key|auth)/i;
 
@@ -26,7 +29,19 @@ export function buildChildEnv(source: NodeJS.ProcessEnv, extra: Record<string, s
     if (!ENV_ALLOWLIST.has(key.toLowerCase()) || SECRET_NAME.test(key)) continue;
     env[key] = value;
   }
-  return { ...env, CI: '1', NO_COLOR: '1', FORCE_COLOR: '0', npm_config_update_notifier: 'false', ...extra };
+  const merged: Record<string, string> = { ...env, CI: '1', NO_COLOR: '1', FORCE_COLOR: '0', npm_config_update_notifier: 'false' };
+  // Windows 的环境变量不区分大小写（Path / PATH）：同名变量只保留一份，以 extra 为准。
+  for (const [key, value] of Object.entries(extra)) {
+    for (const existing of Object.keys(merged)) if (existing.toLowerCase() === key.toLowerCase()) delete merged[existing];
+    merged[key] = value;
+  }
+  return merged;
+}
+
+/** 读取当前进程 PATH（不区分大小写）。 */
+export function currentPath(source: NodeJS.ProcessEnv = process.env): string {
+  const key = Object.keys(source).find((name) => name.toLowerCase() === 'path');
+  return key ? source[key] ?? '' : '';
 }
 
 /** 去掉输出里常见的凭据：URL 中的用户名/令牌、Bearer、常见令牌前缀，以及 KEY=VALUE 形式的密钥。 */

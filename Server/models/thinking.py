@@ -71,6 +71,8 @@ TOOLCHAIN_STATUS = {
 }
 TOOLCHAIN_TITLES = {"typecheck": "类型检查", "lint": "代码检查", "env": "查看 Node 版本", "install": "安装依赖",
                     "logs": "查看运行输出", "stop": "止令"}
+PYTHON_TITLES = {"env": "查看 Python 环境", "install": "安装 Python 依赖", "create_venv": "创建虚拟环境",
+                 "format_check": "检查代码格式"}
 GIT_TITLES = {"status": "查看 Git 状态", "diff": "读取改动差异", "log": "查看提交记录", "commit": "提交代码",
               "push": "推送代码", "pull": "拉取代码", "fetch": "获取远端更新", "discard": "放弃改动",
               "create_branch": "新建分支", "switch_branch": "切换到分支", "delete_branch": "删除分支"}
@@ -142,6 +144,12 @@ def _tool_title(name, args, title):
         action, params = args.get("action"), args.get("params") if isinstance(args.get("params"), dict) else {}
         if action == "run_script" and short(params.get("name"), 40):
             return "运行 npm run " + short(params.get("name"), 40)
+        if action == "run_file" and short(params.get("file"), 160):
+            return "运行 " + _basename(short(params.get("file"), 160))
+        if action == "run_module" and short(params.get("module"), 40):
+            return "运行 python -m " + short(params.get("module"), 40)
+        if args.get("toolchain") == "python" and action in PYTHON_TITLES:
+            return PYTHON_TITLES[action]
         if action == "test":
             target = _basename(short(params.get("path"), 160))
             return "运行测试" + (" " + target if target else "")

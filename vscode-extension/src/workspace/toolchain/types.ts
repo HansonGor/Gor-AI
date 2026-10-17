@@ -54,6 +54,8 @@ export type ExecPlan = {
   background?: boolean;
   /** 生成命令时工作目录（或其上级）是否已有 node_modules；用于失败时提示安装依赖。 */
   dependenciesInstalled?: boolean;
+  /** 子进程额外的环境变量（如 Python 虚拟环境的 PATH、VIRTUAL_ENV），在白名单之后合并。 */
+  env?: Record<string, string>;
   display: {
     /** 给用户看的命令或操作，例如 npm run test、git commit。 */
     command: string;
@@ -89,7 +91,8 @@ export type ActionSpec = {
 
 export interface ToolchainProfile {
   id: string;
-  detect(root: vscode.WorkspaceFolder): Promise<ToolchainEnv>;
+  /** cwdDir：命令的工作目录（本机路径），用于查找子项目里的环境（如 Python 的 .venv）。 */
+  detect(root: vscode.WorkspaceFolder, cwdDir?: string): Promise<ToolchainEnv>;
   /** 返回本工具链可用的动作与动态发现的信息（如 package.json scripts）。 */
   describe(root: vscode.WorkspaceFolder, env: ToolchainEnv): Promise<Record<string, unknown>>;
   actions: ActionSpec[];

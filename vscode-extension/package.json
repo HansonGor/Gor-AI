@@ -65,7 +65,8 @@
           "default": [
             "node:env", "node:test", "node:typecheck", "node:lint",
             "node:run_script:build", "node:run_script:test", "node:run_script:lint", "node:run_script:typecheck",
-            "git:status", "git:diff", "git:log", "git:fetch"
+            "git:status", "git:diff", "git:log", "git:fetch",
+            "python:env", "python:test", "python:lint", "python:typecheck", "python:format_check"
           ],
           "markdownDescription": "审阅落笔模式下也直接运行的操作（白名单）。格式为 `工具链:动作` 或 `node:run_script:脚本名`，可用 `*` 结尾匹配一类，例如 `node:run_script:*`。删除类、项目外和疑似风险的操作不受白名单影响，始终需要确认。"
         }

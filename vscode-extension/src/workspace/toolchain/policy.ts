@@ -32,6 +32,7 @@ export class PlanRejection extends Error {
 export const DEFAULT_ALLOWLIST = [
   'node:env', 'node:test', 'node:typecheck', 'node:lint',
   'node:run_script:build', 'node:run_script:test', 'node:run_script:lint', 'node:run_script:typecheck',
+  'python:env', 'python:test', 'python:lint', 'python:typecheck', 'python:format_check',
   'git:status', 'git:diff', 'git:log', 'git:fetch',
 ];
 
