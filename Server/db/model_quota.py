@@ -10,6 +10,8 @@ from db.supabase_chat import get_pool
 # 模型 ID 到显示名称的映射
 MODEL_NAME_MAP = {
     "ep-20260902232204-6rhbl": "DeepSeek‑V4‑Flash正式版",
+    # 当前接入点，实际模型为 deepseek-v4-1-flash（2026-10-17 由接口返回的 model 字段确认）
+    "ep-20260923135013-dx9tw": "DeepSeek V4.1 Flash",
     "deepseek-v4-pro": "DeepSeek‑V4‑Pro",
     "deepseek-v4-flash": "DeepSeek‑V4‑Flash正式版",
 }

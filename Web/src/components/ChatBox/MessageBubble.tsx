@@ -1,4 +1,5 @@
 import { isToolStatusInThinking } from '../../utils/thinking';
+import { useShowThinking } from '../../utils/thinkingVisibility';
 ﻿// 单条消息气泡
 import { useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
@@ -262,7 +263,9 @@ export default function MessageBubble({
     : '';
   const visibleUserContent = message.content === attachmentOnlyLabel ? '' : displayContent;
   const showExecutionTimeline = !isUser && Boolean(message.isStreaming && message.executionPhase);
-  const hasThinking = !isUser && Boolean(message.thinkingTrace?.rounds.length);
+  // “显示思考过程”关闭时只隐藏卡片；思考记录照常接收与保存，重新打开即可看到
+  const showThinking = useShowThinking();
+  const hasThinking = !isUser && showThinking && Boolean(message.thinkingTrace?.rounds.length);
 
   return (
     <div
@@ -516,7 +519,7 @@ export default function MessageBubble({
           </div>
         )}
 
-        {!isUser && message.toolStatus && !isToolStatusInThinking(message) ? (
+        {!isUser && message.toolStatus && (!showThinking || !isToolStatusInThinking(message)) ? (
           <div className="tool-status">
             <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
             <span>{message.toolStatus}</span>

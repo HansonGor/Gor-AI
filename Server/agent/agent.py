@@ -409,6 +409,8 @@ async def run_agent(
     vscode_client_mode: bool = False,
     session_id: Optional[str] = None,
     *, presentation_source_explicit: bool = False,
+    deep_thinking: bool = True,
+    model_id: Optional[str] = None,
 ) -> None:
     """
     运行 Agent 循环
@@ -774,7 +776,10 @@ async def run_agent(
         try:
             # 非流式调用，检测是否需要工具，传入 callbacks 捕获 token 消耗
             bound_tool_names = set(active_tool_names)
-            selected_model = get_model_for_tools(tuple(sorted(bound_tool_names)))
+            tool_key = tuple(sorted(bound_tool_names))
+            # 默认深思；随思显式关闭模型深度思考
+            model_kwargs = ({} if deep_thinking else {"deep": False}) | ({"model_id": model_id} if model_id else {})
+            selected_model = get_model_for_tools(tool_key, **model_kwargs)
             definitions = getattr(selected_model, "kwargs", {}).get("tools", [])
             print("[LLMInputBudget] " + json.dumps({
                 "call": llm_call_count, "phase": call_reason,
@@ -791,7 +796,7 @@ async def run_agent(
                 print("[LLMCallDiagnostics] " + json.dumps({
                     "call": llm_call_count,
                     "phase": call_reason,
-                    "model": config.Ark.MODEL_ID,
+                    "model": model_id or config.Ark.MODEL_ID,
                     "error_type": type(error).__name__,
                 }, ensure_ascii=False, separators=(",", ":")))
                 raise
@@ -799,7 +804,7 @@ async def run_agent(
                 response,
                 call=llm_call_count,
                 phase=call_reason,
-                model_id=config.Ark.MODEL_ID,
+                model_id=model_id or config.Ark.MODEL_ID,
             )
             tool_calls = getattr(response, "tool_calls", None) or []
             content = getattr(response, "content", "") or ""

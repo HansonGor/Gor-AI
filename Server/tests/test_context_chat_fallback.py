@@ -12,9 +12,9 @@ chat_module = importlib.import_module("routes.chat")
 class ContextChatFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         # These are SSE/adapter tests, not live database integration checks.
-        for name in ("get_edit_mode", "get_session_preview_project"):
-            mock = patch.object(chat_module, name, new_callable=AsyncMock,
-                                return_value="auto" if name == "get_edit_mode" else None)
+        for name, value in (("get_edit_mode", "auto"), ("get_thinking_mode", "deep"), ("get_model_preference", None),
+                            ("get_session_preview_project", None)):
+            mock = patch.object(chat_module, name, new_callable=AsyncMock, return_value=value)
             mock.start()
             self.addCleanup(mock.stop)
 

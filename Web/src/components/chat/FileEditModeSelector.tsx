@@ -1,5 +1,6 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useId, useRef, useState } from 'react';
 import { BookOpenCheck, Check, ChevronDown, Feather, LoaderCircle } from 'lucide-react';
+import { usePopoverDismiss } from './usePopoverDismiss';
 import './FileEditModeSelector.less';
 
 export type FileEditMode = 'instant' | 'review';
@@ -20,21 +21,7 @@ export default function FileEditModeSelector({ value, onChange, loading = false 
   const trigger = useRef<HTMLButtonElement>(null);
   const panelId = useId();
   const selected = modes.find((mode) => mode.value === (value ?? localValue)) ?? modes[0];
-  useEffect(() => {
-    if (!open) return;
-    const outside = (event: PointerEvent) => {
-      if (event.target instanceof Node && !container.current?.contains(event.target)) setOpen(false);
-    };
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { setOpen(false); trigger.current?.focus(); }
-    };
-    document.addEventListener('pointerdown', outside);
-    document.addEventListener('keydown', escape);
-    return () => {
-      document.removeEventListener('pointerdown', outside);
-      document.removeEventListener('keydown', escape);
-    };
-  }, [open]);
+  usePopoverDismiss(open, useCallback(() => setOpen(false), []), container, trigger);
   return <div ref={container} className="file-edit-mode-selector">
     <button ref={trigger} type="button" className="file-edit-mode-trigger" aria-haspopup="dialog"
       aria-expanded={open} aria-controls={open ? panelId : undefined}

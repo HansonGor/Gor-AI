@@ -71,6 +71,12 @@ export default function ChatPage() {
     fileEditMode,
     fileEditModeLoading,
     setFileEditMode,
+    thinkingMode,
+    thinkingModeLoading,
+    setThinkingMode,
+    chatModelId,
+    chatModelLoading,
+    setChatModel,
     projectChanges,
     projectRevision,
     previewRevision,
@@ -1056,6 +1062,12 @@ export default function ChatPage() {
             fileEditMode={fileEditMode}
             fileEditModeLoading={fileEditModeLoading}
             onFileEditModeChange={setFileEditMode}
+            thinkingMode={thinkingMode}
+            thinkingModeLoading={thinkingModeLoading}
+            onThinkingModeChange={setThinkingMode}
+            chatModelId={chatModelId}
+            chatModelLoading={chatModelLoading}
+            onChatModelChange={setChatModel}
             key={sessionId ?? 'chat'}
             messages={messages}
             currentPreviewProject={isVscodePluginMode ? undefined : currentPreviewProject}

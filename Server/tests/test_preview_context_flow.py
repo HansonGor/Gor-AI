@@ -109,7 +109,7 @@ async def collect_events(response):
 class PreviewContextFlowTest(unittest.TestCase):
     def setUp(self):
         from test_project_changes import Store
-        for name, value in [("save_thinking_trace", None), ("get_edit_mode", "auto")]:
+        for name, value in [("save_thinking_trace", None), ("get_edit_mode", "auto"), ("get_thinking_mode", "deep"), ("get_model_preference", None)]:
             patcher = patch.object(chat_route, name, return_value=value)
             patcher.start()
             self.addCleanup(patcher.stop)

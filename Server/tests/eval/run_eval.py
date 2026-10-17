@@ -69,7 +69,7 @@ def _sse_lines(stream):
         yield buffer.rstrip("\r")
 
 
-def run_case(client: httpx.Client, base_url: str, case: dict, timeout: float) -> dict:
+def run_case(client: httpx.Client, base_url: str, case: dict, timeout: float, thinking_mode: str | None = None) -> dict:
     record = {"id": case["id"], "question": case["question"], "category": case.get("category", ""),
               "session_id": None, "session_deleted": False, "answer": "", "sources": [], "reader_pages": [],
               "tools": [], "error": None, "status": None, "elapsed_s": None}
@@ -78,7 +78,8 @@ def run_case(client: httpx.Client, base_url: str, case: dict, timeout: float) ->
         resp = client.post(f"{base_url}/api/chat/session/create", json={"userId": EVAL_USER_ID}, timeout=30)
         resp.raise_for_status()
         record["session_id"] = resp.json()["sessionId"]
-        body = {"sessionId": record["session_id"], "message": case["question"], "clientMode": "web"}
+        body = {"sessionId": record["session_id"], "message": case["question"], "clientMode": "web",
+                **({"thinkingMode": thinking_mode} if thinking_mode else {})}
         deadline = started + timeout
         with client.stream("POST", f"{base_url}/api/chat", json=body,
                            timeout=httpx.Timeout(timeout, connect=15)) as stream:
@@ -135,7 +136,7 @@ def build_markdown(report: dict, baseline: dict | None) -> str:
     lines = [f"# Gor 评测：{report['domain']}（{report['started_at']}）", "",
              "> 所有指标均为启发式规则计算，用于同一题库前后对比，不等于人工核验。", "",
              f"- 后端：{report['base_url']}；题数 {s['cases']}，成功评估 {s['evaluated_cases']}；"
-             f"新鲜度阈值 {report['freshness_days']} 天", "",
+             f"新鲜度阈值 {report['freshness_days']} 天；思考方式 {report.get('thinking_mode', 'server-default')}", "",
              "## 总体指标", "", "| 指标 | 数值 | 说明 |" + (" 基线 |" if baseline else ""),
              "| --- | --- | --- |" + (" --- |" if baseline else "")]
     rows = [
@@ -188,6 +189,8 @@ def main() -> int:
     parser.add_argument("--baseline")
     parser.add_argument("--timeout", type=float, default=300)
     parser.add_argument("--freshness-days", type=int, default=3)
+    parser.add_argument("--thinking-mode", choices=["light", "deep"],
+                        help="随请求发送的思考方式；不传时由服务端按会话偏好（默认深思）决定")
     parser.add_argument("--rescore", help="不调用后端，用已保存结果 JSON 中的原始回答按当前题库与指标重新计算")
     args = parser.parse_args()
 
@@ -224,7 +227,7 @@ def main() -> int:
         with httpx.Client() as client:
             for n, case in enumerate(cases, 1):
                 print(f"[{n}/{len(cases)}] {case['id']} …", flush=True)
-                record = run_case(client, base_url, case, args.timeout)
+                record = run_case(client, base_url, case, args.timeout, args.thinking_mode)
                 score(case, record)
                 print(f"    {record['elapsed_s']}s 来源 {len(record['sources'])} 读取 {len(record['reader_pages'])}"
                       f"{' 错误: ' + record['error'] if record['error'] else ''}", flush=True)
@@ -234,6 +237,7 @@ def main() -> int:
     report = {
         "domain": args.domain, "base_url": base_url, "started_at": started_at, "run_date": run_date.isoformat(),
         "freshness_days": args.freshness_days,
+        "thinking_mode": args.thinking_mode or "server-default",
         "heuristic_note": "指标为启发式规则计算，见 tests/eval/metrics.py 注释。",
         "summary": aggregate([r["metrics"] for r in records]),
         "by_category": {c: aggregate([r["metrics"] for r in records if r["category"] == c]) for c in categories},
@@ -248,7 +252,7 @@ def main() -> int:
     ]
     baseline = json.loads(Path(args.baseline).read_text(encoding="utf-8")) if args.baseline else None
 
-    stem = f"{args.domain}-{started_at}" + (f"-{args.only}" if args.only else "")
+    stem = f"{args.domain}-{started_at}" + (f"-{args.thinking_mode}" if args.thinking_mode else "") + (f"-{args.only}" if args.only else "")
     json_path = out_dir / f"{stem}.json"
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     (out_dir / f"{stem}.md").write_text(build_markdown(report, baseline), encoding="utf-8")

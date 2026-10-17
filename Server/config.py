@@ -31,6 +31,10 @@ class Config:
         MAX_OUTPUT_TOKENS = max(1024, min(32768, int(os.getenv("ARK_MAX_OUTPUT_TOKENS", "16384"))))
         # 视觉/多模态模型 ID（用于图像理解等任务）
         VISION_MODEL_ID = os.getenv("ARK_VISION_MODEL_ID", "doubao-seed-2.0-1ite")
+        # 模型选择器中额外可选的模型（JSON 数组），默认模型始终是 ARK_MODEL_ID。
+        # 例：[{"id":"ep-xxx","name":"DeepSeek V4 Pro","description":"更强推理，较慢"}]
+        # 以后接入 OpenRouter 时，同一列表可增加 "provider":"openrouter" 的条目。
+        EXTRA_MODELS = os.getenv("GOR_EXTRA_MODELS", "")
 
     # ================================================================
     # 多搜索引擎 API 配置

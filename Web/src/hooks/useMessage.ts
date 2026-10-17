@@ -3,6 +3,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useFeedback } from '../components/ui/feedback';
 import { useFileEditMode } from './useFileEditMode';
+import { useThinkingMode } from './useThinkingMode';
+import { useChatModel } from './useChatModel';
 import { sendChatMessage } from '../api/chat';
 import { acceptThinkingEvent, finishThinking } from '../utils/thinking';
 import { saveGeneratedGlb } from '../api/webProjectArtifacts';
@@ -65,6 +67,8 @@ interface ContextRemain {
 export function useMessage(sessionId: string | null) {
   const { alert, notify } = useFeedback();
   const { fileEditMode, fileEditModeLoading, setFileEditMode, freezeFileEditMode } = useFileEditMode(sessionId, (message) => notify(message, 'error'));
+  const { thinkingMode, thinkingModeLoading, setThinkingMode, freezeThinkingMode } = useThinkingMode(sessionId, (message) => notify(message, 'error'));
+  const { chatModelId, chatModelLoading, setChatModel, freezeChatModel } = useChatModel(sessionId, (message) => notify(message, 'error'));
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   // 使用 ref 跟踪 messages 最新值，避免 useCallback 依赖 messages 导致重渲染循环
   const messagesRef = useRef(messages);
@@ -238,6 +242,10 @@ export function useMessage(sessionId: string | null) {
       // Capture at send, not after flushing Preview or waiting for the network.
       const frozenEditMode = freezeFileEditMode();
       void frozenEditMode.catch(() => undefined);
+      // 失败时已回退为随思，不阻止发送
+      const frozenThinkingMode = freezeThinkingMode();
+      // 读取失败时不传 modelId，由服务端按会话偏好或默认模型处理
+      const frozenChatModel = freezeChatModel();
       const assistantMsg: ChatMessage & { isStreaming?: boolean; toolStatus?: string } = {
         id: newMessageId(),
         role: 'assistant',
@@ -275,6 +283,8 @@ export function useMessage(sessionId: string | null) {
 
       try {
         const editMode = await frozenEditMode;
+        const thinkingMode = await frozenThinkingMode;
+        const modelId = await frozenChatModel;
         let previewReference: {
           previewProjectId?: string;
           previewServerRevision?: number;
@@ -353,6 +363,8 @@ export function useMessage(sessionId: string | null) {
             ...previewReference,
             assistantMessageId: assistantMsg.id,
             editMode,
+            thinkingMode,
+            modelId,
           },
           {
             onThinking: (event) => {
@@ -788,6 +800,8 @@ export function useMessage(sessionId: string | null) {
       pendingImages,
       pendingUploadSummary,
       freezeFileEditMode,
+      freezeThinkingMode,
+      freezeChatModel,
           sessionId,
       updateLastAssistant,
       startVideoPolling,
@@ -853,6 +867,12 @@ export function useMessage(sessionId: string | null) {
     fileEditMode,
     fileEditModeLoading,
     setFileEditMode,
+    thinkingMode,
+    thinkingModeLoading,
+    setThinkingMode,
+    chatModelId,
+    chatModelLoading,
+    setChatModel,
     input,
     setInput,
     pendingImages,

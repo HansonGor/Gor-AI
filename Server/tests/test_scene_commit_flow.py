@@ -13,6 +13,8 @@ def isolate_display_history_and_edit_preferences(monkeypatch):
     from test_project_changes import Store
     monkeypatch.setattr(chat_route, "change_sets", Store())
     monkeypatch.setattr(chat_route, "get_edit_mode", AsyncMock(return_value="auto"))
+    monkeypatch.setattr(chat_route, "get_thinking_mode", AsyncMock(return_value="deep"))
+    monkeypatch.setattr(chat_route, "get_model_preference", AsyncMock(return_value=None))
     monkeypatch.setattr(chat_route, "save_thinking_trace", AsyncMock())
 from test_preview_context_flow import FakeRequest, collect_events
 

@@ -1,0 +1,110 @@
+// 输入框底部的"落笔方式 + 思考方式"并排容器，占据原落笔选择器的栅格位置。
+.chat-composer-modes {
+  position: relative;
+  z-index: 21;
+  grid-column: 2;
+  grid-row: 2;
+  align-self: center;
+  justify-self: start;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  > .file-edit-mode-selector { grid-column: auto; grid-row: auto; }
+}
+// 弹框以并排容器为定位基准，与落笔方式弹框左侧对齐，窄屏也不会向右溢出。
+.chat-composer-modes > .thinking-mode-selector { position: static; }
+.chat-composer-modes > .model-selector { position: static; min-width: 0; }
+.model-selector .file-edit-mode-trigger { max-width: 220px; }
+.model-selector-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.model-selector-popover { width: min(300px, calc(100vw - 96px)); }
+.file-edit-mode-option.is-unavailable { opacity: .55; cursor: not-allowed; &:hover { background: transparent; } }
+.thinking-mode-hidden-mark { width: 14px !important; height: 14px !important; flex-basis: 14px !important; color: #9e9cb8 !important; }
+.thinking-mode-divider { height: 1px; margin: 10px 2px 6px; background: rgba(165, 170, 225, .22); }
+.thinking-mode-visibility {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 150ms ease;
+  &:hover { background: rgba(142, 117, 218, .1); }
+  &:focus-visible { outline: 2px solid #c5b3ff; outline-offset: 1px; }
+  > svg { width: 17px; height: 17px; flex: 0 0 17px; color: #c5b3ff; stroke-width: 1.7; }
+}
+.thinking-mode-switch {
+  position: relative;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 20px;
+  border-radius: 999px;
+  background: #3a4466;
+  transition: background 150ms ease;
+  &::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #b8b4d0;
+    transition: left 150ms ease, background 150ms ease;
+  }
+  &.is-on { background: #7a52e8; }
+  &.is-on::after { left: 16px; background: #f3eeff; }
+}
+.compact-thinking-modes() { .chat-composer-modes { grid-column: 2; grid-row: 2; gap: 6px; } }
+@media (max-width: 520px) {
+  .chat-page.is-empty-chat .chat-composer-panel { .compact-thinking-modes(); }
+}
+.chat-page.is-vscode-plugin.is-empty-chat .chat-composer-panel { .compact-thinking-modes(); }
+// 手机宽度下两个胶囊并排：覆盖 ChatBox.less 在 ≤1023px 时放大的 36px 触控尺寸，避免挤到发送按钮。
+@media (max-width: 480px) {
+  .chat-composer-modes { gap: 6px; }
+  .chat-page .chat-composer-panel .chat-composer-modes .file-edit-mode-selector .file-edit-mode-trigger {
+    height: 32px;
+    gap: 5px;
+    padding: 0 9px;
+    font-size: 12px;
+  }
+  // 手机上去掉三枚胶囊的下拉箭头（各省约 20px），让模型名在独立一行中完整显示；读取中的转圈图标保留。
+  .chat-page .chat-composer-panel .chat-composer-modes .file-edit-mode-trigger > .lucide-chevron-down { display: none; }
+}
+// 窄屏 Web 与 VS Code 插件：三枚胶囊单独占输入框第三行（全宽），
+// 布局为：输入框 / “+”与发送 / 落笔·思考·模型。插件 Webview 报告的视口宽度不可靠，因此插件始终使用该布局。
+// （2026-10-17 曾试过“胶囊浮在输入框上方”的方案 A，用户确认仍用本布局。）
+// 选择器叠加类名以高于 ChatBox.less 与欢迎页紧凑布局中特异性较高的规则。
+// @side：第二行左右两个圆形按钮（添加文件 / 发送）的统一尺寸，二者始终一致，
+// 不再随 ChatBox.less 各断点分别取 33/38/44/58px。
+.composer-modes-own-row(@side) {
+  grid-template-rows: auto auto auto;
+  > div:first-child { grid-column: 1; grid-row: 2; }
+  // flex 基准也一并设置：插件欢迎页的规则带有 flex: 0 0 44px，会把宽度撑回 44px 变成椭圆
+  .upload-btn, .send-btn { width: @side !important; height: @side !important; flex: 0 0 @side; }
+  .upload-btn svg, .send-btn svg { width: @side * 0.5; height: @side * 0.5; }
+  .chat-input { grid-column: 1 / 4; grid-row: 1; }
+  .chat-composer-actions { grid-column: 3; grid-row: 2; }
+  .chat-composer-modes { grid-column: 1 / 4; grid-row: 3; justify-self: stretch; }
+  .chat-composer-modes > .model-selector { flex: 0 1 auto; }
+  .model-selector .file-edit-mode-trigger { max-width: 100%; }
+}
+@media (max-width: 640px) {
+  .chat-page.chat-page .chat-composer-panel.chat-composer-panel.chat-composer-panel.chat-composer-panel:has(.model-selector) {
+    .composer-modes-own-row(44px);
+  }
+}
+// 插件侧栏更窄，两个按钮统一为 36px
+.chat-page.chat-page.is-vscode-plugin .chat-composer-panel.chat-composer-panel.chat-composer-panel.chat-composer-panel:has(.model-selector) {
+  .composer-modes-own-row(36px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .thinking-mode-visibility, .thinking-mode-switch, .thinking-mode-switch::after { transition: none; }
+}

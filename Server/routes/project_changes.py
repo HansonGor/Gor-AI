@@ -9,7 +9,9 @@ from project_api.providers.preview import PreviewProjectProvider
 from project_api.providers.vscode import VSCodeProjectProvider
 from services.preview_project_service import PreviewProjectService
 from services.preview.workspace import PreviewProjectWorkspace
-from db.project_changes import change_sets, get_edit_mode, set_edit_mode
+from db.project_changes import (change_sets, get_edit_mode, set_edit_mode, get_thinking_mode, set_thinking_mode,
+                                get_model_preference, set_model_preference)
+from models import registry
 from db.supabase_chat import get_session_preview_project, update_session_preview_project_if_revision, create_session_preview_project
 
 router = APIRouter()
@@ -109,4 +111,49 @@ async def read_edit_preference(session_id: str, response: Response):
 async def write_edit_preference(session_id: str, body: EditPreference, response: Response):
     response.headers["Cache-Control"] = "no-store"
     await set_edit_mode(session_id, body.editMode)
+    return body
+
+
+class ThinkingPreference(BaseModel):
+    thinkingMode: Literal["light", "deep"]
+
+
+@router.get("/session/{session_id}/thinking-mode")
+async def read_thinking_preference(session_id: str, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    return {"thinkingMode": await get_thinking_mode(session_id)}
+
+
+@router.put("/session/{session_id}/thinking-mode")
+async def write_thinking_preference(session_id: str, body: ThinkingPreference, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    await set_thinking_mode(session_id, body.thinkingMode)
+    return body
+
+
+@router.get("/models")
+async def read_models(response: Response):
+    """模型选择器的可选模型列表（不含密钥、地址等配置）。"""
+    response.headers["Cache-Control"] = "no-store"
+    default_id = registry.default_model_id()
+    return {"models": [spec.public(default_id) for spec in registry.list_models()], "defaultModelId": default_id}
+
+
+class ModelPreference(BaseModel):
+    modelId: str
+
+
+@router.get("/session/{session_id}/model")
+async def read_model_preference(session_id: str, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    # 保存的模型已下线或不可用时返回默认模型，前端显示与实际调用保持一致
+    return {"modelId": registry.resolve_model_id(await get_model_preference(session_id))}
+
+
+@router.put("/session/{session_id}/model")
+async def write_model_preference(session_id: str, body: ModelPreference, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    if registry.resolve_model_id(body.modelId) != body.modelId:
+        raise HTTPException(status_code=422, detail="模型不存在或当前不可用")
+    await set_model_preference(session_id, body.modelId)
     return body
