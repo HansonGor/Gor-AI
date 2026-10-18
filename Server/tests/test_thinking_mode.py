@@ -1,4 +1,4 @@
-"""思考方式：随思显式关闭模型深度思考；深思（默认）显式开启。偏好按会话保存，Web 与插件共用。"""
+"""思考方式：随思显式关闭模型深度思考；深思（默认）显式开启。偏好全局持久化，Web 与插件共用。"""
 
 import asyncio
 import importlib
@@ -109,20 +109,31 @@ def test_route_freezes_thinking_mode_and_passes_it_to_agent(body_mode, stored, e
     assert read.await_count == (1 if reads_store else 0)
 
 
-def test_route_falls_back_to_deep_when_preference_cannot_be_read():
+@pytest.mark.parametrize("body_mode, stored, reads_store", [
+    ("auto", "deep", False),    # 请求冻结的酌思优先
+    (None, "auto", True),       # 未传时读取全局偏好
+])
+def test_route_passes_auto_thinking_for_zhuosi(body_mode, stored, reads_store):
+    captured, read = asyncio.run(run_route(body_mode, stored))
+    assert captured.get("auto_thinking") is True
+    assert "deep_thinking" not in captured
+    assert read.await_count == (1 if reads_store else 0)
+
+
+def test_route_falls_back_to_auto_when_preference_cannot_be_read():
     captured, _ = asyncio.run(run_route(None, None, stored_error=RuntimeError("db down")))
-    assert captured.get("deep_thinking", True) is True
+    assert captured.get("auto_thinking") is True and "deep_thinking" not in captured
 
 
 def test_preference_api_is_shared_by_hosts_and_never_cached():
     async def exercise():
-        saved = {}
+        saved = {"value": "deep"}
 
         async def read(session_id):
-            return saved.get(session_id, "deep")
+            return saved["value"]
 
         async def write(session_id, mode):
-            saved[session_id] = mode
+            saved["value"] = mode
 
         app = FastAPI()
         app.include_router(router, prefix="/api/chat")
@@ -138,7 +149,9 @@ def test_preference_api_is_shared_by_hosts_and_never_cached():
                 read_back = await plugin.get(path)
                 assert read_back.json() == {"thinkingMode": "light"} and read_back.headers["cache-control"] == "no-store"
                 assert (await web.put(path, json={"thinkingMode": "max"})).status_code == 422
-                assert (await web.get("/api/chat/session/other/thinking-mode")).json() == {"thinkingMode": "deep"}
+                assert (await web.get("/api/chat/session/other/thinking-mode")).json() == {"thinkingMode": "light"}
+                assert (await web.put(path, json={"thinkingMode": "auto"})).status_code == 200
+                assert (await plugin.get(path)).json() == {"thinkingMode": "auto"}
 
     asyncio.run(exercise())
 
@@ -147,3 +160,39 @@ def test_db_rejects_unknown_mode():
     from db.project_changes import set_thinking_mode
     with pytest.raises(ValueError):
         asyncio.run(set_thinking_mode("s", "max"))
+
+
+class _MigrationConn:
+    def __init__(self, definition):
+        self.definition = definition
+        self.executed = []
+
+    async def fetchrow(self, query, *args):
+        return {"conname": "chat_global_preferences_thinking_mode_check", "def": self.definition}
+
+    async def execute(self, query, *args):
+        self.executed.append(" ".join(query.split()))
+
+    def transaction(self):
+        class Tx:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+        return Tx()
+
+
+def test_migration_allows_auto_and_switches_default_once():
+    from db.project_changes import ensure_auto_thinking_mode
+    old = _MigrationConn("CHECK ((thinking_mode = ANY (ARRAY['light'::text, 'deep'::text])))")
+    asyncio.run(ensure_auto_thinking_mode(old))
+    joined = "\n".join(old.executed)
+    assert 'DROP CONSTRAINT "chat_global_preferences_thinking_mode_check"' in joined
+    assert "IN ('auto', 'light', 'deep')" in joined
+    assert "SET DEFAULT 'auto'" in joined
+    assert "SET thinking_mode = 'auto' WHERE id = 1" in joined
+
+    migrated = _MigrationConn("CHECK ((thinking_mode = ANY (ARRAY['auto'::text, 'light'::text, 'deep'::text])))")
+    asyncio.run(ensure_auto_thinking_mode(migrated))
+    assert migrated.executed == []                    # 已迁移：不再覆盖用户之后的选择

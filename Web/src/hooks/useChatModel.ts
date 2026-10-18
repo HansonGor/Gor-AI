@@ -3,9 +3,20 @@ import { useSessionPreference } from './useSessionPreference';
 
 const isModelId = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 200;
 
+export function applyChatModelSelection(
+  modelId: string,
+  currentModelId: string | null | undefined,
+  setModel: (value: string) => void,
+  setThinkingMode: (value: 'auto') => void,
+) {
+  // 换模型时思考方式回到默认的酌思
+  if (modelId !== currentModelId) setThinkingMode('auto');
+  setModel(modelId);
+}
+
 /**
- * 会话级模型选择，与落笔方式、思考方式同一套保存机制。
- * 读取失败时发送不带 modelId，由服务端按会话偏好或默认模型处理，不阻止发送。
+ * 当前页面内的临时模型选择；服务端只接收选择并冻结本轮，不持久化。
+ * 页面重载或切换会话后回到服务端默认模型。
  */
 export function useChatModel(sessionId: string | null, onError?: (message: string) => void) {
   const preference = useSessionPreference<string>(sessionId, {

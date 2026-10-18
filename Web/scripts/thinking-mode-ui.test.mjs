@@ -40,19 +40,23 @@ async function mount(element) {
   return root;
 }
 
-test('selector defaults to 深思, switches to 随思, closes and returns focus', async () => {
+test('selector defaults to 酌思 at the top, switches to 随思, closes and returns focus', async () => {
   const changes = [];
   const root = await mount(React.createElement(Selector, { onChange: mode => changes.push(mode) }));
   const trigger = document.querySelector('.thinking-mode-selector .file-edit-mode-trigger');
-  assert.equal(trigger.textContent, '深思');
-  assert.ok(trigger.querySelector('.lucide-brain'));
+  assert.equal(trigger.textContent, '酌思（auto）');
+  assert.equal(trigger.getAttribute('aria-label'), '思考方式：酌思（auto）');
+  assert.ok(trigger.querySelector('.lucide-scale'));
   await act(async () => trigger.click());
   const options = document.querySelectorAll('[role="radio"]');
-  assert.deepEqual([...options].map(o => o.querySelector('strong').textContent), ['随思', '深思']);
-  assert.match(options[0].textContent, /不做深度推理/);
-  assert.equal(options[1].getAttribute('aria-checked'), 'true');
-  assert.ok(options[0].querySelector('.lucide-lightbulb'));
-  await act(async () => options[0].click());
+  // 酌思（auto）排在最上面，其后是随思、深思
+  assert.deepEqual([...options].map(o => o.querySelector('strong').textContent), ['酌思（auto）', '随思', '深思']);
+  assert.match(options[0].textContent, /遇到难题自动转为深思/);
+  assert.equal(options[0].getAttribute('aria-checked'), 'true');
+  assert.match(options[1].textContent, /不做深度推理/);
+  assert.ok(options[1].querySelector('.lucide-lightbulb'));
+  assert.ok(options[2].querySelector('.lucide-brain'));
+  await act(async () => options[1].click());
   assert.deepEqual(changes, ['light']);
   assert.equal(trigger.textContent, '随思');
   assert.equal(document.querySelector('[role="dialog"]'), null);
@@ -60,7 +64,7 @@ test('selector defaults to 深思, switches to 随思, closes and returns focus'
   await act(async () => root.unmount());
 });
 
-test('visibility switch reports changes without closing the popover and marks hidden state on the trigger', async () => {
+test('visibility switch reports changes without closing the popover; hidden state shows no trigger icon', async () => {
   const shows = [];
   let root = await mount(React.createElement(Selector, { value: 'deep', showThinking: true, onShowThinkingChange: v => shows.push(v) }));
   let trigger = document.querySelector('.file-edit-mode-trigger');
@@ -76,7 +80,9 @@ test('visibility switch reports changes without closing the popover and marks hi
 
   root = await mount(React.createElement(Selector, { value: 'deep', showThinking: false }));
   trigger = document.querySelector('.file-edit-mode-trigger');
-  assert.ok(trigger.querySelector('.thinking-mode-hidden-mark'));
+  // The trigger shows only mode icon, name and chevron; hidden state lives in the label and the switch.
+  assert.equal(trigger.querySelector('.thinking-mode-hidden-mark'), null);
+  assert.equal(trigger.querySelectorAll('svg').length, 2);
   assert.equal(trigger.getAttribute('aria-label'), '思考方式：深思，已隐藏思考过程');
   await act(async () => trigger.click());
   assert.equal(document.querySelector('[role="switch"]').getAttribute('aria-checked'), 'false');
@@ -99,14 +105,13 @@ test('Escape and outside pointer dismiss without changing the mode', async () =>
 });
 
 function fakeServer(initial = {}, { failRead = false } = {}) {
-  const saved = { ...initial };
+  const saved = { value: Object.values(initial)[0] ?? 'deep' };
   const calls = [];
   globalThis.fetch = async (url, init = {}) => {
-    const session = decodeURIComponent(url.split('/session/')[1].split('/')[0]);
     calls.push({ url, method: init.method });
     if (failRead && (init.method ?? 'GET') === 'GET') return { ok: false, json: async () => ({}) };
-    if (init.method === 'PUT') saved[session] = JSON.parse(init.body).thinkingMode;
-    return { ok: true, json: async () => ({ thinkingMode: saved[session] ?? 'deep' }) };
+    if (init.method === 'PUT') saved.value = JSON.parse(init.body).thinkingMode;
+    return { ok: true, json: async () => ({ thinkingMode: saved.value }) };
   };
   return { saved, calls };
 }
@@ -116,7 +121,7 @@ function HookProbe({ sessionId, onError, sink }) {
   return null;
 }
 
-test('session thinking mode is loaded, saved to the server and frozen at send', async () => {
+test('global thinking mode is loaded, saved across sessions and frozen at send', async () => {
   const fresh = fakeServer();
   const freshSink = { current: null };
   const freshRoot = await mount(React.createElement(HookProbe, { sessionId: 'new', sink: freshSink }));
@@ -132,21 +137,24 @@ test('session thinking mode is loaded, saved to the server and frozen at send', 
   assert.equal(sink.current.thinkingMode, 'deep');
   assert.match(server.calls[0].url, /\/api\/chat\/session\/s1\/thinking-mode$/);
   await act(async () => { sink.current.setThinkingMode('light'); await sink.current.freezeThinkingMode(); });
-  assert.equal(server.saved.s1, 'light');
+  assert.equal(server.saved.value, 'light');
   assert.equal(sink.current.thinkingMode, 'light');
   assert.equal(await sink.current.freezeThinkingMode(), 'light');
+  await act(async () => root.render(React.createElement(HookProbe, { sessionId: 's2', sink })));
+  await act(async () => { await sink.current.freezeThinkingMode(); });
+  assert.equal(sink.current.thinkingMode, 'light', 'a different session reads the shared saved mode');
   await act(async () => root.unmount());
 });
 
-test('failed reads fall back to 深思 for sending and report an error', async () => {
+test('failed reads fall back to 酌思 for sending and report an error', async () => {
   fakeServer({}, { failRead: true });
   const errors = [];
   const sink = { current: null };
   const root = await mount(React.createElement(HookProbe, { sessionId: 's2', sink, onError: m => errors.push(m) }));
   let frozen;
   await act(async () => { frozen = await sink.current.freezeThinkingMode(); });
-  assert.equal(frozen, 'deep');
-  assert.equal(sink.current.thinkingMode, 'deep');
+  assert.equal(frozen, 'auto');
+  assert.equal(sink.current.thinkingMode, 'auto');
   assert.deepEqual(errors, ['思考方式保存失败。']);
   await act(async () => root.unmount());
 });

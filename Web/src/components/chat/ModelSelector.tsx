@@ -12,6 +12,7 @@ export type ModelOption = {
   supports_tools: boolean;
   supports_thinking: boolean;
   available: boolean;
+  unavailable_reason?: string;
 };
 
 /** 纯展示组件：模型列表、当前选择与保存都由宿主通过 props/回调提供。 */
@@ -41,7 +42,7 @@ export default function ModelSelector({ models, value, onChange, loading = false
       <div role="radiogroup" aria-label="模型">
         {models.map(model => {
           const isSelected = model.id === selected.id;
-          const reason = model.available ? '' : (!model.supports_tools ? '不支持工具调用，暂不可用' : '提供方尚未接入，暂不可用');
+          const reason = model.available ? '' : (model.unavailable_reason || (!model.supports_tools ? '不支持工具调用，暂不可用' : '提供方尚未接入，暂不可用'));
           return <button key={model.id} type="button" role="radio" aria-checked={isSelected}
             aria-disabled={!model.available} disabled={loading || !model.available}
             title={reason || undefined}

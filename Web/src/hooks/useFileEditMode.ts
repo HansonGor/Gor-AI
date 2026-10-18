@@ -5,7 +5,7 @@ import { useSessionPreference } from './useSessionPreference';
 export type ExecutionEditMode = 'auto' | 'review';
 const EXECUTION_MODES = ['auto', 'review'] as const;
 
-/** Session preference only. Every send captures an immutable mode promise. */
+/** Shared global database preference; every send captures an immutable mode promise. */
 export function useFileEditMode(sessionId: string | null, onError?: (message: string) => void) {
   const preference = useSessionPreference<ExecutionEditMode>(sessionId, {
     path: 'edit-mode', field: 'editMode', values: EXECUTION_MODES, errorMessage: '文件变更请求失败。', onError,

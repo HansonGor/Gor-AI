@@ -9,8 +9,7 @@ from project_api.providers.preview import PreviewProjectProvider
 from project_api.providers.vscode import VSCodeProjectProvider
 from services.preview_project_service import PreviewProjectService
 from services.preview.workspace import PreviewProjectWorkspace
-from db.project_changes import (change_sets, get_edit_mode, set_edit_mode, get_thinking_mode, set_thinking_mode,
-                                get_model_preference, set_model_preference)
+from db.project_changes import (change_sets, get_edit_mode, set_edit_mode, get_thinking_mode, set_thinking_mode)
 from models import registry
 from db.supabase_chat import get_session_preview_project, update_session_preview_project_if_revision, create_session_preview_project
 
@@ -115,7 +114,7 @@ async def write_edit_preference(session_id: str, body: EditPreference, response:
 
 
 class ThinkingPreference(BaseModel):
-    thinkingMode: Literal["light", "deep"]
+    thinkingMode: Literal["auto", "light", "deep"]
 
 
 @router.get("/session/{session_id}/thinking-mode")
@@ -146,8 +145,8 @@ class ModelPreference(BaseModel):
 @router.get("/session/{session_id}/model")
 async def read_model_preference(session_id: str, response: Response):
     response.headers["Cache-Control"] = "no-store"
-    # 保存的模型已下线或不可用时返回默认模型，前端显示与实际调用保持一致
-    return {"modelId": registry.resolve_model_id(await get_model_preference(session_id))}
+    # 模型选择仅在当前运行时生效，重新加载始终回到注册表默认值。
+    return {"modelId": registry.default_model_id()}
 
 
 @router.put("/session/{session_id}/model")
@@ -155,5 +154,4 @@ async def write_model_preference(session_id: str, body: ModelPreference, respons
     response.headers["Cache-Control"] = "no-store"
     if registry.resolve_model_id(body.modelId) != body.modelId:
         raise HTTPException(status_code=422, detail="模型不存在或当前不可用")
-    await set_model_preference(session_id, body.modelId)
     return body

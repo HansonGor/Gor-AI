@@ -19,8 +19,9 @@
 .model-selector-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .model-selector-popover { width: min(300px, calc(100vw - 96px)); }
 .file-edit-mode-option.is-unavailable { opacity: .55; cursor: not-allowed; &:hover { background: transparent; } }
-.thinking-mode-hidden-mark { width: 14px !important; height: 14px !important; flex-basis: 14px !important; color: #9e9cb8 !important; }
 .thinking-mode-divider { height: 1px; margin: 10px 2px 6px; background: rgba(165, 170, 225, .22); }
+// 酌思名称后的"（auto）"标注：字号略小、颜色偏淡，与名称同一行
+.thinking-mode-tag { font-size: .86em; font-weight: 400; color: #a9a4c8; white-space: nowrap; }
 .thinking-mode-visibility {
   display: flex;
   align-items: center;
@@ -77,6 +78,8 @@
   }
   // 手机上去掉三枚胶囊的下拉箭头（各省约 20px），让模型名在独立一行中完整显示；读取中的转圈图标保留。
   .chat-page .chat-composer-panel .chat-composer-modes .file-edit-mode-trigger > .lucide-chevron-down { display: none; }
+  // 胶囊上只显示"酌思"，"（auto）"仍在弹框选项里显示，避免挤占模型名
+  .chat-page .chat-composer-panel .chat-composer-modes .file-edit-mode-trigger .thinking-mode-tag { display: none; }
 }
 // 窄屏 Web 与 VS Code 插件：三枚胶囊单独占输入框第三行（全宽），
 // 布局为：输入框 / “+”与发送 / 落笔·思考·模型。插件 Webview 报告的视口宽度不可靠，因此插件始终使用该布局。

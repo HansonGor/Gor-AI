@@ -321,9 +321,9 @@ export interface ChatBoxProps {
   fileEditMode?: 'instant' | 'review';
   fileEditModeLoading?: boolean;
   onFileEditModeChange?: (mode: 'instant' | 'review') => void;
-  thinkingMode?: 'light' | 'deep';
+  thinkingMode?: 'auto' | 'light' | 'deep';
   thinkingModeLoading?: boolean;
-  onThinkingModeChange?: (mode: 'light' | 'deep') => void;
+  onThinkingModeChange?: (mode: 'auto' | 'light' | 'deep') => void;
   chatModelId?: string | null;
   chatModelLoading?: boolean;
   onChatModelChange?: (modelId: string) => void;
@@ -359,9 +359,9 @@ export interface InputAreaProps {
   fileEditMode?: 'instant' | 'review';
   fileEditModeLoading?: boolean;
   onFileEditModeChange?: (mode: 'instant' | 'review') => void;
-  thinkingMode?: 'light' | 'deep';
+  thinkingMode?: 'auto' | 'light' | 'deep';
   thinkingModeLoading?: boolean;
-  onThinkingModeChange?: (mode: 'light' | 'deep') => void;
+  onThinkingModeChange?: (mode: 'auto' | 'light' | 'deep') => void;
   chatModelId?: string | null;
   chatModelLoading?: boolean;
   onChatModelChange?: (modelId: string) => void;

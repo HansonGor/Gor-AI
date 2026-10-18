@@ -7,6 +7,7 @@
     "test:code": "node --test scripts/code-highlight.test.mjs scripts/vscode-code-highlight.test.mjs",
     "test:share": "node --test scripts/share.test.mjs scripts/share-export.test.mjs",
     "test:thinking": "node --test scripts/thinking.test.mjs",
+    "test:message-error": "node --experimental-strip-types --test scripts/chat-message-error.test.ts",
     "predev": "vite build --config vite.preview-runtime.config.js",
     "dev": "vite",
     "prebuild": "vite build --config vite.preview-runtime.config.js",

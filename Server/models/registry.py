@@ -1,8 +1,7 @@
 """可选聊天模型注册表：模型选择器的唯一数据来源。
 
-默认模型始终是 ARK_MODEL_ID；额外模型来自 GOR_EXTRA_MODELS（JSON 数组）。
-当前只支持方舟（provider=ark）；以后接入 OpenRouter 等提供方时在此登记，
-并在 models/model.py 中按提供方构造客户端与思考开关参数。
+默认模型始终是 ARK_MODEL_ID；内置千问 3.8 Flash 与 OpenRouter 模型，额外模型来自 GOR_EXTRA_MODELS。
+各提供方使用独立客户端配置及思考开关参数。
 """
 
 from __future__ import annotations
@@ -13,7 +12,18 @@ from dataclasses import asdict, dataclass
 from config import config
 from db.model_quota import get_model_display_name
 
-SUPPORTED_PROVIDERS = {"ark"}
+SUPPORTED_PROVIDERS = {"ark", "dashscope", "openrouter"}
+QWEN_MODEL_ID = "qwen3.8-flash"
+OPENROUTER_MODELS = (
+    ("openai/gpt-6.1-sol", "GPT-6.1 Sol"),
+    ("openai/gpt-6-luna", "GPT-6 Luna"),
+    ("openai/gpt-6-astra", "GPT-6 Astra"),
+    ("anthropic/claude-opus-5.5", "Claude Opus 5.5"),
+    ("anthropic/claude-sonnet-5.5", "Claude Sonnet 5.5"),
+    ("anthropic/claude-haiku-5.5", "Claude Haiku 5.5"),
+    ("google/gemini-4-argon", "Gemini 4 Argon"),
+    ("x-ai/grok-4.7", "Grok 4.7"),
+)
 
 
 @dataclass(frozen=True)
@@ -27,9 +37,15 @@ class ModelSpec:
 
     def public(self, default_id: str) -> dict:
         data = asdict(self)
-        data["providerName"] = {"ark": "方舟"}.get(self.provider, self.provider)
+        data["providerName"] = {"ark": "方舟", "dashscope": "阿里云百炼", "openrouter": "OpenRouter"}.get(self.provider, self.provider)
         data["default"] = self.id == default_id
         data["available"] = self.supports_tools and self.provider in SUPPORTED_PROVIDERS
+        if self.provider == "dashscope" and not config.Qwen.API_KEY.strip():
+            data["available"] = False
+            data["unavailable_reason"] = "未配置千问密钥，暂不可用"
+        if self.provider == "openrouter" and not config.OpenRouter.API_KEY.strip():
+            data["available"] = False
+            data["unavailable_reason"] = "未配置 OpenRouter 密钥，暂不可用"
         return data
 
 
@@ -60,7 +76,12 @@ def list_models() -> list[ModelSpec]:
     default = ModelSpec(id=config.Ark.MODEL_ID, name=get_model_display_name(config.Ark.MODEL_ID),
                         description="当前默认模型")
     seen, result = set(), []
-    for spec in [default, *_extra_models(config.Ark.EXTRA_MODELS)]:
+    qwen = ModelSpec(id=QWEN_MODEL_ID, name="千问 3.8 Flash", provider="dashscope",
+                     description="支持工具调用与随思/深思")
+    openrouter_models = [ModelSpec(id=model_id, name=name, provider="openrouter",
+                                   description="OpenRouter 聚合模型，支持工具调用与随思/深思")
+                         for model_id, name in OPENROUTER_MODELS]
+    for spec in [default, *_extra_models(config.Ark.EXTRA_MODELS), qwen, *openrouter_models]:
         if spec.id not in seen:
             seen.add(spec.id)
             result.append(spec)

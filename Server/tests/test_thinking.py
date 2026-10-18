@@ -24,6 +24,10 @@ def test_provider_conversion_preserves_reasoning_and_tool_chunks():
 
 def test_only_provider_reasoning_or_summary_is_extracted():
     assert reasoning_text({"content": "普通回答"}) == ""
+    assert reasoning_text({"reasoning_details": [
+        {"type": "reasoning.text", "text": "OpenRouter 思考"},
+        {"type": "reasoning.encrypted", "data": "private"},
+    ]}) == "OpenRouter 思考"
     assert reasoning_text({"content": [{"type": "text", "text": "正文"},
         {"type": "thinking", "thinking": "Claude 摘要"},
         {"type": "reasoning", "summary": [{"type": "summary_text", "text": "OpenAI 摘要"}]}]}) == "Claude 摘要OpenAI 摘要"

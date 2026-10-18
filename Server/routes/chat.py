@@ -31,7 +31,7 @@ from services.context_engine import context_engine, estimate_tokens, fallback_co
 from project_api.vscode_context import create_current_vscode_project_api
 from project_api.changes import ChangeRecorder, current_recorder, snapshot
 from project_api.types import ProjectRef
-from db.project_changes import change_sets, get_edit_mode, get_thinking_mode, get_model_preference
+from db.project_changes import change_sets, get_edit_mode, get_thinking_mode, get_model_preference  # legacy symbol for downstream patches; model lookup is intentionally unused
 from models import registry as model_registry
 import uuid
 
@@ -61,7 +61,7 @@ class ChatRequest(BaseModel):
     assistantMessageId: str | None = Field(default=None, max_length=80)
     newPreviewProject: bool = False
     editMode: Literal['auto', 'review'] | None = None
-    thinkingMode: Literal['light', 'deep'] | None = None
+    thinkingMode: Literal['auto', 'light', 'deep'] | None = None
     modelId: str | None = Field(default=None, max_length=200)
 
 
@@ -75,17 +75,13 @@ async def chat(request: Request, body: ChatRequest):
     # Freeze before the stream/Agent starts; later session preference updates
     # cannot change the execution policy of this request.
     edit_mode = body.editMode or await get_edit_mode(body.sessionId)
-    # 同样在请求开始时冻结；读取失败按默认的深思处理，不阻止发送
+    # 同样在请求开始时冻结；读取失败按默认的酌思处理，不阻止发送
     try:
         thinking_mode = body.thinkingMode or await get_thinking_mode(body.sessionId)
     except Exception:
-        thinking_mode = "deep"
-    # 模型同样在请求开始时冻结：请求指定 > 会话偏好 > 默认；未知或不可用的模型回到默认
-    try:
-        requested_model = body.modelId or await get_model_preference(body.sessionId)
-    except Exception:
-        requested_model = None
-    chat_model_id = model_registry.resolve_model_id(requested_model)
+        thinking_mode = "auto"
+    # 模型选择不持久化；当前页面可显式指定，缺省/重载后始终使用默认模型。
+    chat_model_id = model_registry.resolve_model_id(body.modelId)
 
     async def event_generator() -> AsyncGenerator[str, None]:
         # ===== SSE 连接建立 =====
@@ -502,7 +498,8 @@ async def chat(request: Request, body: ChatRequest):
                     plugin_workspace_request,
                     session_id,
                     **({"presentation_source_explicit": True} if body.presentationMessageId else {}),
-                    **({"deep_thinking": False} if thinking_mode == "light" else {}),
+                    **({"deep_thinking": False} if thinking_mode == "light" else
+                       {"auto_thinking": True} if thinking_mode == "auto" else {}),
                     **({"model_id": chat_model_id} if chat_model_id != model_registry.default_model_id() else {}),
                 )
             )

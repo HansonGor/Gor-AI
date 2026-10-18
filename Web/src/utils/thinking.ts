@@ -1,9 +1,14 @@
 export type ThinkingStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 export interface ThinkingRound { id: string; content: string; ended: boolean; title?: string; summary?: string; source?: 'model' | 'phase' | 'tool'; steps?: string[]; toolName?: string; toolRunning?: boolean }
-export interface ThinkingTrace { rounds: ThinkingRound[]; status: ThinkingStatus }
+/** 酌思本轮实际采用的深浅；escalated 表示运行中遇到问题由随思转为深思。 */
+export interface ResolvedThinkingMode { mode: 'light' | 'deep'; reason: string; escalated: boolean; initialReason?: string }
+export interface ThinkingTrace { rounds: ThinkingRound[]; status: ThinkingStatus; thinkingMode?: ResolvedThinkingMode }
 export interface ThinkingEvent {
-  type: 'thinking_start' | 'thinking_delta' | 'thinking_end' | 'thinking_title' | 'thinking_summary_delta' | 'thinking_update';
+  type: 'thinking_start' | 'thinking_delta' | 'thinking_end' | 'thinking_title' | 'thinking_summary_delta' | 'thinking_update' | 'thinking_mode';
   roundId: string;
+  mode?: 'light' | 'deep';
+  reason?: string;
+  escalated?: boolean;
   content?: string;
   title?: string;
   summary?: string;
@@ -16,6 +21,16 @@ export interface ThinkingEvent {
 export function acceptThinkingEvent(trace: ThinkingTrace | undefined, event: ThinkingEvent): ThinkingTrace {
   const current = trace ?? { rounds: [], status: 'running' };
   if (current.status !== 'running') return current;
+  if (event.type === 'thinking_mode') {
+    const previous = current.thinkingMode;
+    const escalated = event.escalated === true;
+    return { ...current, thinkingMode: {
+      mode: event.mode === 'deep' ? 'deep' : 'light',
+      reason: typeof event.reason === 'string' ? event.reason : '',
+      escalated,
+      ...(escalated && previous ? { initialReason: previous.initialReason ?? previous.reason } : {}),
+    } };
+  }
   const index = current.rounds.findIndex(round => round.id === event.roundId);
   if (event.type === 'thinking_start') {
     return index >= 0 ? current : { ...current, rounds: [...current.rounds, { id: event.roundId, content: '', ended: false }] };
@@ -63,7 +78,12 @@ export function restoreThinking(value: unknown): ThinkingTrace | undefined {
     toolRunning: typeof round.toolRunning === 'boolean' ? round.toolRunning : undefined,
   }));
   const status = ['completed', 'failed', 'cancelled', 'interrupted'].includes(trace.status) ? trace.status : 'interrupted';
-  return { rounds, status };
+  const mode = trace.thinkingMode;
+  const thinkingMode = mode && (mode.mode === 'light' || mode.mode === 'deep') ? {
+    mode: mode.mode, reason: typeof mode.reason === 'string' ? mode.reason : '', escalated: mode.escalated === true,
+    ...(typeof mode.initialReason === 'string' ? { initialReason: mode.initialReason } : {}),
+  } : undefined;
+  return { rounds, status, ...(thinkingMode ? { thinkingMode } : {}) };
 }
 
 export function isToolStatusInThinking(message: { thinkingTrace?: ThinkingTrace; executionToolName?: string }, activeOnly = true): boolean {

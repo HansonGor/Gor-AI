@@ -20,7 +20,8 @@ const compiled = await build({
  export { default as MessageList } from '../src/components/ChatBox/MessageList';
  export { useChatShare } from '../src/share/useChatShare';
  export { default as Header } from '../src/components/ChatLayout/ChatHeader';
- export { ChatShareToolbar } from '../src/components/chat/ChatShareControls';
+ export { ChatShareToolbar, saveShareImage } from '../src/components/chat/ChatShareControls';
+ export { getUserNickname, DEFAULT_USER_NICKNAME } from '../src/user/profile';
 `,
     resolveDir: dirname(filename),
     loader: 'ts',
@@ -47,7 +48,7 @@ const compiled = await build({
         b.onLoad({ filter: /.*/, namespace: 'fixture' }, ({ path }) => ({
           contents:
             path === 'export'
-              ? `export const disposeShareImage=p=>{if(p)globalThis.disposed.push(p)}; export const exportShareImage=(m,s)=>globalThis.exporter(m,s);`
+              ? `export const disposeShareImage=p=>{if(p)globalThis.disposed.push(p)}; export const exportShareImage=(m,s,u)=>globalThis.exporter(m,s,u);`
               : path === 'bubble'
                 ? `import React from 'react'; export default function Bubble(p){React.useEffect(()=>{globalThis.bubbleMounts=(globalThis.bubbleMounts||0)+1;},[]);return React.createElement('p',{'data-bubble':p.message.id},p.message.content)}`
                 : '',
@@ -71,6 +72,9 @@ const {
   MessageList,
   useChatShare,
   ChatShareToolbar,
+  saveShareImage,
+  getUserNickname,
+  DEFAULT_USER_NICKNAME,
 } = fixture.exports;
 const messages = [
   { id: 'u1', role: 'user', content: '原始提问 [S1]' },
@@ -122,6 +126,7 @@ test('template renders formal Markdown, readable citations, literal code/user te
   );
   const doc = new JSDOM(html).window.document;
   assert.equal(doc.querySelectorAll('.gor-share-message').length, 2);
+  assert.deepEqual([...doc.querySelectorAll('.gor-share-label')].map((node) => node.textContent), ['你', 'Gor']);
   for (const selector of ['h1', 'ul li', 'blockquote', 'table td', 'pre code'])
     assert.ok(doc.querySelector(selector), selector);
   assert.ok(doc.querySelector('pre').textContent.includes('[S1]'));
@@ -249,6 +254,63 @@ test('preview freezes selection, close retains it; errors, cancellation and stal
     assert.equal(state.open, false);
     assert.equal(state.image, null);
     assert.equal(globalThis.disposed.at(-1).url, 'blob:late');
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+test('share image signs user messages with the nickname, falling back to 你 when it is missing or blank', () => {
+  const labels = (props) => [...new JSDOM(renderToStaticMarkup(React.createElement(Template, {
+    messages: extractShareMessages(messages, new Set(['a1', 'u1'])), ...props,
+  }))).window.document.querySelectorAll('.gor-share-label')].map((node) => node.textContent);
+  assert.deepEqual(labels({ userName: '樺' }), ['樺', 'Gor']);
+  assert.deepEqual(labels({}), ['你', 'Gor']);
+  assert.deepEqual(labels({ userName: '   ' }), ['你', 'Gor']);
+  assert.deepEqual(labels({ userName: '<b>x</b>' }), ['<b>x</b>', 'Gor'], '昵称按文本显示，不当作 HTML');
+  assert.equal(getUserNickname(), DEFAULT_USER_NICKNAME, '侧栏与分享图共用同一个昵称来源');
+  assert.equal(DEFAULT_USER_NICKNAME, '樺');
+});
+
+test('generating the share image passes the current nickname to the exporter', async () => {
+  const root = createRoot(document.getElementById('root'));
+  let received;
+  globalThis.exporter = async (_messages, _signal, userName) => { received = userName; return { url: 'blob:nick', blob: {} }; };
+  try {
+    await act(async () => root.render(React.createElement(Harness)));
+    await act(async () => state.start());
+    await act(async () => state.selection.onToggle('u1'));
+    await act(async () => state.generate());
+    assert.equal(received, getUserNickname());
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+test('successful PNG download exits share mode; cancellation or failure keeps selection for retry', async () => {
+  const root = createRoot(document.getElementById('root'));
+  globalThis.exporter = async () => ({ url: 'blob:download', blob: {} });
+  try {
+    await act(async () => root.render(React.createElement(Harness)));
+    await act(async () => state.start());
+    await act(async () => state.selection.onToggle('u1'));
+    await act(async () => state.generate());
+    assert.equal(state.selecting, true);
+    const onSaved = () => state.completeDownload();
+    await act(async () => {
+      assert.equal(await saveShareImage(async () => false, { suggestedName: 'Gor-聊天.png', blob: {} }, onSaved), false);
+    });
+    assert.equal(state.selecting, true);
+    assert.equal(state.count, 1);
+    await assert.rejects(saveShareImage(async () => { throw new Error('保存失败'); }, { suggestedName: 'Gor-聊天.png', blob: {} }, onSaved), /保存失败/);
+    assert.equal(state.selecting, true);
+    assert.equal(state.count, 1);
+    await act(async () => {
+      assert.equal(await saveShareImage(async () => true, { suggestedName: 'Gor-聊天.png', blob: {} }, onSaved), true);
+    });
+    assert.equal(state.selecting, false);
+    assert.equal(state.count, 0);
+    assert.equal(state.open, false);
+    assert.equal(globalThis.disposed.at(-1).url, 'blob:download');
   } finally {
     await act(async () => root.unmount());
   }

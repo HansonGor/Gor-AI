@@ -317,6 +317,13 @@ def reasoning_text(value):
     for key in ("reasoning_content", "reasoning", "thinking"):
         if isinstance(value.get(key), str):
             return value[key]
+    details = value.get("reasoning_details")
+    if isinstance(details, list):
+        parts = [item.get("text", "") for item in details
+                 if isinstance(item, dict) and item.get("type") in {"reasoning.text", "summary"}
+                 and isinstance(item.get("text"), str)]
+        if parts:
+            return "".join(parts)
     blocks = value.get("content", [])
     if not isinstance(blocks, list):
         return ""
@@ -435,6 +442,8 @@ class ThinkingTrace:
         self.pending_edit = False
         # 本次 Agent 运行中已完成工具的真实结果，用于命名最后的答复阶段
         self.outcomes = []
+        # 酌思本轮实际采用的深浅：{"mode", "reason", "escalated"}；非酌思时为 None
+        self.thinking_mode = None
 
     def update(self, item, presentation, source, step=None):
         priority = {"model": 1, "phase": 2, "tool": 3}
@@ -461,6 +470,17 @@ class ThinkingTrace:
         if self.status in {"completed", "failed", "cancelled"}:
             return None
         kind, round_id = event.get("type"), event.get("roundId")
+        if kind == "thinking_mode":
+            # 升级后保留首次判定的原因，界面可同时说明"从随思转为深思"
+            previous = self.thinking_mode
+            self.thinking_mode = {
+                "mode": event.get("mode") if event.get("mode") in {"light", "deep"} else "light",
+                "reason": short(event.get("reason"), 60),
+                "escalated": bool(event.get("escalated")),
+                **({"initialReason": previous.get("initialReason") or previous.get("reason")}
+                   if previous and event.get("escalated") else {}),
+            }
+            return None
         if kind == "thinking_start" and round_id:
             if not any(r["id"] == round_id for r in self.rounds):
                 self.active_tool = None
@@ -525,4 +545,7 @@ class ThinkingTrace:
         return None
 
     def snapshot(self):
-        return {"rounds": self.rounds, "status": self.status}
+        snapshot = {"rounds": self.rounds, "status": self.status}
+        if self.thinking_mode:
+            snapshot["thinkingMode"] = self.thinking_mode
+        return snapshot

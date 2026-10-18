@@ -15,7 +15,7 @@
 - _search_bocha     博查 Web Search，支持 include 站点限定
 - _search_serper    Serper(Google)，支持 query 内 site: 限定
 - _search_brave     Brave 独立索引
-- _search_exa       Exa 语义搜索（未来 includeDomains）
+- _search_exa       Exa 语义搜索（highlights 片段，includeDomains 站点限定）
 - _search_github_repositories  GitHub 仓库名搜索 / 热度排序
 - _search_github_code  GitHub Code Search
 """
@@ -368,8 +368,12 @@ def _site_query(query: str, sites: list[str] | None) -> str:
 
 
 def _search_exa(query: str, max_results: int = 5,
-                sites: list[str] | None = None) -> list[dict]:
-    """Exa 语义搜索，includeDomains 提供原生域名约束。"""
+                sites: list[str] | None = None, search_type: str = "auto") -> list[dict]:
+    """Exa 语义搜索，includeDomains 提供原生域名约束。
+
+    按 Exa 推荐用 contents.highlights 取与 query 相关的正文片段（比截断全文更省 token）。
+    search_type: 默认 auto；新闻等对延迟敏感的场景传 fast。
+    """
     api_key = config.Search.EXA_API_KEY
     if not api_key:
         return []
@@ -379,8 +383,8 @@ def _search_exa(query: str, max_results: int = 5,
         json={
             "query": query,
             "numResults": max_results,
-            "contents": {"text": {"maxCharacters": 600}},
-            "type": "auto",
+            "contents": {"highlights": True},
+            "type": search_type,
             **({"includeDomains": sites} if sites else {}),
         },
         timeout=TIMEOUT,
@@ -389,10 +393,12 @@ def _search_exa(query: str, max_results: int = 5,
     data = r.json()
     out = []
     for it in data.get("results", [])[:max_results]:
+        highlights = [h.strip() for h in it.get("highlights") or [] if isinstance(h, str) and h.strip()]
+        content = " … ".join(highlights) or it.get("text") or ""
         out.append({
             "title": it.get("title", ""),
             "url": it.get("url", ""),
-            "content": (it.get("text") or "")[:400],
+            "content": content[:500],
             "source": "exa",
             "published_date": it.get("publishedDate") or it.get("published_date"),
         })

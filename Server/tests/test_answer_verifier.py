@@ -190,7 +190,8 @@ def test_still_uncited_after_revision_sentences_are_deleted_without_third_call(m
     calls, visible, verification, _ = run(monkeypatch, [FIRST, still_bad], plugin=plugin)
     assert len(calls) == 4
     assert "18.8%" not in visible and "[S9]" not in visible
-    assert visible == "## 国内要闻\n9月CPI同比上涨0.9%。[S1]\n\n（另有 1 处内容未能在本轮来源中找到依据，已删除。）"
+    assert visible == "## 国内要闻\n9月CPI同比上涨0.9%。[S1]"
+    assert "已删除" not in visible
     assert verification[0]["revised"] is True and verification[0]["removedSentences"] == 1
 
 

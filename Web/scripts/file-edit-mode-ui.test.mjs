@@ -42,17 +42,19 @@ test('shared selector switches local display, preserves selection and returns fo
   await act(async () => root.render(React.createElement(Selector)));
   const trigger = document.querySelector('.file-edit-mode-trigger');
   assert.equal(trigger.textContent, '即刻落笔');
-  assert.ok(trigger.querySelector('.lucide-feather'));
+  assert.ok(trigger.querySelector('.lucide-pencil-line'));
   await act(async () => trigger.click());
   const options = document.querySelectorAll('[role="radio"]');
-  assert.equal(options[0].getAttribute('aria-checked'), 'true');
-  assert.ok(options[1].querySelector('.lucide-book-open-check'));
-  await act(async () => options[1].click());
+  // 审阅落笔排在前面，默认仍选中即刻落笔。
+  assert.deepEqual([...options].map(o => o.querySelector('strong').textContent), ['审阅落笔', '即刻落笔']);
+  assert.equal(options[1].getAttribute('aria-checked'), 'true');
+  assert.ok(options[0].querySelector('.lucide-book-open-check'));
+  await act(async () => options[0].click());
   assert.equal(trigger.textContent, '审阅落笔');
   assert.equal(document.querySelector('[role="dialog"]'), null);
   assert.equal(document.activeElement, trigger);
   await act(async () => trigger.click());
-  assert.equal(document.querySelectorAll('[role="radio"]')[1].getAttribute('aria-checked'), 'true');
+  assert.equal(document.querySelectorAll('[role="radio"]')[0].getAttribute('aria-checked'), 'true');
   await act(async () => root.unmount());
 });
 
@@ -84,7 +86,7 @@ test('controlled selection remains host-owned and callback is called only on exp
   await act(async () => root.render(React.createElement(Selector, { value: 'review', onChange })));
   const trigger = document.querySelector('.file-edit-mode-trigger');
   await act(async () => trigger.click());
-  await act(async () => document.querySelectorAll('[role="radio"]')[0].click());
+  await act(async () => document.querySelectorAll('[role="radio"]')[1].click());
   assert.deepEqual(selections, ['instant']);
   assert.equal(trigger.textContent, '审阅落笔');
   await act(async () => root.render(React.createElement(Selector, { value: 'instant', onChange })));
@@ -92,7 +94,7 @@ test('controlled selection remains host-owned and callback is called only on exp
   await act(async () => root.unmount());
 });
 
-test('session preference is persisted, send freezes mode, failed writes never fall back to auto', async () => {
+test('global preference is persisted, send freezes mode, failed writes never fall back to auto', async () => {
   const original = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url, options) => {
@@ -123,33 +125,34 @@ test('session preference is persisted, send freezes mode, failed writes never fa
   }
 });
 
-test('Web and VS Code hosts reload the same saved session mode, without a local cache', async () => {
+test('Web and VS Code hosts and different sessions reload the same global mode', async () => {
   const original = globalThis.fetch;
-  const saved = new Map([['shared', 'auto'], ['other', 'review']]);
+  let saved = 'auto';
   const requests = [];
   globalThis.fetch = async (url, options) => {
     requests.push(options);
-    const id = url.split('/').at(-2);
-    if (options.method === 'PUT') saved.set(id, JSON.parse(options.body).editMode);
-    return { ok: true, json: async () => ({ editMode: saved.get(id) ?? 'auto' }) };
+    if (options.method === 'PUT') saved = JSON.parse(options.body).editMode;
+    return { ok: true, json: async () => ({ editMode: saved }) };
   };
   const root = createRoot(document.getElementById('root'));
   const hosts = {};
   function Host({ name, id }) { hosts[name] = useFileEditMode(id); return null; }
-  const render = (webKey, pluginKey) => root.render(React.createElement(React.Fragment, null,
-    React.createElement(Host, { key: webKey, name: 'web', id: 'shared' }),
-    React.createElement(Host, { key: pluginKey, name: 'vscode', id: 'shared' }),
-    React.createElement(Host, { key: 'other', name: 'other', id: 'other' })));
+  const render = (webKey, pluginKey, otherKey = 'other') => root.render(React.createElement(React.Fragment, null,
+    React.createElement(Host, { key: webKey, name: 'web', id: 'session-a' }),
+    React.createElement(Host, { key: pluginKey, name: 'vscode', id: 'session-b' }),
+    React.createElement(Host, { key: otherKey, name: 'other', id: 'session-c' })));
   try {
     await act(async () => render('web-1', 'plugin-1'));
     await act(async () => hosts.web.setFileEditMode('review'));
-    assert.equal(saved.get('shared'), 'review');
+    assert.equal(saved, 'review');
+    await act(async () => render('web-1', 'plugin-1', 'other-reloaded'));
+    assert.equal(hosts.other.fileEditMode, 'review');
     await act(async () => render('web-1', 'plugin-2'));
     assert.equal(hosts.vscode.fileEditMode, 'review');
     await act(async () => hosts.vscode.setFileEditMode('instant'));
-    await act(async () => render('web-2', 'plugin-2'));
+    await act(async () => render('web-2', 'plugin-2', 'other-reloaded-again'));
     assert.equal(hosts.web.fileEditMode, 'instant');
-    assert.equal(hosts.other.fileEditMode, 'review');
+    assert.equal(hosts.other.fileEditMode, 'instant');
     assert.ok(requests.every(options => options.cache === 'no-store'));
   } finally { await act(async () => root.unmount()); globalThis.fetch = original; }
 });
@@ -222,7 +225,7 @@ test('shared selector shows loading and prevents repeat switching until the save
     await act(async () => root.render(React.createElement(Host)));
     const trigger = document.querySelector('.file-edit-mode-trigger');
     await act(async () => trigger.click());
-    await act(async () => document.querySelectorAll('[role="radio"]')[1].click());
+    await act(async () => document.querySelectorAll('[role="radio"]')[0].click());
     assert.equal(trigger.disabled, true);
     assert.equal(trigger.getAttribute('aria-busy'), 'true');
     assert.ok(trigger.querySelector('.lucide-loader-circle.animate-spin'));

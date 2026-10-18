@@ -96,8 +96,10 @@ async def init_db():
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             );
         """)
-        from db.project_changes import DDL
+        from db.project_changes import DDL, SEED_GLOBAL_PREFERENCES, ensure_auto_thinking_mode
         await conn.execute(DDL)
+        await ensure_auto_thinking_mode(conn)
+        await conn.execute(SEED_GLOBAL_PREFERENCES)
         # ----- 消息表 -----
         # id:              自增主键
         # session_id:      所属会话（外键，级联删除）

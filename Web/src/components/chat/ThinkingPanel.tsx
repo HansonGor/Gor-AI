@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Brain, BookOpenCheck, ChevronDown, History, LoaderCircle } from 'lucide-react';
-import type { ThinkingTrace, ThinkingRound } from '../../utils/thinking';
+import type { ThinkingTrace, ThinkingRound, ResolvedThinkingMode } from '../../utils/thinking';
 import { getThinkingIcon } from '../../utils/thinkingIcons';
 import './ThinkingPanel.less';
 
@@ -42,6 +42,12 @@ function Round({ round, latest = false, resetKey }: { round: ThinkingRound; late
   </div>;
 }
 
+/** 酌思本轮实际采用的深浅，例如"酌思 · 本轮随思（联网新闻）"。 */
+export function describeThinkingMode(mode: ResolvedThinkingMode): string {
+  const reason = mode.reason ? `（${mode.reason}）` : '';
+  return mode.escalated ? `酌思 · 由随思转为深思${reason}` : `酌思 · 本轮${mode.mode === 'deep' ? '深思' : '随思'}${reason}`;
+}
+
 export default function ThinkingPanel({ trace }: { trace: ThinkingTrace }) {
   const latestId = trace.rounds[trace.rounds.length - 1]?.id;
   const [disclosure, setDisclosure] = useState({ key: '', open: false });
@@ -53,6 +59,7 @@ export default function ThinkingPanel({ trace }: { trace: ThinkingTrace }) {
   const title = trace.status === 'completed' ? '思考已完成' : trace.status === 'failed' ? '思考未完成' : trace.status === 'cancelled' ? '思考已取消' : '思考已中断';
   const StatusIcon = trace.status === 'completed' ? BookOpenCheck : Brain;
   return <section className="thinking-panel" aria-label="思考记录">
+    {trace.thinkingMode && <p className="thinking-mode-note">{describeThinkingMode(trace.thinkingMode)}</p>}
     <Fold open={running} className="thinking-running">
       <Fold open={trace.rounds.length > 1} persistent className="thinking-previous-fold"><div className="thinking-card thinking-previous">
         <button type="button" className="thinking-heading" aria-expanded={running && open} onClick={toggle}>

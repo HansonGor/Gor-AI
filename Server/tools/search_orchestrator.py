@@ -716,14 +716,22 @@ _PROVIDER_PLAN: dict[str, list[str]] = {
     "technical_docs": ["tavily", "bocha", "brave", "serper", "doubao"],
     "official_fact": ["tavily", "bocha", "brave", "serper", "doubao"],
     "user_experience": ["tavily", "bocha", "brave", "serper", "doubao"],
-    "news": ["tavily", "bocha", "brave", "serper", "doubao"],
+    "news": ["tavily", "exa", "bocha", "brave", "serper", "doubao"],
     "deep_research": ["exa", "tavily", "bocha", "brave", "serper", "doubao"],
     "visual_inspiration": ["tavily", "bocha", "brave", "serper", "doubao"],
 }
 
 
+# Exa search type per intent; unlisted intents keep the server default "auto".
+_EXA_SEARCH_TYPE: dict[str, str] = {"news": "fast"}
+
+
 def _provider_configured(name: str) -> bool:
     from config import config
+    # Disabled providers keep their keys but are treated as unconfigured, so
+    # they are neither called nor reported as attempted.
+    if name in config.Search.DISABLED_PROVIDERS:
+        return False
     return {
         "doubao": bool(config.Search.DOUBAO_SEARCH_API_KEY),
         "tavily": bool(config.Search.TAVILY_API_KEY),
@@ -738,7 +746,8 @@ def _provider_configured(name: str) -> bool:
 # ---------------------------------------------------------------------------
 # Provider 调用封装（异常 → 返回 (空列表, 错误信息)，由上层继续 fallback）
 # ---------------------------------------------------------------------------
-def _call_provider(name: str, query: str, max_results: int, sites: list[str] | None = None) -> tuple[list[dict], str | None]:
+def _call_provider(name: str, query: str, max_results: int, sites: list[str] | None = None,
+                   exa_type: str | None = None) -> tuple[list[dict], str | None]:
     """统一 Provider 调用：任何异常都转成 (空列表, error)，由上层继续 fallback。
 
     Returns:
@@ -757,7 +766,8 @@ def _call_provider(name: str, query: str, max_results: int, sites: list[str] | N
         if name == "brave":
             return _search_brave(query, max_results=max_results, sites=sites), None
         if name == "exa":
-            return _search_exa(query, max_results=max_results, sites=sites), None
+            return _search_exa(query, max_results=max_results, sites=sites,
+                               search_type=exa_type or "auto"), None
         if name == "github":
             return _search_github_code(query, max_results=max_results), None
     except Exception as exc:  # noqa: BLE001 - 任何异常都降级
@@ -921,11 +931,13 @@ def _explicit_sites(query: str) -> list[str]:
 
 
 def _run_provider_batch(plan: list[str], query: str, sites: list[str] | None,
-                        max_per_provider: int) -> tuple[dict[str, list[dict]], list[dict]]:
+                        max_per_provider: int, *, exa_type: str | None = None,
+                        ) -> tuple[dict[str, list[dict]], list[dict]]:
     configured = [provider for provider in plan if _provider_configured(provider)]
     futures = {
         _PROVIDER_POOL.submit(_call_provider, provider, query,
-                              min(max_per_provider, 5 if provider != "github" else 6), sites): provider
+                              min(max_per_provider, 5 if provider != "github" else 6), sites,
+                              **({"exa_type": exa_type} if provider == "exa" and exa_type else {})): provider
         for provider in configured
     }
     done, pending = wait(futures, timeout=PROVIDER_TIMEOUT_SECONDS)
@@ -1157,6 +1169,10 @@ class SearchOrchestrator:
             strict_domains: bool = False,
             subject_query: str = "", provider_plan: list[str] | None = None) -> dict:
         intent = intent_override or classify_intent(query)
+        # Exa's search type is per intent: news trades a little synthesis headroom
+        # for latency, since it runs beside other providers and is often slowest.
+        exa_type = _EXA_SEARCH_TYPE.get(intent)
+        run_batch = lambda *args: _run_provider_batch(*args, exa_type=exa_type)
         explicit_sites = list(dict.fromkeys([*_explicit_sites(subject_query), *_explicit_sites(query)]))
         provider_query = re.sub(r"(?:^|\s)site:[a-z0-9.-]+", " ", query, flags=re.I).strip()
         subject = subject_query or query
@@ -1206,7 +1222,7 @@ class SearchOrchestrator:
         # broaden. Intent preferences are a first-pass lane, then the query is
         # widened only when that lane returns too few distinct pages.
         first_pass_sites = explicit_sites or authority_domains or domains or None
-        preferred_map, preferred_trace = _run_provider_batch(
+        preferred_map, preferred_trace = run_batch(
             plan, provider_query, first_pass_sites, max(5, min_preferred)
         )
         trace.extend(preferred_trace)
@@ -1236,7 +1252,7 @@ class SearchOrchestrator:
             # independent publishers when the official pass found none.
             should_supplement = not current_query or not has_independent_news_results
             if supporting_domains and should_supplement:
-                supporting, supporting_trace = _run_provider_batch(plan, provider_query, supporting_domains, 3)
+                supporting, supporting_trace = run_batch(plan, provider_query, supporting_domains, 3)
                 trace.extend(supporting_trace)
                 providers_used.extend((name, "supporting-domain") for name in selected_providers)
                 for name in plan:
@@ -1261,7 +1277,7 @@ class SearchOrchestrator:
             if not sparse:
                 sparse = [name for name in selected_providers if name != "github"][:2]
             if sparse:
-                broad_map, broad_trace = _run_provider_batch(sparse, provider_query, None, max(4, min_total))
+                broad_map, broad_trace = run_batch(sparse, provider_query, None, max(4, min_total))
                 trace.extend(broad_trace)
                 providers_used.extend((name, "general") for name in sparse)
                 fallback_used = True
@@ -1277,7 +1293,7 @@ class SearchOrchestrator:
                     infer_search_language(subject), "release"
                 )
                 exact_version_query = f"{product} {version} {release_word}"
-                exact_official, exact_trace = _run_provider_batch(
+                exact_official, exact_trace = run_batch(
                     plan, exact_version_query, authority_domains, 3
                 )
                 trace.extend(exact_trace)
@@ -1298,7 +1314,7 @@ class SearchOrchestrator:
             ]
             for missing_region in missing_regions:
                 regional_domains = news_preferred_domains(query, [missing_region])
-                supplemental, supplemental_trace = _run_provider_batch(
+                supplemental, supplemental_trace = run_batch(
                     plan, provider_query, regional_domains, max(5, min_preferred)
                 )
                 trace.extend(supplemental_trace)

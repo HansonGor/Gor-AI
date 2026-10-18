@@ -1,6 +1,7 @@
-"""Session preferences are shared by clients and must not be HTTP-cached."""
+"""Global edit preference is shared by sessions and hosts and must not be HTTP-cached."""
 from unittest.mock import AsyncMock, patch
 import asyncio
+from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI
@@ -12,13 +13,13 @@ def test_hosts_read_latest_saved_session_preference():
 
 
 async def hosts_read_latest_saved_session_preference():
-    saved = {}
+    saved = {"value": "auto"}
 
     async def read(session_id):
-        return saved.get(session_id, "auto")
+        return saved["value"]
 
     async def write(session_id, mode):
-        saved[session_id] = mode
+        saved["value"] = mode
 
     app = FastAPI()
     app.include_router(router, prefix="/api/chat")
@@ -33,6 +34,7 @@ async def hosts_read_latest_saved_session_preference():
             result = await plugin.get(path)
             assert result.json() == {"editMode": "review"}
             assert result.headers["cache-control"] == "no-store"
+            assert (await web.get("/api/chat/session/another-session/edit-mode")).json() == {"editMode": "review"}
             await plugin.put(path, json={"editMode": "auto"})
             assert (await web.get(path)).json() == {"editMode": "auto"}
             assert (await web.get("/api/chat/session/other/edit-mode")).json() == {"editMode": "auto"}
@@ -52,3 +54,34 @@ async def invalid_mode_and_failed_save_do_not_return_success():
             assert (await client.put(path, json={"editMode": "invalid"})).status_code == 422
             writer.assert_not_called()
             assert (await client.put(path, json={"editMode": "review"})).status_code == 500
+
+
+def test_database_preferences_use_one_global_row_across_session_ids():
+    from db import project_changes
+
+    class Connection:
+        row = {"edit_mode": "auto", "thinking_mode": "deep"}
+
+        async def fetchval(self, query, *args):
+            assert "chat_global_preferences WHERE id=1" in query
+            assert not args
+            return self.row["edit_mode" if "edit_mode" in query else "thinking_mode"]
+
+        async def execute(self, query, *args):
+            assert "chat_global_preferences(id," in query
+            self.row["edit_mode" if "edit_mode" in query else "thinking_mode"] = args[-1]
+
+    connection = Connection()
+
+    @asynccontextmanager
+    async def connect():
+        yield connection
+
+    async def exercise():
+        with patch.object(project_changes.change_sets, "connect", connect):
+            await project_changes.set_edit_mode("session-a", "review")
+            await project_changes.set_thinking_mode("session-a", "light")
+            assert await project_changes.get_edit_mode("session-b") == "review"
+            assert await project_changes.get_thinking_mode("session-c") == "light"
+
+    asyncio.run(exercise())

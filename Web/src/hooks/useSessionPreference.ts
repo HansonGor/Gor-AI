@@ -26,7 +26,8 @@ async function request<T extends string>(sessionId: string, options: SessionPref
 }
 
 /**
- * 服务端保存的会话级偏好（Web 与 VS Code 共用，不做本地缓存）。
+ * 通过兼容的会话作用域 API 读取服务端偏好（Web 与 VS Code 共用，不做本地缓存）。
+ * 落笔/思考模式由服务端全局持久化；模型选择仅在当前页面运行期间有效。
  * 显示值只在服务端确认后变化；保存与首次读取串行；切换会话后迟到的结果不会改写当前会话。
  * freeze() 在发送时调用，返回该时刻的偏好 Promise；失败时如何处理由调用方决定。
  */

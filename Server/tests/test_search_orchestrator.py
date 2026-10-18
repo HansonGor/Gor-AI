@@ -13,7 +13,7 @@ class SearchOrchestratorTest(unittest.TestCase):
         self.assertEqual(classify_intent("广州旅游攻略推荐"), "user_experience")
 
     def test_web_and_independent_github_use_separate_provider_plans(self):
-        def provider(name, query, max_results, sites=None):
+        def provider(name, query, max_results, sites=None, **_kwargs):
             if name == "github":
                 return ([{"title": "repo:file", "url": "https://github.com/a/b/blob/main/x.ts",
                           "content": "path: x.ts", "source": "github"}], None)
@@ -37,7 +37,7 @@ class SearchOrchestratorTest(unittest.TestCase):
         self.assertIn("sourceId", payload["results"][0])
 
     def test_original_github_code_intent_survives_a_shortened_search_query(self):
-        def provider(name, query, max_results, sites=None):
+        def provider(name, query, max_results, sites=None, **_kwargs):
             return ([{
                 "title": f"{name} result",
                 "url": "https://github.com/example/hanui/blob/main/src/index.ts" if name == "github"
@@ -60,7 +60,7 @@ class SearchOrchestratorTest(unittest.TestCase):
         self.assertNotIn("github", payload["attempted_providers"])
 
     def test_github_results_stay_first_when_fusion_prefers_general_pages(self):
-        def provider(name, query, max_results, sites=None):
+        def provider(name, query, max_results, sites=None, **_kwargs):
             return ([{
                 "title": name,
                 "url": "https://github.com/example/source/blob/main/index.ts" if name == "github"
@@ -78,7 +78,7 @@ class SearchOrchestratorTest(unittest.TestCase):
         self.assertEqual(payload["results"][0]["providers"], ["github"])
 
     def test_explicit_site_filter_is_hard_and_result_urls_are_checked(self):
-        def provider(name, query, max_results, sites=None):
+        def provider(name, query, max_results, sites=None, **_kwargs):
             return ([
                 {"title": "allowed", "url": "https://docs.acme.dev/a", "content": "yes", "source": name},
                 {"title": "spoof", "url": "https://notexample.com/a", "content": "no", "source": name},
@@ -99,13 +99,70 @@ class SearchOrchestratorTest(unittest.TestCase):
 
     def test_provider_plan_places_bocha_after_tavily(self):
         web = ["tavily", "bocha", "brave", "serper", "doubao"]
-        for intent in ("user_experience", "official_fact", "technical_docs", "news", "visual_inspiration", "code_example"):
+        for intent in ("user_experience", "official_fact", "technical_docs", "visual_inspiration", "code_example"):
             with self.subTest(intent=intent):
                 self.assertEqual(_PROVIDER_PLAN[intent], web)
+        # News also queries Exa so a free-tier key adds an overseas source.
+        self.assertEqual(_PROVIDER_PLAN["news"], ["tavily", "exa", "bocha", "brave", "serper", "doubao"])
         self.assertEqual(
             _PROVIDER_PLAN["deep_research"],
             ["exa", "tavily", "bocha", "brave", "serper", "doubao"],
         )
+
+    def test_disabled_providers_are_skipped_even_with_keys(self):
+        from config import config
+        from tools.search_orchestrator import _provider_configured
+
+        def provider(name, query, max_results, sites=None, **_kwargs):
+            return ([{"title": name, "url": f"https://{name}.example/news",
+                      "content": f"from {name}", "source": name}], None)
+
+        with (patch.object(config.Search, "DOUBAO_SEARCH_API_KEY", "k"),
+              patch.object(config.Search, "BOCHA_API_KEY", "k"),
+              patch.object(config.Search, "TAVILY_API_KEY", "k"),
+              patch.object(config.Search, "EXA_API_KEY", "k"),
+              patch.object(config.Search, "SERPER_API_KEY", ""),
+              patch.object(config.Search, "BRAVE_API_KEY", ""),
+              patch.object(config.Search, "DISABLED_PROVIDERS", frozenset({"doubao", "bocha"})),
+              patch("tools.search_orchestrator._call_provider", side_effect=provider) as call):
+            self.assertFalse(_provider_configured("doubao"))
+            self.assertFalse(_provider_configured("bocha"))
+            self.assertTrue(_provider_configured("tavily"))
+            payload = SearchOrchestrator().run("美国最新新闻", original_query="美国最新新闻")
+
+        called = {args.args[0] for args in call.call_args_list}
+        self.assertEqual(called, {"tavily", "exa"})
+        self.assertEqual(set(payload["attempted_providers"]), {"tavily", "exa"})
+
+    def test_news_uses_fast_exa_and_other_intents_keep_default(self):
+        def provider(name, query, max_results, sites=None, **_kwargs):
+            return ([{"title": name, "url": f"https://{name}.example/page",
+                      "content": f"from {name}", "source": name}], None)
+
+        with (patch("tools.search_orchestrator._provider_configured", return_value=True),
+              patch("tools.search_orchestrator._call_provider", side_effect=provider) as call):
+            SearchOrchestrator().run("美国最新新闻", original_query="美国最新新闻")
+            news_calls = list(call.call_args_list)
+            call.reset_mock()
+            SearchOrchestrator().run("Transformer 论文 深度调研", intent_override="deep_research")
+            research_calls = list(call.call_args_list)
+
+        news_exa = [c for c in news_calls if c.args[0] == "exa"]
+        self.assertTrue(news_exa)
+        self.assertTrue(all(c.kwargs.get("exa_type") == "fast" for c in news_exa))
+        self.assertTrue(all("exa_type" not in c.kwargs for c in news_calls if c.args[0] != "exa"))
+        research_exa = [c for c in research_calls if c.args[0] == "exa"]
+        self.assertTrue(research_exa)
+        self.assertTrue(all("exa_type" not in c.kwargs for c in research_exa))
+
+    def test_call_provider_forwards_exa_type_with_auto_default(self):
+        from tools.search_orchestrator import _call_provider
+
+        with patch("tools.search_orchestrator._search_exa", return_value=[]) as exa:
+            _call_provider("exa", "q", 5, None, exa_type="fast")
+            self.assertEqual(exa.call_args.kwargs["search_type"], "fast")
+            _call_provider("exa", "q", 5)
+            self.assertEqual(exa.call_args.kwargs["search_type"], "auto")
 
     def test_duplicate_tracking_urls_merge_provider_attribution(self):
         first = {"url": "https://www.example.com/page?utm_source=one", "title": "Page",
@@ -129,7 +186,7 @@ class SearchOrchestratorTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIn(domain, official_domains_for(name))
                 calls = []
-                def provider(provider_name, query, max_results, sites=None):
+                def provider(provider_name, query, max_results, sites=None, **_kwargs):
                     calls.append(sites)
                     host = sites[0] if sites else "secondary.example"
                     return ([{"title": "actual page", "url": f"https://{host}/page", "content": "bounded"}], None)
@@ -141,7 +198,7 @@ class SearchOrchestratorTest(unittest.TestCase):
                 self.assertEqual(payload["official_domains"][0], domain)
 
     def test_explicit_site_overrides_product_preference_even_when_query_was_shortened(self):
-        def provider(name, query, max_results, sites=None):
+        def provider(name, query, max_results, sites=None, **_kwargs):
             self.assertEqual(sites, ["example.com"])
             return ([{"title": "actual", "url": "https://example.com/a", "content": "text"}], None)
         with (patch("tools.search_orchestrator._provider_configured", side_effect=lambda p: p == "tavily"),
@@ -170,7 +227,7 @@ class SearchOrchestratorTest(unittest.TestCase):
         old_date = (datetime.now(_SHANGHAI_TZ).date() - timedelta(days=4)).isoformat()
         today = datetime.now(_SHANGHAI_TZ).date().isoformat()
 
-        def provider(name, query, max_results, sites=None):
+        def provider(name, query, max_results, sites=None, **_kwargs):
             calls.append((query, sites))
             if sites and "whitehouse.gov" in sites:
                 return ([{"title": "old official news", "url": "https://whitehouse.gov/news/old",
@@ -202,7 +259,7 @@ class SearchOrchestratorTest(unittest.TestCase):
         today = datetime.now(_SHANGHAI_TZ).date().isoformat()
         recent_official_date = (datetime.now(_SHANGHAI_TZ).date() - timedelta(days=20)).isoformat()
 
-        def provider(name, query, max_results, sites=None):
+        def provider(name, query, max_results, sites=None, **_kwargs):
             calls.append((query, sites))
             if sites and any(domain in {"python.org", "docs.python.org"} for domain in sites):
                 return ([{
@@ -248,7 +305,7 @@ class SearchOrchestratorTest(unittest.TestCase):
         today = datetime.now(_SHANGHAI_TZ).date().isoformat()
         official_date = (datetime.now(_SHANGHAI_TZ).date() - timedelta(days=18)).isoformat()
 
-        def provider(name, search_query, max_results, sites=None):
+        def provider(name, search_query, max_results, sites=None, **_kwargs):
             calls.append((search_query, sites))
             if sites and "x.ai" in sites:
                 if "4.7" in search_query:
@@ -291,7 +348,7 @@ class SearchOrchestratorTest(unittest.TestCase):
         query = "Grok最新模型是什么"
         calls = []
 
-        def provider(name, search_query, max_results, sites=None):
+        def provider(name, search_query, max_results, sites=None, **_kwargs):
             calls.append((search_query, sites))
             if sites and "x.ai" in sites:
                 if "4.7" in search_query:
@@ -339,7 +396,7 @@ class SearchOrchestratorTest(unittest.TestCase):
 
     def test_stale_official_version_result_is_supplemented_by_mainstream_sources(self):
         calls = []
-        def provider(name, query, max_results, sites=None):
+        def provider(name, query, max_results, sites=None, **_kwargs):
             calls.append(sites)
             if sites and any(domain in {"python.org", "docs.python.org"} for domain in sites):
                 item = {"title": "old official release", "url": "https://python.org/old",
@@ -362,7 +419,7 @@ class SearchOrchestratorTest(unittest.TestCase):
         self.assertEqual(payload["search_regions"], [])
 
     def test_global_news_still_supplements_a_missing_region(self):
-        def provider(name, query, max_results, sites=None):
+        def provider(name, query, max_results, sites=None, **_kwargs):
             host = "people.com.cn" if sites and "reuters.com" not in sites else "reuters.com"
             return ([{"title": host, "url": f"https://{host}/news", "content": "actual"}], None)
         with (patch("tools.search_orchestrator._provider_configured", side_effect=lambda p: p == "tavily"),
