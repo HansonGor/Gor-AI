@@ -86,6 +86,37 @@ class ProjectAPI:
     ) -> dict[str, Any]:
         return await self._provider(project_ref).delete_directory(project_ref, path, recursive)
 
+    async def git_status(self, project_ref: ProjectRef, include_diff: bool = False) -> dict[str, Any]:
+        return await self._provider(project_ref).git_status(project_ref, include_diff)
+
+    async def git_commit(
+        self, project_ref: ProjectRef, message: str, paths: list[str] | None = None, push: bool = True,
+    ) -> dict[str, Any]:
+        return await self._provider(project_ref).git_commit(project_ref, message, paths, push)
+
+    async def git_push(self, project_ref: ProjectRef, remote: str | None = None) -> dict[str, Any]:
+        return await self._provider(project_ref).git_push(project_ref, remote)
+
+    async def delete_project(self, project_ref: ProjectRef, path: str) -> dict[str, Any]:
+        return await self._provider(project_ref).delete_project(project_ref, path)
+
+    async def external_read_file(
+        self, project_ref: ProjectRef, path: str, start_line: int | None = None, end_line: int | None = None,
+    ) -> dict[str, Any]:
+        return await self._provider(project_ref).external_read_file(project_ref, path, start_line, end_line)
+
+    async def external_list_directory(self, project_ref: ProjectRef, path: str) -> dict[str, Any]:
+        return await self._provider(project_ref).external_list_directory(project_ref, path)
+
+    async def toolchain_list(self, project_ref: ProjectRef) -> dict[str, Any]:
+        return await self._provider(project_ref).toolchain_list(project_ref)
+
+    async def toolchain_run(
+        self, project_ref: ProjectRef, toolchain: str, action: str,
+        params: dict[str, Any] | None = None, cwd: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._provider(project_ref).toolchain_run(project_ref, toolchain, action, params, cwd)
+
     async def get_version(self, project_ref: ProjectRef) -> int | str:
         return await self._provider(project_ref).get_version(project_ref)
 

@@ -8,6 +8,8 @@ import type { PreviewProject } from '../preview/core/types.ts';
 
 interface SendChatMessageParams {
   editMode?: 'auto' | 'review';
+  thinkingMode?: 'auto' | 'light' | 'deep';
+  modelId?: string;
   sessionId: string;
   message: string;
   messages?: Array<{ role: string; content: string; images?: string[]; attachments?: UploadedAttachment[] }>;
@@ -175,6 +177,8 @@ export async function sendChatMessage(
   let assistantMessageId: string | undefined;
   let newPreviewProject: boolean | undefined;
   let editMode: 'auto' | 'review' | undefined;
+  let thinkingMode: 'auto' | 'light' | 'deep' | undefined;
+  let modelId: string | undefined;
   if (Array.isArray(params)) {
     messages = params;
   } else {
@@ -193,6 +197,8 @@ export async function sendChatMessage(
     assistantMessageId = params.assistantMessageId;
     newPreviewProject = params.newPreviewProject;
     editMode = params.editMode;
+    thinkingMode = params.thinkingMode;
+    modelId = params.modelId;
   }
 
   try {
@@ -207,7 +213,7 @@ export async function sendChatMessage(
       },
       body: JSON.stringify({
         sessionId, message, messages, attachments, analysisContext, analysisContextMode,
-        assistantMessageId, editMode,
+        assistantMessageId, editMode, thinkingMode, ...(modelId ? { modelId } : {}),
         ...(!vscodeMode ? { previewProjectId, previewServerRevision, previewContentRevision,
           previewProjectBootstrap, previewProjectOrigin, previewProjectUploadName, newPreviewProject } : {}),
         ...projectClientContext(clientMode, vscodeWorkspaceId),
@@ -232,6 +238,10 @@ export async function sendChatMessage(
         case 'thinking_title':
         case 'thinking_summary_delta':
           if (typeof event.roundId === 'string') callbacks.onThinking?.(event as ThinkingEvent);
+          break;
+        case 'thinking_mode':
+          // 酌思本轮实际采用的深浅；不属于某一轮思考，不带 roundId
+          callbacks.onThinking?.(event as ThinkingEvent);
           break;
         case 'token':
           onToken?.(event.content || '');

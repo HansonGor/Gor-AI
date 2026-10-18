@@ -1,0 +1,193 @@
+任务：在本地 Windows 电脑上实现 Gor 沙箱执行服务的 P0 版本（Runner）。
+Runner 接收一份项目快照，在一次性、无网络、资源受限的 Docker 容器中执行白名单内的 git 只读命令，并返回结果。P0 只做 git 的只读命令，不接入 Gor 服务和 VS Code 插件。
+
+## 环境
+- 操作系统：Windows 10/11，项目根目录 D:\Gor
+- Docker：Docker Desktop，WSL2 后端，已安装并可用
+- Python：3.11 或以上，在 D:\Gor\Runner 下创建独立虚拟环境（.venv），不要使用 Server 的虚拟环境
+- 命令行：PowerShell。文档中的命令都按 PowerShell 写法
+
+## 硬性边界
+1. 只新增 D:\Gor\Runner\ 目录。不修改 D:\Gor 下 Server/、Web/、vscode-extension/ 中的任何文件。
+2. Runner 只监听 127.0.0.1:4000。
+3. 不挂载 Docker socket 到任何容器，不把宿主机目录挂载进容器。快照只能通过 put_archive 放入容器。
+4. 所有外部命令一律用 argv 数组传递，禁止 shell=True，禁止字符串拼接执行。
+5. 不打印、不记录密钥或环境变量内容。
+6. 代码注释和用户可见文本用中文。文件读写统一 UTF-8，路径统一用 pathlib。
+
+## 开始前先阅读（只读）
+- D:\Gor\AGENTS.md：遵守其中的实现与交付约定。
+- D:\Gor\Server\requirements.txt：了解项目的依赖风格，但 Runner 的依赖独立维护。
+
+## 目录结构
+```
+D:\Gor\Runner\
+  app.py                    FastAPI 应用与路由
+  config.py                 配置（端口、超时、输出上限、快照上限，可用环境变量覆盖）
+  policy.py                 白名单与参数校验
+  snapshot.py               快照 tar.gz 的安全检查与过滤
+  sandbox.py                Docker 容器的创建、放入快照、执行、回收
+  sweeper.py                清理残留容器（按 label 识别）
+  images/git/Dockerfile
+  requirements.txt
+  README.md
+  tests/
+    test_policy.py
+    test_snapshot.py
+    test_output_limits.py
+    test_sandbox_integration.py
+```
+
+## requirements.txt（锁定到次版本）
+```
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.30,<0.35
+python-multipart>=0.0.9,<0.1
+docker>=7.1,<8
+pytest>=8,<9
+httpx>=0.27,<0.29
+```
+
+## 镜像 images/git/Dockerfile（原样使用）
+```
+FROM alpine:3.20
+RUN apk add --no-cache git \
+ && addgroup -g 1000 runner \
+ && adduser -D -u 1000 -G runner -h /tmp runner
+USER 1000:1000
+WORKDIR /work
+ENTRYPOINT []
+```
+构建命令：`docker build -t gor-runner-git:latest D:\Gor\Runner\images\git`
+
+## 接口（P0 只做以下三个）
+1. `GET /health`
+   返回：Runner 版本、Docker 是否可达、本地是否存在 `gor-runner-git:latest` 镜像。
+2. `POST /v1/runs`（multipart/form-data）
+   - `snapshot`：tar.gz 文件，压缩后不超过 50 MB。
+   - `language`：P0 只允许 `git`，其他值返回 400。
+   - `argv`：JSON 数组字符串，例如 `["git","status","--short"]`。
+   - `timeout_seconds`：整数，默认 30，范围 1–120。
+   成功返回 200，JSON 字段：`run_id`、`exit_code`、`stdout`、`stderr`、`stdout_truncated`、`stderr_truncated`、`timed_out`、`duration_ms`、`skipped_snapshot_entries`（被过滤掉的路径列表，最多返回 50 条）。
+3. `GET /v1/runs/{run_id}`：可选。若实现，只返回本进程内已完成的结果摘要，不保存快照内容。
+
+错误响应统一为 `{"error": {"code": "...", "message": "..."}}`，错误码至少包括：`COMMAND_NOT_ALLOWED`（403）、`BAD_REQUEST`（400）、`SNAPSHOT_REJECTED`（400）、`SNAPSHOT_TOO_LARGE`（413）、`DOCKER_UNAVAILABLE`（503）、`IMAGE_MISSING`（503）。
+
+## 白名单（policy.py）
+
+允许的 git 子命令及参数规则：
+- `status`：允许 `--short`、`-s`、`--branch`、`-b`、`--porcelain`、`--ignored`。
+- `log`：允许 `--oneline`、`-n<数字>`、`--max-count=<数字>`、`--stat`、`--graph`、`--format=<格式串>`、`--all`。
+- `diff`：允许 `--stat`、`--name-only`、`--name-status`、`--cached`、`--staged`、`-U<数字>`，以及在 `--` 之后的路径。自动追加 `--no-ext-diff --no-textconv`。
+- `show`：允许与 log 相同的格式类参数，以及 `--stat`、`--name-only`。
+- `branch`：只允许 `-a`、`-r`、`-v`、`--list`、`--show-current`，不允许任何会创建、删除、重命名分支的参数或位置参数。
+- `rev-parse`：只允许 `--show-toplevel`、`--abbrev-ref`、`HEAD`、`--is-inside-work-tree`。
+- `ls-files`：允许 `--cached`、`--others`、`--modified`、`--stage`。
+- `blame`：只允许 `-L<范围>`、`--porcelain`，且必须带文件路径。
+
+全局规则（对所有子命令生效）：
+- argv[0] 必须是 `git`。argv[1] 必须是上面列出的子命令。
+- 拒绝任何在子命令之前出现的全局选项：`-c`、`-C`、`--git-dir`、`--work-tree`、`--exec-path`、`--namespace`。
+- 拒绝任何包含换行符或 NUL 字符的参数。
+- 拒绝以下参数（无论出现在哪里）：`--output`、`-o`、`--ext-diff`、`--textconv`、`--exec`、`--upload-pack`、`--receive-pack`、`--no-index`、`--open-files-in-pager`。
+- 路径参数不得是绝对路径，不得包含 `..`。
+- 其他未列出的参数一律拒绝，不做"尽量放行"。
+- 违规返回 403，错误码 `COMMAND_NOT_ALLOWED`，并在 message 中说明具体违反了哪条规则。
+
+## 快照检查（snapshot.py）
+- 只接受 `.tar.gz`。
+- 解压前逐个检查成员：
+  - 拒绝绝对路径、包含 `..` 的路径、符号链接、硬链接、设备文件。
+  - 解压后总大小超过 200 MB 时拒绝。
+  - 成员数量超过 20000 时拒绝。
+- 允许 `.git/` 目录，但以下路径直接丢弃并记录到 `skipped_snapshot_entries`：
+  - `node_modules/`、`.venv/`、`venv/`、`dist/`、`build/`、`coverage/`、`__pycache__/`
+  - `.env`、`.env.*`
+  - 文件名匹配 `*.pem`、`*.key`、`id_rsa*`、`*secret*`、`*credential*` 的文件
+- 过滤后重新打包为临时 tar（不再包含被丢弃的成员），再交给容器。
+
+## 容器执行（sandbox.py，使用 docker Python SDK）
+
+创建容器时必须同时设置以下参数，缺一不可：
+- 镜像：`gor-runner-git:latest`
+- `network_mode="none"`
+- `read_only=True`
+- `tmpfs={"/work": "rw,size=512m,mode=1777", "/tmp": "rw,size=64m"}`
+- `user="1000:1000"`
+- `mem_limit="512m"`，`nano_cpus=1000000000`，`pids_limit=128`
+- `cap_drop=["ALL"]`，`security_opt=["no-new-privileges:true"]`
+- `working_dir="/work"`
+- `environment={"HOME":"/tmp","GIT_CONFIG_NOSYSTEM":"1","GIT_CONFIG_GLOBAL":"/dev/null","GIT_TERMINAL_PROMPT":"0","LANG":"C.UTF-8"}`
+- `labels={"gor-runner":"1"}`
+- `command` 为 policy 校验后的 argv
+
+执行流程：
+1. `containers.create(...)`，此时不启动。
+2. `container.put_archive("/work", <过滤后的 tar 字节>)`。
+3. `container.start()`，然后 `container.wait(timeout=timeout_seconds)`。超时则 `container.kill()`，返回 `timed_out=true`。
+4. 读取 stdout、stderr（`container.logs(stdout=True, stderr=False)` 等），每个流按 64 KB 截断并记录是否截断。
+5. 无论成功、失败或超时，都在 finally 中执行 `container.remove(force=True)`。
+6. 记录耗时（毫秒）。
+
+Docker 不可用时，`/health` 与 `/v1/runs` 都应返回明确的 `DOCKER_UNAVAILABLE`，而不是抛出未处理的异常。
+
+## 残留容器清理（sweeper.py）
+- 服务启动时和之后每 60 秒，列出带 `gor-runner=1` 标签的容器，删除创建时间超过 10 分钟的容器。
+- 清理失败只记录日志，不影响服务。
+
+## 测试
+
+1. `tests/test_policy.py`：
+   - 每个允许的子命令与参数组合通过。
+   - 每个禁止的子命令（commit、add、checkout、reset、clean、push、pull、fetch、clone、remote、config、stash、rebase、merge）返回 403。
+   - 全局选项（`-c`、`-C`、`--git-dir`）被拒绝。
+   - `--output`、`--ext-diff`、`--no-index`、换行符参数被拒绝。
+   - `branch` 带位置参数被拒绝。
+2. `tests/test_snapshot.py`：
+   - 绝对路径、`..`、符号链接、硬链接、超大快照、超文件数被拒绝。
+   - `.env`、`node_modules/`、`*.pem` 被丢弃并出现在 skipped 列表中。
+   - 过滤后的 tar 中不包含被丢弃的成员。
+3. `tests/test_output_limits.py`：超过 64 KB 的输出被截断，且 `*_truncated` 为 true。
+4. `tests/test_sandbox_integration.py`（需要 Docker 且镜像已构建，否则 skip）：
+   - 在一个临时测试仓库中执行 `git status --short`、`git log --oneline -3`、`git diff`，结果与宿主机直接执行的结果一致。
+   - 网络隔离：使用测试专用的策略（仅在测试中注入，不进入正式策略文件）允许 `sh -c "..."`，执行 `wget -T 5 -O- http://example.com`，应失败。
+   - 只读根文件系统：执行 `sh -c "echo x > /etc/x"`，应失败。
+   - 超时：执行 `sleep 999`，超时参数为 3 秒，应在约 3–6 秒内返回 `timed_out=true`，且容器已删除。
+   - 容器清理：测试结束后 `docker ps -a --filter label=gor-runner=1` 应为空。
+
+运行命令（PowerShell）：
+```
+cd D:\Gor\Runner
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python -X utf8 -m pytest tests -q
+```
+
+## 本地验收（请贴出真实输出，不要只写"通过"）
+1. `docker build -t gor-runner-git:latest D:\Gor\Runner\images\git`，贴出末尾几行。
+2. 运行上面的 pytest 命令，贴出结果，包括 passed、skipped 的数量。
+3. 启动服务：
+   ```
+   python -X utf8 -m uvicorn app:app --host 127.0.0.1 --port 4000
+   ```
+4. 准备一个测试仓库，然后用 PowerShell 请求：
+   ```
+   Invoke-RestMethod http://127.0.0.1:4000/health
+   curl.exe -F "snapshot=@test-repo.tar.gz" -F "language=git" -F "argv=[\"git\",\"status\",\"--short\"]" http://127.0.0.1:4000/v1/runs
+   curl.exe -F "snapshot=@test-repo.tar.gz" -F "language=git" -F "argv=[\"git\",\"log\",\"--oneline\",\"-3\"]" http://127.0.0.1:4000/v1/runs
+   curl.exe -F "snapshot=@test-repo.tar.gz" -F "language=git" -F "argv=[\"git\",\"push\"]" http://127.0.0.1:4000/v1/runs
+   ```
+   贴出 4 次请求的返回 JSON。`git push` 必须返回 403。
+5. `docker ps -a --filter label=gor-runner=1`，应无输出。
+
+## 交付说明（遵守 AGENTS.md）
+- 列出新增文件清单。
+- 贴出上面 1–5 步的真实输出。
+- 用通俗语言说明本阶段完成了什么、没有完成什么。
+- 明确未验证的风险：
+  - Docker Desktop 在 Windows 上 put_archive 的性能与大快照表现。
+  - tmpfs 大小限制的实际行为。
+  - 容器隔离只经过上述测试，不代表已完成安全审计。
+  - 白名单是保守设计，部分合法的 git 用法会被拒绝，需要后续按实际需求放开。
+- 不要声称 P0 已接入 Gor 服务或插件。本阶段只交付独立的执行服务。

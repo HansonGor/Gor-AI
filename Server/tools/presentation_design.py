@@ -601,12 +601,12 @@ def _continued_slide(data: dict[str, Any], page_number: int) -> dict[str, Any]:
     return copy
 
 
-def paginate_overflowing_content(design: PresentationDesign) -> PresentationDesign:
+def paginate_overflowing_content(design: PresentationDesign, *, preserve_existing_pages: bool = False) -> PresentationDesign:
     """Create continuation slides before rendering rather than squeezing copy into small text."""
     expanded: list[dict[str, Any]] = []
     source_slides: list[SlideDesign] = []
     for slide in design.slides:
-        if (source_slides and re.search(r"-cont-\d+$", slide.id)
+        if (not preserve_existing_pages and source_slides and re.search(r"-cont-\d+$", slide.id)
                 and slide.id.rsplit("-cont-", 1)[0] == source_slides[-1].id
                 and slide.type == source_slides[-1].type
                 and len(source_slides[-1].supportingPoints) + len(slide.supportingPoints) <= 5
@@ -746,7 +746,7 @@ def run_visual_qa(raw_design: PresentationDesign | dict[str, Any]) -> dict[str, 
     }
 
 
-def apply_deterministic_fixes(raw_design: PresentationDesign | dict[str, Any]) -> tuple[PresentationDesign, dict[str, Any]]:
+def apply_deterministic_fixes(raw_design: PresentationDesign | dict[str, Any], *, preserve_existing_pages: bool = False) -> tuple[PresentationDesign, dict[str, Any]]:
     """Paginate content that exceeds readable regions and normalize unsafe layout variants."""
     design = compose_design(raw_design)
     data = design.model_dump(mode="json")
@@ -762,6 +762,6 @@ def apply_deterministic_fixes(raw_design: PresentationDesign | dict[str, Any]) -
                 # Multi-row cards retain comfortable width and readable notes.
                 slide["layoutVariant"] = "2-column"
     fixed = PresentationDesign.model_validate(data)
-    fixed = paginate_overflowing_content(fixed)
+    fixed = paginate_overflowing_content(fixed, preserve_existing_pages=preserve_existing_pages)
     fixed = compose_design(fixed)
     return fixed, run_visual_qa(fixed)

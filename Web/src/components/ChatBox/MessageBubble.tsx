@@ -1,6 +1,7 @@
 import { isToolStatusInThinking } from '../../utils/thinking';
+import { useShowThinking } from '../../utils/thinkingVisibility';
 ﻿// 单条消息气泡
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   Box,
   ChevronRight,
@@ -28,6 +29,8 @@ import type { MessageBubbleProps, SearchSource } from '../../types';
 import { Button } from '../ui/button';
 import ProjectChanges from '../chat/ProjectChanges';
 import ThinkingPanel from '../chat/ThinkingPanel';
+import ToolchainRunCard from '../chat/ToolchainRunCard';
+import { ToolchainRunsContext } from '../chat/toolchainRun';
 import { createProjectChangeClient } from '../../api/projectChanges';
 import { createWebProjectChangeClient } from '../../api/webProjectChanges';
 import { getChatClientMode } from '../../utils/clientMode';
@@ -196,6 +199,9 @@ export default function MessageBubble({
   }, []);
   const logoGradientId = useId().replace(/:/g, '');
   const isUser = message.role === 'user';
+  // 施行卡片只在宿主注入能力时出现（插件端）；Web 端没有 Provider，不渲染。
+  const toolchain = useContext(ToolchainRunsContext);
+  const toolchainRuns = !isUser && toolchain ? toolchain.runsFor(message) : [];
   const codeComponents = useMemo(() => markdownCodeComponents({ streaming: message.isStreaming }), [message.isStreaming]);
   const images = message.images ?? [];
   const hasImages = isUser && images.length > 0;
@@ -257,7 +263,9 @@ export default function MessageBubble({
     : '';
   const visibleUserContent = message.content === attachmentOnlyLabel ? '' : displayContent;
   const showExecutionTimeline = !isUser && Boolean(message.isStreaming && message.executionPhase);
-  const hasThinking = !isUser && Boolean(message.thinkingTrace?.rounds.length);
+  // “显示思考过程”关闭时只隐藏卡片；思考记录照常接收与保存，重新打开即可看到
+  const showThinking = useShowThinking();
+  const hasThinking = !isUser && showThinking && Boolean(message.thinkingTrace?.rounds.length);
 
   return (
     <div
@@ -322,6 +330,14 @@ export default function MessageBubble({
         )}
 
         {hasThinking && message.thinkingTrace && <ThinkingPanel trace={message.thinkingTrace} />}
+
+        {toolchain && toolchainRuns.map((run) => (
+          <ToolchainRunCard key={run.runId} run={run}
+            onShown={() => toolchain.onShown(run)} onApprove={(options) => toolchain.onApprove(run, options)}
+            onApplyAndRun={() => toolchain.onApplyAndRun(run)}
+            onSkip={() => toolchain.onSkip(run)} onStopRound={() => toolchain.onStopRound(run)}
+            onAbort={() => toolchain.onAbort(run)} onOpenUrl={() => toolchain.onOpenUrl(run)} />
+        ))}
 
         {showExecutionTimeline && !displayContent && (
           <div className="assistant-loading-indicator" role="status" aria-label="正在生成回答">
@@ -503,7 +519,7 @@ export default function MessageBubble({
           </div>
         )}
 
-        {!isUser && message.toolStatus && !isToolStatusInThinking(message) ? (
+        {!isUser && message.toolStatus && (!showThinking || !isToolStatusInThinking(message)) ? (
           <div className="tool-status">
             <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
             <span>{message.toolStatus}</span>

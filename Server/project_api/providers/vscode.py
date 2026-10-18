@@ -1,11 +1,37 @@
 """ProjectProvider backed by VS Code workspace RPC."""
 
 from typing import Any
+import asyncio
 import copy
+import uuid
 
 from project_api.provider import ProjectProvider
 from project_api.types import ProjectAPIError, ProjectRef
 from services.vscode_bridge import VSCodeBridgeClient, vscode_bridge
+
+# 提交/推送需要等待用户在 VS Code 确认框中操作，推送还包含网络耗时
+GIT_CONFIRM_TIMEOUT_SECONDS = 600.0
+GIT_READ_TIMEOUT_SECONDS = 30.0
+TOOLCHAIN_LIST_TIMEOUT_SECONDS = 30.0
+# 审阅卡片最长等待 10 分钟，命令本身最长运行 10 分钟，另留余量
+TOOLCHAIN_RUN_TIMEOUT_SECONDS = 1260.0
+TOOLCHAIN_CANCEL_TIMEOUT_SECONDS = 10.0
+# 删除、删除项目、项目外读取都要等用户在卡片中确认（最长 10 分钟），另留余量
+CONFIRM_TIMEOUT_SECONDS = 630.0
+# 取消通知是后台任务，保留引用避免被回收
+_cancel_tasks: set[asyncio.Task] = set()
+
+
+TEST_REPORT_GUIDE = (
+    "汇报前先用 read_project_file 读取这次运行的测试文件，逐条说明用例名、断言、期望值与实际值："
+    "通过的用例框架不打印实际值，按断言推出（如 assertEqual(1 + 1, 2) 通过即 1 + 1 的结果是 2）并注明由断言通过得出；"
+    "失败的以输出里的 AssertionError 为准；推不出的值不要猜。用例很多时只说明失败的和用户问到的。"
+)
+
+
+def _is_test_run(action: str, params: dict[str, Any] | None) -> bool:
+    module = (params or {}).get("module") if isinstance(params, dict) else None
+    return action == "test" or (action == "run_module" and module in {"unittest", "pytest"})
 
 
 class VSCodeProjectProvider:
@@ -36,6 +62,7 @@ class VSCodeProjectProvider:
         params: dict[str, Any],
         *,
         mutation: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> Any:
         # Prime the workspace tree once per active VS Code connection and root,
         # even when the model starts with a guessed or user-provided file path.
@@ -85,7 +112,8 @@ class VSCodeProjectProvider:
             await recorder.record(project_ref, before, before, {p: "applying" for p in before})
             params = {**params, "changeExpected": before}
         try:
-            result = await self._bridge.call(project_ref.project_id, method, params)
+            result = await self._bridge.call(project_ref.project_id, method, params,
+                                             **({"timeout_seconds": timeout_seconds} if timeout_seconds else {}))
         except ProjectAPIError as error:
             if before is not None:
                 receipt = error.details or {}
@@ -438,11 +466,13 @@ class VSCodeProjectProvider:
         expected_version: int | str | None = None,
     ) -> dict[str, Any]:
         self._validate(project_ref)
+        # 即刻落笔下删除前由扩展弹卡片确认；审阅落笔的删除先成为候选，不会走到扩展。
         result = await self._call(
             project_ref,
             "project.deleteFile",
-            {"path": path, "expectedFileVersion": expected_version, "root": project_ref.root},
+            {"path": path, "expectedFileVersion": expected_version, "root": project_ref.root, **self._mode_params()},
             mutation="delete_file",
+            timeout_seconds=CONFIRM_TIMEOUT_SECONDS,
         )
         if not isinstance(result, dict):
             raise ProjectAPIError("WORKSPACE_REQUEST_FAILED", "VS Code delete file 响应无效。")
@@ -455,12 +485,149 @@ class VSCodeProjectProvider:
         result = await self._call(
             project_ref,
             "project.deleteDirectory",
-            {"path": path, "recursive": recursive, "root": project_ref.root},
+            {"path": path, "recursive": recursive, "root": project_ref.root, **self._mode_params()},
             mutation="delete_directory",
+            timeout_seconds=CONFIRM_TIMEOUT_SECONDS,
         )
         if not isinstance(result, dict):
             raise ProjectAPIError("WORKSPACE_REQUEST_FAILED", "VS Code delete directory 响应无效。")
         return result
+
+    async def delete_project(self, project_ref: ProjectRef, path: str) -> dict[str, Any]:
+        """删除整个项目目录（递归，进回收站）。两种模式都由扩展确认；不进入审阅候选，也不记入 ChangeSet。"""
+        self._validate(project_ref)
+        await self._tree(project_ref)
+        result = await self._bridge.call(project_ref.project_id, "project.deleteDirectory",
+                                         {"path": path, "recursive": True, "root": project_ref.root, **self._mode_params()},
+                                         timeout_seconds=CONFIRM_TIMEOUT_SECONDS)
+        if not isinstance(result, dict):
+            raise ProjectAPIError("WORKSPACE_REQUEST_FAILED", "VS Code delete project 响应无效。")
+        # 整个子树都没了，缓存的目录树直接作废，下次按需重读。
+        self._bridge.invalidate_workspace_tree(project_ref.project_id, project_ref.root)
+        return result
+
+    async def external_read_file(self, project_ref: ProjectRef, path: str,
+                                 start_line: int | None = None, end_line: int | None = None) -> dict[str, Any]:
+        """项目外文件只读：扩展校验路径并在两种模式下都请用户确认。"""
+        params: dict[str, Any] = {"path": path, **self._mode_params()}
+        if start_line is not None:
+            params["startLine"] = start_line
+        if end_line is not None:
+            params["endLine"] = end_line
+        return await self._git(project_ref, "external.readFile", params, CONFIRM_TIMEOUT_SECONDS)
+
+    async def external_list_directory(self, project_ref: ProjectRef, path: str) -> dict[str, Any]:
+        return await self._git(project_ref, "external.listDirectory", {"path": path, **self._mode_params()},
+                               CONFIRM_TIMEOUT_SECONDS)
+
+    @staticmethod
+    def _mode_params() -> dict[str, Any]:
+        """发送时冻结的模式与本轮信息；扩展据此决定是否确认，并把卡片放进对应会话。未知模式按审阅处理。"""
+        from project_api.changes import current_recorder
+        recorder = current_recorder.get()
+        params: dict[str, Any] = {
+            "approvalMode": recorder.edit_mode if recorder and recorder.edit_mode in {"auto", "review"} else "review",
+        }
+        if recorder:
+            params["sessionId"] = recorder.session_id
+            params["roundId"] = recorder.round_id
+        return params
+
+    async def _git(self, project_ref: ProjectRef, method: str, params: dict[str, Any],
+                   timeout_seconds: float | None = None) -> dict[str, Any]:
+        # Git 与工具链操作针对真实仓库/磁盘状态，不经过文件树缓存、审阅暂存或 ChangeSet 记录。
+        self._validate(project_ref)
+        result = await self._bridge.call(project_ref.project_id, method, {"root": project_ref.root, **params},
+                                         **({"timeout_seconds": timeout_seconds} if timeout_seconds else {}))
+        if not isinstance(result, dict):
+            raise ProjectAPIError("WORKSPACE_REQUEST_FAILED", f"VS Code {method} 响应无效。")
+        return result
+
+    async def git_status(self, project_ref: ProjectRef, include_diff: bool = False) -> dict[str, Any]:
+        return await self._git(project_ref, "git.status", {"includeDiff": include_diff}, GIT_READ_TIMEOUT_SECONDS)
+
+    async def git_commit(self, project_ref: ProjectRef, message: str,
+                         paths: list[str] | None = None, push: bool = True) -> dict[str, Any]:
+        # 提交默认同时推送到远端分支；只有用户要求只提交本地时才传 push=False。
+        params: dict[str, Any] = {"message": message, "push": push, **self._mode_params()}
+        if paths is not None:
+            params["paths"] = paths
+        return await self._git(project_ref, "git.commit", params, GIT_CONFIRM_TIMEOUT_SECONDS)
+
+    async def git_push(self, project_ref: ProjectRef, remote: str | None = None) -> dict[str, Any]:
+        return await self._git(project_ref, "git.push", {**({"remote": remote} if remote else {}), **self._mode_params()},
+                               GIT_CONFIRM_TIMEOUT_SECONDS)
+
+    async def toolchain_list(self, project_ref: ProjectRef) -> dict[str, Any]:
+        return await self._git(project_ref, "toolchain.list", {}, TOOLCHAIN_LIST_TIMEOUT_SECONDS)
+
+    async def toolchain_run(self, project_ref: ProjectRef, toolchain: str, action: str,
+                            params: dict[str, Any] | None = None, cwd: str | None = None) -> dict[str, Any]:
+        """命令针对真实磁盘执行；是否放行、是否需要审阅由扩展决定，这里只传递发送时冻结的模式。"""
+        from project_api.changes import current_recorder
+        recorder = current_recorder.get()
+        run_id = f"run-{uuid.uuid4().hex}"
+        request: dict[str, Any] = {
+            "toolchain": toolchain, "action": action, "args": params or {}, "runId": run_id, **self._mode_params(),
+        }
+        if cwd:
+            request["cwd"] = cwd
+        pending = self._pending_review_files(recorder, project_ref)
+        if pending:
+            # 卡片据此提供「落笔并施行」
+            request["pendingReviewFiles"] = pending
+        result = await self._run_toolchain(project_ref, request, run_id)
+        if result.get("status") == "apply_requested" and recorder:
+            # 用户选择「落笔并施行」：先把本轮审阅候选写入磁盘，成功后凭令牌执行刚才确认过的命令。
+            from project_api.review import apply_round_pending
+            applied = await apply_round_pending(recorder, project_ref, self)
+            if not applied.get("success"):
+                return {**result, "success": False, "status": "failed", "code": applied.get("code", "APPLY_FAILED"),
+                        "summary": "落笔未完成，命令没有执行：" + str(applied.get("message") or "部分文件与候选基线不一致"),
+                        "applyResults": applied.get("results", [])}
+            resume = {k: v for k, v in request.items() if k != "pendingReviewFiles"}
+            resume["resumeToken"] = result.get("resumeToken")
+            resume["runId"] = f"run-{uuid.uuid4().hex}"
+            result = await self._run_toolchain(project_ref, resume, resume["runId"])
+            result["appliedReviewFiles"] = applied.get("applied", 0)
+        result.pop("resumeToken", None)
+        if _is_test_run(action, params) and isinstance(result.get("diagnostics"), dict):
+            result["reportGuide"] = TEST_REPORT_GUIDE
+        pending = self._pending_review_files(recorder, project_ref)
+        if pending:
+            # 审阅候选还没落笔，命令跑的是落笔前的磁盘内容
+            result["pendingReviewFiles"] = pending
+        return result
+
+    async def _run_toolchain(self, project_ref: ProjectRef, request: dict[str, Any], run_id: str) -> dict[str, Any]:
+        try:
+            return await self._git(project_ref, "toolchain.run", request, TOOLCHAIN_RUN_TIMEOUT_SECONDS)
+        except asyncio.CancelledError:
+            # 本轮被停止：通知扩展收回审阅卡片或结束进程，不等待结果
+            self._cancel_toolchain_run(project_ref, run_id)
+            raise
+        except ProjectAPIError as exc:
+            if exc.code == "WORKSPACE_REQUEST_TIMEOUT":
+                self._cancel_toolchain_run(project_ref, run_id)
+            raise
+
+    def _cancel_toolchain_run(self, project_ref: ProjectRef, run_id: str) -> None:
+        async def cancel() -> None:
+            try:
+                await self._bridge.call(project_ref.project_id, "toolchain.cancel", {"runId": run_id, "root": project_ref.root},
+                                        timeout_seconds=TOOLCHAIN_CANCEL_TIMEOUT_SECONDS)
+            except Exception:
+                pass
+        task = asyncio.get_running_loop().create_task(cancel())
+        _cancel_tasks.add(task)
+        task.add_done_callback(_cancel_tasks.discard)
+
+    @staticmethod
+    def _pending_review_files(recorder, project_ref: ProjectRef) -> int:
+        if not recorder or recorder.edit_mode != "review":
+            return 0
+        files = recorder.sets.get((project_ref.provider, project_ref.project_id, project_ref.root), {}).get("files", [])
+        return sum(1 for item in files if item.get("status") == "pending")
 
     async def get_version(self, project_ref: ProjectRef) -> int | str:
         """Return the connection generation, not a workspace content snapshot version."""
@@ -484,5 +651,9 @@ class VSCodeProjectProvider:
             "build": False,
             "diagnostics": False,
             "terminal": False,
-            "git": False,
+            "git": True,
+            "toolchain": True,
+            # 删除整个项目（含 package.json 或 .git 的目录）与项目外只读，均由扩展确认
+            "deleteProject": True,
+            "externalRead": True,
         }

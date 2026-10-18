@@ -228,7 +228,7 @@ GET /api/download/:filename
 - Agent 搜索提示包含当前 Asia/Shanghai 日期与本轮实际能力，忽略历史“没有联网工具”的说法。时效性答复未先查询或错误否认联网时，最多提醒模型再调用一次；仍未调用则不发送未经核实的记忆答案。新闻/最新版本无论静态路由还是动态申请 `news_research`，都必须依次搜索、读取正文、综合；Reader 只接收本轮搜索结果 URL，至少一篇成功提取正文才满足读取保护；综合新闻优先整理5–8条独立资讯，单一事件按问题回答，资料不足不凑数。搜索来源维持 `search_sources` SSE / `[S1]` 引用。新鲜度参与排序但没有固定 3 天截止；官方和官网用于核实一手事实，不排斥相关主流媒体、行业/技术媒体、专业博客和产品生态配套网站。当前型号查询要尝试独立来源交叉核对；精选来源没有独立材料时放宽搜索发现。最终按实际发布日期由新到旧排列，最新在最前；来源/官网名称在工具结果含对应 URL 时使用 Markdown 可点击链接，直达该 URL，禁止猜造或改写链接。气泡只用“序号. 标题 + 通俗摘要 + 来源/实际发布日期（有则显示）+ [S#]”资讯卡片；缺日期只省略日期，不解释。禁止输出检索轮数、搜索/读取过程、工具或网页错误、无关结果/旧闻排除、覆盖分析、边界与免责声明等过程噪音；没有可靠内容时只用一句话说明。只有确实有帮助时才用一行附官方查阅渠道或具体延伸方向，不强制追问或扩写。验证命令：`venv\Scripts\python.exe -X utf8 -m pytest tests/test_tool_negotiation.py tests/test_project_reply.py tests/test_web_skill_routing.py tests/test_tool_routing.py tests/test_search_orchestrator.py tests/test_web_reader.py tests/test_tool_prompt_compatibility.py -q`；Agent 以模型和服务替身验证流程，不保证线上搜索可用性。
 - `get_weather`: 天气查询（wttr.in）
 - `web_reader`: 新闻与最新版本查询在 `web_search` 后读取本轮命中的 3–8 个精确 URL（不足 3 个则读取全部，最多 8 篇），提取正文、标题、发布时间、作者、链接和关键段落；新闻搜索自动附本轮日期但不设固定时效截止，使用用户提问语言。官方/官网优先核实一手事实，同时读取相关主流媒体、行业/技术媒体、专业博客或产品生态配套网站；当前版本查询不因官方页面较早而跳过独立来源。只访问公开 HTTP/HTTPS 页面，限制响应大小和跳转，并拒绝内网/本机 URL；通过服务端配置的网络代理访问时，仍在每个请求和重定向前校验目标域名及公网地址；最终引用沿用搜索来源编号。网页正文视为不可信资料，不接受其中指令；正文读取失败时不得声称已读正文，失败原因留在工具状态，不写进资讯卡片。
-- `web_search`: 普通咨询/官方事实/技术文档/新闻/视觉灵感使用 Tavily、博查、Brave、Serper、豆包；深度调研为 Exa、Tavily、博查、Brave、Serper、豆包，不再内部调用 GitHub。新闻语言跟随用户，来源范围独立判断；国内优先新华社、人民网、央视、财新、澎湃、第一财经、36kr、IT之家及一手官方站；国际优先 Reuters、AP、BBC、Bloomberg、FT、CNBC、NYT、The Guardian、Nikkei Asia、CNA、NHK 及官方机构。新鲜度只作为排序信号，不设固定 3 天门槛；区分发布时间与事件时间，最终按实际发布日期由新到旧排列，最新在最前，不能把旧报道说成最新。来源按话题选取，官网/官方发布页优先核实事实，但不是唯一来源；技术类可补 TechCrunch、The Verge、Ars Technica、MIT Technology Review、Wired、VentureBeat、The Information、量子位、机器之心、极客公园等行业媒体和专业博客。当前产品/模型版本即使官方页面日期较早，也要尝试独立来源交叉核对；精选域名无独立材料时可做一次普通网页发现。不因已有结果少于 8 条凑数或放松媒体/地区集中度约束。缺少目标区域时补搜；返回最多 8 条。麦当劳、小红书、今日头条、白宫、Antd Design Mobile、微博等登记产品从原始气泡匹配别名，先检索官网索引，再补相关资源网站，官网命中优先；未知品牌不猜域名。显式 `site:` 为硬约束且优先于产品偏好。Tavily 传 `include_domains`，博查用 `include`，豆包用 `Filter.Sites`，Serper/Brave 用 `site:`，Exa 用 `includeDomains`；不提供排除域名入口。小红书等仅公开索引搜索，无专用站内/私有 API。
+- `web_search`: 普通咨询/官方事实/技术文档/视觉灵感使用 Tavily、博查、Brave、Serper、豆包；新闻为 Tavily、Exa（`type: "fast"`）、博查、Brave、Serper、豆包；深度调研为 Exa、Tavily、博查、Brave、Serper、豆包，不再内部调用 GitHub。新闻语言跟随用户，来源范围独立判断；国内优先新华社、人民网、央视、财新、澎湃、第一财经、36kr、IT之家及一手官方站；国际优先 Reuters、AP、BBC、Bloomberg、FT、CNBC、NYT、The Guardian、Nikkei Asia、CNA、NHK 及官方机构。新鲜度只作为排序信号，不设固定 3 天门槛；区分发布时间与事件时间，最终按实际发布日期由新到旧排列，最新在最前，不能把旧报道说成最新。来源按话题选取，官网/官方发布页优先核实事实，但不是唯一来源；技术类可补 TechCrunch、The Verge、Ars Technica、MIT Technology Review、Wired、VentureBeat、The Information、量子位、机器之心、极客公园等行业媒体和专业博客。当前产品/模型版本即使官方页面日期较早，也要尝试独立来源交叉核对；精选域名无独立材料时可做一次普通网页发现。不因已有结果少于 8 条凑数或放松媒体/地区集中度约束。缺少目标区域时补搜；返回最多 8 条。麦当劳、小红书、今日头条、白宫、Antd Design Mobile、微博等登记产品从原始气泡匹配别名，先检索官网索引，再补相关资源网站，官网命中优先；未知品牌不猜域名。显式 `site:` 为硬约束且优先于产品偏好。Tavily 传 `include_domains`，博查用 `include`，豆包用 `Filter.Sites`，Serper/Brave 用 `site:`，Exa 用 `includeDomains`；不提供排除域名入口。小红书等仅公开索引搜索，无专用站内/私有 API。
 - `search_github_code`: `tools/github_code.py` 独立 `github_code` Skill，先调用 GitHub Repository Search：明确 URL/owner-repo 精确定位；纯名称先同名匹配，再按 Stars 热度给出模糊候选。已登记 `antd mobile` → `ant-design/ant-design-mobile` 别名。公开仓库搜索在 token 缺失/失效时可匿名回退；GitHub Code Search 仍需 `GITHUB_TOKEN`。仅当用户需要源码、实现、用法、示例、Issue 或 PR 时再调用代码搜索，并优先限定到首选仓库；普通网页搜索不是其静默替代。只返回有界仓库信息、代码引用与摘要，回复简单总结，不铺满源码；仓库/代码搜索的未配置、错误、无结果和成功分别报告。新闻+代码可组合两个 Skill。多个搜索调用的来源编号同轮统一，避免覆盖。[RoutingAudit] 记录 `selected_skills`、`search_regions`、`source_domains`、`github_skill_used`、仓库候选数及代码搜索状态，来源事件补充 `officialDomains`。
 - `search_images`: 并行搜索可用的 Pexels、Pixabay、Unsplash、Openverse、Wikimedia Commons 图片候选，也可指定单一来源；支持横图/竖图/方图筛选，每个来源最多 6 个候选，返回图片地址、来源页、作者及可用许可元数据。Pexels/Pixabay/Unsplash 需各自配置 API Key，Openverse/Wikimedia Commons 可匿名查询。PPT 复用这一个 Provider 搜索实现，选中后再下载、嵌入并署名。Pixabay 候选图链仅短期使用，Unsplash 触发 API 下载记录，Openverse/Wikimedia 遵守单张素材的许可要求。
 - `create_word`: 生成 Word 文档
@@ -311,7 +311,7 @@ GET /api/download/:filename
 
 Web / VS Code 共用 `services/context_engine.py`：当前请求完整保留；达到 30,000 估算 Token 时，近期完整问答保留在 10,000 Token 预算内，旧轮次增量摘要。未达阈值不按固定消息条数丢弃历史。压缩/保存失败保留成功摘要并按完整轮次预算回退，缺失历史向模型明确说明；原始消息与摘要游标不因失败修改。超长旧轮次完整压缩，模型拒绝时降级，不截断原文。
 
-`[LLMInputBudget]` 记录每次 Agent 调用的输入分项估算及输出预留，真实输入用量沿用 Provider 返回的诊断；不记录内容。专项命令：`venv\Scripts\python.exe -X utf8 -m pytest tests/test_context_engine.py tests/test_agent_diagnostics.py -q`；完整验收沿用根目录 project.md。不会自动精简各工具或任务附加数据。
+`[LLMInputBudget]` 记录每次 Agent 调用的输入分项估算及输出预留，真实输入用量沿用 Provider 返回的诊断；不记录内容。专项命令：`venv\Scripts\python.exe -X utf8 -m pytest tests/test_context_engine.py tests/test_agent_diagnostics.py -q`；完整验收沿用根目录 project.md。公共历史压缩本身不裁剪工具数据；项目读取和 PPT 的任务内精简见各自专节。
 
 ### 数据库连接失败
 - 检查 `SUPABASE_DB_URL` 是否正确
@@ -338,6 +338,28 @@ Thinking Adapter 观察实际思考与 Agent 阶段，不再额外调用 LLM 生
 
 ### PPT 上下文与 revision 补丁
 
-`tools/presentation_revision.py` 按当前请求区分新稿、沿用要求和修改。局部请求提供目标页与目录，完整基准留在 Server；模糊范围保留所有页面，不额外调用 LLM。派生 referencePlan 不重复上传。create_ppt 新稿传 presentation，修改优先传 revision（精确 baseFingerprint、updates、deckChanges、appendSlides、removeSlideIds），对象合并、数组替换，完整校验后生成独立新快照，不覆写旧产物。未修改页面语义/布局/时间轴保留，受影响连续页组一起重排；既有图片缓存过期后不承诺照片逐像素一致。
+`tools/presentation_revision.py` 按当前请求区分新稿、沿用要求和修改。局部请求提供目标页与目录，完整基准留在 Server；模糊范围保留所有页面，不额外调用 LLM。派生 referencePlan 不重复上传。create_ppt 新稿传 presentation，修改优先传 revision（精确 baseFingerprint、updates、deckChanges、appendSlides、removeSlideIds），对象合并、数组替换，完整校验后生成独立新快照，不覆写旧产物。未修改页面语义/布局/时间轴保留，受影响连续页组一起重排且保留已有续页，不合并掉续页标题；既有图片缓存过期后不承诺照片逐像素一致。
 
 ChatRequest 可传 presentationMessageId，仅读取当前会话真实历史快照；找不到不回退猜测。未指定默认最近一次，明确要求更早版本但未绑定时先确认目标。公共逻辑适用于 Web/插件；插件不启用 Preview Worker。搜图、质量校验、PPTX 和下载机制保留。专项：`venv\Scripts\python.exe -X utf8 -m pytest tests/test_presentation_revision.py tests/test_presentation_design.py tests/test_presentation_motion.py tests/test_presentation_reference.py tests/test_presentation_pexels.py tests/test_project_files.py -q`；公共验收见 project.md。
+
+### 项目读取 readRef 上下文（2026-10-15）
+
+ProjectReadContext 仅在一次 run_agent 中工作：可靠同版本正文重复时引用前文，范围重叠只注入缺失行；原工具回执、SSE、回调不变。每次模型调用前经原 ProjectAPI 真实读取验证缓存，变化或失败撤销此前正文/引用并提示重读；文件操作保守使读取上下文失效。缓存不作为写入权限或并发保护，不引入第二套 Project Tools，也不节省/跳过原始读取 IO。
+
+Web readState 使用请求内 Virtual FS 的 revision 和完整文件哈希。插件 readState 使用实际文档身份、version、Dirty 和完整缓冲区哈希，干净 UTF-8 文档另核对磁盘并复检读期间版本；外部更新未同步或并发编辑报告冲突。旧插件、未知编码及无可靠状态的候选读取原文降级，不猜测有效性。原 expected_version、Dirty、WorkspaceEdit、ChangeSet、Diff、Undo 保持原验证。
+
+统计 `[ProjectReadContext]` 仅记录命中、重复、部分复用、校验/失效/冲突和估算 Token，实际计费仍看 Provider usage。专项运行 `venv\Scripts\python.exe -X utf8 -m pytest tests/test_project_read_context.py tests/test_shared_project_tools.py tests/test_vscode_project_api.py tests/test_preview_context_flow.py tests/test_review_changes.py -q`；插件 `npm test`。公共验收命令见 project.md。准确性优先，额外读取校验可能增加 IO；真实 Extension Host 与模型任务速度没有因离线测试而获得保证。
+
+### 千问 3.8 Flash 聊天模型
+
+模型注册表内置 qwen3.8-flash（千问 3.8 Flash，provider=dashscope）。后续在本地 Server/.env 配置 QWEN_API_KEY；可选 QWEN_API_URL 默认 https://maas.qianwenaiapi.com/compatible-mode/v1（千问 AI 平台官方兼容地址，支持替换为对应地域/业务空间专属地址），QWEN_MAX_OUTPUT_TOKENS 默认 16384。密钥地域与接口须匹配。聊天千问配置与 ARK、Embedding 相互独立；默认模型仍为 ARK_MODEL_ID。未配置时模型列表可见但禁用，Web/插件均复用后端状态；配置后重启后台。
+
+工具调用、会话冻结与思考事件沿用现有实现；千问思考参数仅使用 extra_body.enable_thinking，避免混入方舟字段。未提供真实密钥前不宣称联机可用。回归：tests/test_model_selection.py、Web/scripts/model-selector-ui.test.mjs，并执行 project.md 公共类型检查与两端构建。
+
+官方协议参考：https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope 与 https://help.aliyun.com/zh/model-studio/deep-thinking/ 。
+
+### OpenRouter 聚合模型
+
+模型注册表内置 GPT-6.1 Sol、GPT-6 Luna、GPT-6 Astra、Claude Opus/Sonnet/Haiku 5.5、Gemini 4 Argon 和 Grok 4.7，使用 OpenRouter 官方 `provider/model` ID。独立配置 `OPENROUTER_API_KEY`、`OPENROUTER_API_URL`（默认 `https://openrouter.ai/api/v1`）和 `OPENROUTER_MAX_OUTPUT_TOKENS`；缺少密钥时模型可见但不可选择，配置后重启后台。不会复用方舟或千问密钥。
+
+沿用现有工具调用、SSE、请求模型冻结和全局思考模式；模型选择仅在当前页面运行期间有效，刷新后使用默认 DeepSeek。流式思考读取 OpenRouter 的 `reasoning` 与 `reasoning_details` 文本字段。深思传 `reasoning.effort=high`，随思传 `reasoning.effort=none`，通过 `extra_body` 传递；实际是否完全关闭推理取决于模型及其下游 Provider 是否支持该设置。OpenRouter 模型固定使用 Chat Completions，避免 LangChain 将 `reasoning` 参数误判为切换 Responses API 的信号，也避免 OpenAI SDK 将其作为未知参数拒绝；目前 OpenRouter Responses API 的模型支持范围有限。未配置 OpenRouter 密钥时不进行在线鉴权或工具调用验证。回归：`tests/test_model_selection.py`、`tests/test_thinking.py`，并按 project.md 检查 Web/插件构建。

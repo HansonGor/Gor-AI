@@ -321,6 +321,12 @@ export interface ChatBoxProps {
   fileEditMode?: 'instant' | 'review';
   fileEditModeLoading?: boolean;
   onFileEditModeChange?: (mode: 'instant' | 'review') => void;
+  thinkingMode?: 'auto' | 'light' | 'deep';
+  thinkingModeLoading?: boolean;
+  onThinkingModeChange?: (mode: 'auto' | 'light' | 'deep') => void;
+  chatModelId?: string | null;
+  chatModelLoading?: boolean;
+  onChatModelChange?: (modelId: string) => void;
   messages: ChatMessage[];
   currentPreviewProject?: PreviewProjectLabel;
   input: string;
@@ -353,6 +359,12 @@ export interface InputAreaProps {
   fileEditMode?: 'instant' | 'review';
   fileEditModeLoading?: boolean;
   onFileEditModeChange?: (mode: 'instant' | 'review') => void;
+  thinkingMode?: 'auto' | 'light' | 'deep';
+  thinkingModeLoading?: boolean;
+  onThinkingModeChange?: (mode: 'auto' | 'light' | 'deep') => void;
+  chatModelId?: string | null;
+  chatModelLoading?: boolean;
+  onChatModelChange?: (modelId: string) => void;
   input: string;
   setInput: (value: string) => void;
   isLoading: boolean;

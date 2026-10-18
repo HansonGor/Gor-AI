@@ -1,11 +1,12 @@
-import { useEffect, useId, useRef, useState } from 'react';
-import { BookOpenCheck, Check, ChevronDown, Feather, LoaderCircle } from 'lucide-react';
+import { useCallback, useId, useRef, useState } from 'react';
+import { BookOpenCheck, Check, ChevronDown, LoaderCircle, PencilLine } from 'lucide-react';
+import { usePopoverDismiss } from './usePopoverDismiss';
 import './FileEditModeSelector.less';
 
 export type FileEditMode = 'instant' | 'review';
 const modes = [
-  { value: 'instant' as const, name: '即刻落笔', description: '修改即刻生效，仍可随时复原。', Icon: Feather },
   { value: 'review' as const, name: '审阅落笔', description: '先览改动，确认后再落笔。', Icon: BookOpenCheck },
+  { value: 'instant' as const, name: '即刻落笔', description: '修改即刻生效，仍可随时复原。', Icon: PencilLine },
 ];
 
 /** Presentation-only selection. The host may supply a controlled value/callback. */
@@ -19,22 +20,10 @@ export default function FileEditModeSelector({ value, onChange, loading = false 
   const container = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const panelId = useId();
-  const selected = modes.find((mode) => mode.value === (value ?? localValue)) ?? modes[0];
-  useEffect(() => {
-    if (!open) return;
-    const outside = (event: PointerEvent) => {
-      if (event.target instanceof Node && !container.current?.contains(event.target)) setOpen(false);
-    };
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { setOpen(false); trigger.current?.focus(); }
-    };
-    document.addEventListener('pointerdown', outside);
-    document.addEventListener('keydown', escape);
-    return () => {
-      document.removeEventListener('pointerdown', outside);
-      document.removeEventListener('keydown', escape);
-    };
-  }, [open]);
+  // 列表顺序只影响展示；未知值仍回退到即刻落笔，与默认值一致。
+  const selected = modes.find((mode) => mode.value === (value ?? localValue))
+    ?? modes.find((mode) => mode.value === 'instant')!;
+  usePopoverDismiss(open, useCallback(() => setOpen(false), []), container, trigger);
   return <div ref={container} className="file-edit-mode-selector">
     <button ref={trigger} type="button" className="file-edit-mode-trigger" aria-haspopup="dialog"
       aria-expanded={open} aria-controls={open ? panelId : undefined}

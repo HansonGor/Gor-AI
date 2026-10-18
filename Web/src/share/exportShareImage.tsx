@@ -114,6 +114,7 @@ async function inlineImages(node: HTMLElement, signal: AbortSignal) {
 export async function exportShareImage(
   messages: ShareMessage[],
   signal: AbortSignal,
+  userName?: string,
 ): Promise<ShareImage> {
   if (!messages.length) throw new Error('请先选择有正文的消息。');
   const host = document.createElement('div');
@@ -133,7 +134,7 @@ export async function exportShareImage(
   );
   try {
     abortIfNeeded(signal);
-    flushSync(() => root.render(<ShareImageTemplate messages={messages} />));
+    flushSync(() => root.render(<ShareImageTemplate messages={messages} userName={userName} />));
     const sheet = mount.querySelector<HTMLElement>('.gor-share-sheet')!;
     await waitForCodeHighlights(sheet, timeout.signal);
     await inlineImages(sheet, timeout.signal);

@@ -32,6 +32,14 @@ from tools.project_api_tools import (
     create_project_directory,
     delete_project_file,
     delete_project_directory,
+    git_status,
+    git_commit,
+    git_push,
+    list_toolchains,
+    run_toolchain_action,
+    delete_project,
+    read_external_file,
+    list_external_directory,
 )
 from tools.preview_project import PREVIEW_TOOLS
 from tools.scene_spec import set_3d_scene
@@ -62,6 +70,14 @@ TOOLS = [
     create_project_directory,
     delete_project_file,
     delete_project_directory,
+    git_status,
+    git_commit,
+    git_push,
+    list_toolchains,
+    run_toolchain_action,
+    delete_project,
+    read_external_file,
+    list_external_directory,
 ]
 
 # Legacy Preview names are compatibility adapters, not the model's default surface.

@@ -5,6 +5,7 @@ Agent 核心循环：图片解析 + 工具调用 + 流式输出
 import asyncio
 import json
 import re
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import quote
@@ -22,10 +23,14 @@ from models.model import get_model_for_tools, model_with_simple_preview_edit
 from models.thinking import ThinkingAdapter
 from services.context_audit import input_token_breakdown
 from agent.search_context import SearchContext, ReaderContext, compact_reader
+from agent.evidence import EvidenceLedger
+from agent import answer_verifier
+from agent.project_read_context import ProjectReadContext
 from tools.web_reader import MAX_PAGES as MAX_READER_PAGES
 from tools.presentation_revision import select_context as select_presentation_context, revision_source
 from models.vision import analyze_images
 from agent.tool_routing import route_request
+from agent.thinking_policy import decide_thinking, tool_result_failed, ESCALATION_REASONS, TOOL_FAILURE_ESCALATION
 from agent.tool_negotiation import ToolNegotiator, RULES as NEGOTIATED_RULES
 from agent.project_task_boundary import project_kind_conflict
 from agent.web_policy import local_or_private_subject, web_search_declined
@@ -39,6 +44,84 @@ from project_api.preview_context import create_current_preview_project_api
 from tools.project_dispatch import dispatch_project_tool
 
 MAX_ITERATIONS = config.Agent.MAX_ITERATIONS
+# 只用了这些工具的回答才做引用核验；用过文件、生成、天气、代码执行等工具时跳过，
+# 避免把"已修改某文件"之类的执行回执当成缺少来源的事实句删除。
+RESEARCH_ONLY_TOOLS = frozenset({"web_search", "web_reader", "search_github_code", "request_tools", "search_images"})
+
+
+# 轮次用完时可以收尾作答的运行：只用了查询/只读类工具。写文件、生成文档、提交推送等运行仍保持原提示，
+# 避免模型对"做了什么"随口作答（这类回复由程序依据真实回执生成）。
+WRAP_UP_SAFE_TOOLS = frozenset(RESEARCH_ONLY_TOOLS | {
+    "get_weather", "vector_search", "list_project_files", "search_project_code", "read_project_file",
+    "list_preview_files", "search_preview_code", "read_preview_file", "git_status",
+})
+WRAP_UP_PROMPT = (
+    "本轮工具调用次数已经用完，现在不能再调用任何工具。请只依据上面已经拿到的工具结果直接回答用户："
+    "已经查到的内容照常回答并按要求标注来源；没有查到或无法确认的部分，明确告诉用户还缺什么，"
+    "不要猜测、不要编造；不要提及轮次限制、工具或这条提示。"
+)
+WRAP_UP_FALLBACK = "本轮查询用完了可用的调用次数，仍没能整理出可靠的答复。请把问题说得更具体一些后重试。"
+
+
+async def _wrap_up_without_tools(
+    messages: List[BaseMessage],
+    send_event: Callable[[Dict[str, Any]], None],
+    callbacks: Optional[List[Any]],
+    *,
+    call_number: int,
+    model_kwargs: Dict[str, Any],
+    evidence: EvidenceLedger,
+    executed_tool_names: set,
+) -> str:
+    """轮次用完后不带工具再调用一次模型，基于已收集的信息作答。失败或无内容时返回空字符串。"""
+    heartbeat = asyncio.create_task(_heartbeat(send_event, "thinking", 1.0))
+    try:
+        selected = get_model_for_tools((), **model_kwargs)
+        response = await ThinkingAdapter(send_event, call_number, phase="final_response").invoke(
+            selected, [*messages, SystemMessage(content=WRAP_UP_PROMPT)], callbacks or [])
+    except Exception as error:
+        # 异常文本可能含请求内容，只记录类型
+        print(f"[WrapUp] failed error_type={type(error).__name__}")
+        return ""
+    finally:
+        heartbeat.cancel()
+        try:
+            await heartbeat
+        except asyncio.CancelledError:
+            pass
+    if getattr(response, "tool_calls", None):
+        print("[WrapUp] model still requested tools; ignored")
+    content = _assistant_content_text(getattr(response, "content", "")).strip()
+    if content and evidence and executed_tool_names <= RESEARCH_ONLY_TOOLS:
+        # 与正常最终回答一致的引用核验；此时没有剩余轮次，不再修订，直接删除无依据的事实句
+        report = answer_verifier.verify(content, evidence.source_ids)
+        if not report.ok:
+            content, removed = answer_verifier.cleanup(content, evidence.source_ids)
+            _log_answer_verification("cleanup", report, removed=removed)
+            send_event({"type": "answer_verification", "revised": False, "removedSentences": removed, **report.counts()})
+    print(f"[WrapUp] answered chars={len(content)}")
+    return content
+
+
+def _citation_revision_prompt(report: "answer_verifier.VerificationReport", evidence: EvidenceLedger) -> str:
+    ids = sorted(evidence.source_ids, key=lambda value: int(value[1:]))
+    lines = [f"- 缺少引用：{short_text}" for short_text in (s[:120] for s in report.uncited[:15])]
+    lines += [f"- 引用了本轮不存在的编号 {'、'.join(bad)}：{text[:120]}" for text, bad in report.invalid[:10]]
+    more = len(report.uncited) + len(report.invalid) - len(lines)
+    return (
+        "发送前引用核验未通过。以下事实句没有在本句标注有效来源：\n" + "\n".join(lines)
+        + (f"\n- 另有 {more} 处同类问题。" if more > 0 else "")
+        + f"\n本轮可用来源编号：{'、'.join(ids[:60])}。请输出完整的修订版回答：每条含数字、日期、机构、人名或引语的事实句，"
+          "都在该句末尾标注支持它的 [S#]（不能只在段末统一标注）；本轮来源不支持的内容直接删除，不要保留、不要改写成无来源的说法；"
+          "不得引用不存在的编号，不得新增来源以外的事实。必要时可用 web_reader 补读已返回的 URL。"
+          "仍未标注有效来源的事实句将在发送前被删除。"
+          "直接输出给用户看的最终回答本身：不要提及核验、修订、删除或本条提示，不要写“修订版如下”之类的开场。"
+    )
+
+
+def _log_answer_verification(action: str, report: "answer_verifier.VerificationReport", removed: int = 0) -> None:
+    print("[AnswerVerification] " + json.dumps({"action": action, **report.counts(), "removed": removed},
+                                               ensure_ascii=False))
 TYPING_CHUNK_SIZE = config.Agent.TYPING_CHUNK_SIZE
 TYPING_DELAY_MS = config.Agent.TYPING_DELAY_MS
 
@@ -179,6 +262,23 @@ def _extract_explicit_text_edit(text: str) -> Optional[Dict[str, str]]:
 def _message_text(message: BaseMessage) -> str:
     content = getattr(message, "content", "")
     return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str)
+
+
+def _assistant_content_text(content: Any) -> str:
+    """Extract displayable text from LangChain string or block-list content."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") in {"text", "output_text"}:
+            text = block.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    return "".join(parts)
 
 
 def _audit_llm_context(messages: List[BaseMessage], workspace: Optional[PreviewProjectWorkspace]) -> Dict[str, Any]:
@@ -369,6 +469,12 @@ def _merged_search_ranges(workspace: PreviewProjectWorkspace, search_results: Li
     return selected
 
 
+def _timing(phase: str, started: float, **fields: Any) -> None:
+    """耗时日志：只记录阶段名与毫秒数等非敏感字段，不含正文或查询内容。"""
+    extra = "".join(f" {key}={value}" for key, value in fields.items())
+    print(f"[Timing] phase={phase} ms={round((time.perf_counter() - started) * 1000)}{extra}")
+
+
 async def run_agent(
     user_messages: List[Dict[str, Any]],
     send_event: Callable[[Dict[str, Any]], None],
@@ -382,6 +488,9 @@ async def run_agent(
     vscode_client_mode: bool = False,
     session_id: Optional[str] = None,
     *, presentation_source_explicit: bool = False,
+    deep_thinking: bool = True,
+    auto_thinking: bool = False,
+    model_id: Optional[str] = None,
 ) -> None:
     """
     运行 Agent 循环
@@ -393,6 +502,7 @@ async def run_agent(
         callbacks: LangChain 回调数组（用于 token 统计等）
     """
     callbacks = callbacks or []
+    run_started = time.perf_counter()
     if vscode_client_mode or vscode_project_context is not None:
         # Discard stale Web state before prompts, preflight or events can use it.
         preview_workspace = None
@@ -585,6 +695,18 @@ async def run_agent(
     if task_kind != "GENERAL":
         print(f"[AgentLoop] task={task_kind} soft_call_budget={soft_call_budget}")
 
+    # 酌思：发送时按规则定初始深浅，运行中遇到问题再升级为深思
+    tool_failure_count = 0
+    if auto_thinking:
+        decision = decide_thinking(
+            latest_user_text, tool_route.profile, task_kind=task_kind,
+            has_images=bool(last_message and last_message.get("images")), history=user_messages[:-1],
+        )
+        deep_thinking = decision.deep
+        print(f"[ThinkingMode] auto resolved={'deep' if deep_thinking else 'light'} reason={decision.reason}")
+        send_event({"type": "thinking_mode", "mode": "deep" if deep_thinking else "light",
+                    "reason": decision.reason, "escalated": False})
+
     # Literal text changes can arrive with their own search context prepared in
     # code, so the first model call can directly produce all exact patches.
     fast_path_used = False
@@ -668,8 +790,13 @@ async def run_agent(
     github_tool_attempted = False
     source_count = 0
     source_ids: dict[str, str] = {}
+    # 本轮真实来源，用于发送前核验回答引用；只在纯检索类回答上启用
+    evidence = EvidenceLedger()
+    executed_tool_names: set[str] = set()
+    answer_verification_retry = False
     search_context = SearchContext()
     reader_context = ReaderContext()
+    project_reads = ProjectReadContext(current_project_context)
     web_capability_retry = False
     # One assistant turn represents one user generation request. Models may
     # issue create_ppt more than once across tool rounds (or in one
@@ -681,6 +808,7 @@ async def run_agent(
     tool_negotiation_seen = False
     additional_task_outcomes: dict[str, bool | None] = {}
 
+    loop_exhausted = False
     while iterations > 0:
         iterations -= 1
         current_iter = MAX_ITERATIONS - iterations
@@ -690,6 +818,11 @@ async def run_agent(
         if signal and signal.is_set():
             print("[Agent] 检测到取消信号，中断 Agent 循环")
             send_event({"type": "token", "content": "\n\n（响应已中断）"})
+            break
+
+        await project_reads.validate(signal)
+        project_reads.audit()
+        if signal and signal.is_set():
             break
 
         # 立即发送思考状态，避免连接建立后长时间无数据
@@ -711,6 +844,19 @@ async def run_agent(
             call_reason = "patch_generation"
         else:
             call_reason = "final_response" if llm_call_count else "initial_response"
+        if auto_thinking and not deep_thinking:
+            problem = (
+                call_reason if call_reason in {"patch_conflict", "build_repair"}
+                else "citation_revision" if answer_verification_retry
+                else "reader_retry" if web_reader_retry
+                else "tool_failures" if tool_failure_count >= TOOL_FAILURE_ESCALATION
+                else None
+            )
+            if problem:
+                deep_thinking = True
+                print(f"[ThinkingMode] auto escalated=deep reason={problem} call={llm_call_count + 1}")
+                send_event({"type": "thinking_mode", "mode": "deep",
+                            "reason": ESCALATION_REASONS[problem], "escalated": True})
         llm_call_count += 1
         patch_failure_seen = False
         context_audit = _audit_llm_context(messages, preview_workspace)
@@ -737,7 +883,10 @@ async def run_agent(
         try:
             # 非流式调用，检测是否需要工具，传入 callbacks 捕获 token 消耗
             bound_tool_names = set(active_tool_names)
-            selected_model = get_model_for_tools(tuple(sorted(bound_tool_names)))
+            tool_key = tuple(sorted(bound_tool_names))
+            # 默认深思；随思显式关闭模型深度思考
+            model_kwargs = ({} if deep_thinking else {"deep": False}) | ({"model_id": model_id} if model_id else {})
+            selected_model = get_model_for_tools(tool_key, **model_kwargs)
             definitions = getattr(selected_model, "kwargs", {}).get("tools", [])
             print("[LLMInputBudget] " + json.dumps({
                 "call": llm_call_count, "phase": call_reason,
@@ -748,13 +897,16 @@ async def run_agent(
                 "estimate_only": True,
             }, ensure_ascii=False, separators=(",", ":")))
             try:
+                llm_started = time.perf_counter()
                 response = await ThinkingAdapter(send_event, llm_call_count, phase=call_reason).invoke(selected_model, messages, callbacks)
+                _timing("llm", llm_started, call=llm_call_count, reason=call_reason,
+                        tool_calls=len(getattr(response, "tool_calls", None) or []))
             except Exception as error:
                 # Exception text may contain request data; only log its class.
                 print("[LLMCallDiagnostics] " + json.dumps({
                     "call": llm_call_count,
                     "phase": call_reason,
-                    "model": config.Ark.MODEL_ID,
+                    "model": model_id or config.Ark.MODEL_ID,
                     "error_type": type(error).__name__,
                 }, ensure_ascii=False, separators=(",", ":")))
                 raise
@@ -762,10 +914,10 @@ async def run_agent(
                 response,
                 call=llm_call_count,
                 phase=call_reason,
-                model_id=config.Ark.MODEL_ID,
+                model_id=model_id or config.Ark.MODEL_ID,
             )
             tool_calls = getattr(response, "tool_calls", None) or []
-            content = getattr(response, "content", "") or ""
+            content = _assistant_content_text(getattr(response, "content", ""))
             if use_presentation_context:
                 content = _hide_presentation_schema_echo(content)
             print(f"[Agent] 响应: tool_calls={len(tool_calls)}, content长度={len(content)}")
@@ -869,8 +1021,30 @@ async def run_agent(
                     continue
                 await stream_content("工作区工具已连接，但模型本轮没有发起文件操作，没有改动任何文件。请重试；若要恢复原值，请确认前文是否包含原始内容。", send_event)
                 break
+            if content and evidence and executed_tool_names <= RESEARCH_ONLY_TOOLS:
+                report = answer_verifier.verify(content, evidence.source_ids)
+                if not report.ok and not answer_verification_retry and iterations > 0:
+                    answer_verification_retry = True
+                    _log_answer_verification("revise", report)
+                    messages.append(response)
+                    messages.append(SystemMessage(content=_citation_revision_prompt(report, evidence)))
+                    continue
+                if not report.ok:
+                    content, removed = answer_verifier.cleanup(content, evidence.source_ids)
+                    _log_answer_verification("cleanup", report, removed=removed)
+                    # 删除数量只随 answer_verification 事件上报，不在正文追加说明。
+                    if not content.strip():
+                        content = "本轮检索到的来源不足以支持可靠的回答，请换个问法或稍后重试。"
+                    send_event({"type": "answer_verification", "revised": answer_verification_retry,
+                                "removedSentences": removed, **report.counts()})
+                else:
+                    _log_answer_verification("pass", report)
+                    send_event({"type": "answer_verification", "revised": answer_verification_retry,
+                                "removedSentences": 0, **report.counts()})
             if content:
+                stream_started = time.perf_counter()
                 await stream_content(content, send_event)
+                _timing("stream", stream_started, chars=len(content))
             else:
                 send_event({"type": "token", "content": "模型未返回可显示的内容或有效工具调用，请重试或简化需求。"})
             break
@@ -883,6 +1057,7 @@ async def run_agent(
         pending_tool_rules: list[str] = []
         for tc in tool_calls:
             tool_name = tc.get("name", "")
+            executed_tool_names.add(tool_name)
             if tool_name == "web_search" and tool_name in bound_tool_names:
                 web_tool_attempted = True
             if tool_name == "search_github_code" and tool_name in bound_tool_names:
@@ -1017,6 +1192,7 @@ async def run_agent(
                     may_reuse = tool_name in bound_tool_names and not (signal and signal.is_set())
                     cached_result = search_context.get(cache_key) if may_reuse else None
                     started = asyncio.get_running_loop().time()
+                    tool_started = time.perf_counter()
                     if tool_name == "web_reader":
                         async def fetch_reader(updated_args):
                             return await execute_tool(tool_name, updated_args, signal, preview_workspace,
@@ -1042,6 +1218,11 @@ async def run_agent(
                     if cache_key:
                         print(f"[SearchReuse] tool={tool_name} cache_hit={str(cached_result is not None).lower()} "
                               f"elapsed_ms={round((asyncio.get_running_loop().time() - started) * 1000)}")
+                    if tool_name in {"web_search", "web_reader"}:
+                        _timing("tool", tool_started, tool=tool_name,
+                                cache_hit=str(cached_result is not None).lower())
+                    if auto_thinking and tool_result_failed(result):
+                        tool_failure_count += 1
                     _notify_tool_call(
                         callbacks,
                         preview_name or tool_name,
@@ -1099,6 +1280,7 @@ async def run_agent(
                                         source["sourceId"] = assigned_id
                                         if "source_id" in source:
                                             source["source_id"] = assigned_id
+                                        evidence.add_source(source)
                                     result = re.sub(r"\[(S\d+)\]", lambda match: "[" + replacements.get(match[1], match[1]) + "]", result)
                                     if tool_name == "web_search" and not web_search_declined(latest_user_text):
                                         from tools.search_orchestrator import code_topic_from_search
@@ -1125,6 +1307,7 @@ async def run_agent(
                                     source_id = source_ids.get(_canonical_url(str(page.get("url", ""))))
                                     if source_id:
                                         page["sourceId"] = source_id
+                                        evidence.add_page(page)
                                 web_reader_succeeded = bool(reader_payload.get("success") and pages)
                                 result = json.dumps(reader_payload, ensure_ascii=False)
                                 print("[ReaderAudit] " + json.dumps({
@@ -1431,10 +1614,12 @@ async def run_agent(
                 tool_result_for_context = search_context.compact_search(tool_result_for_context)
             elif tool_name == "web_reader":
                 tool_result_for_context = compact_reader(tool_result_for_context)
-            messages.append(ToolMessage(
+            context_message = ToolMessage(
                 tool_call_id=tc.get("id", ""),
                 content=tool_result_for_context,
-            ))
+            )
+            project_reads.observe(canonical_project_tool(tool_name), tool_args, result, context_message)
+            messages.append(context_message)
 
         for rule in dict.fromkeys(pending_tool_rules):
             messages.append(SystemMessage(content=rule))
@@ -1480,16 +1665,16 @@ async def run_agent(
                     except (json.JSONDecodeError, TypeError):
                         read_data = {}
                     if read_data.get("success"):
-                        context_blocks.append(
-                            f"--- {path}:{read_data.get('startLine')}-{read_data.get('endLine')} (revision {read_data.get('revision')}) ---\n"
-                            + read_data.get("content", "")
-                        )
+                        source_message = HumanMessage(content=read_result)
+                        project_reads.observe("read_preview_file", read_args, read_result, source_message)
+                        messages.append(source_message)
+                        context_blocks.append(path)
                 if context_blocks:
                     messages.append(SystemMessage(content=(
                         "【程序合并读取的局部源码】\n"
                         "以下范围由本轮搜索命中自动合并读取，来源为当前 Preview revision。下一次请一次性生成所有需要的 patches 并调用 batch_patch_project_files，expected_version 使用最新 revision；"
-                        "使用最新 revision，old_text 必须逐字来自下列源码。不要再重复搜索或读取，除非这些范围确实不足以定位。\n\n"
-                        + "\n\n".join(context_blocks)
+                        "使用最新 revision，old_text 必须逐字来自此前读取的源码/readRef。"
+                        "readRef 只引用本轮同版本正文，失效时必须重读。不要再重复搜索或读取，除非这些范围确实不足以定位。"
                     )))
 
         if successful_preview_patch and task_kind == "SIMPLE_EDIT" and not tool_negotiation_seen:
@@ -1511,11 +1696,32 @@ async def run_agent(
             )
             break
 
-    if iterations <= 0:
+    else:
+        loop_exhausted = True
+
+    if loop_exhausted:
         if vscode_project_context and workspace_save_errors:
             await stream_content("文件修改已应用，但保存未全部完成，请检查 VS Code 编辑器及 Diff。\n"
                                  + "\n".join(dict.fromkeys(workspace_save_errors)), send_event)
-        send_event({"type": "token", "content": "\n\n（已达到最大工具调用轮次限制）"})
+        can_wrap_up = bool(not (signal and signal.is_set()) and executed_tool_names
+                           and executed_tool_names <= WRAP_UP_SAFE_TOOLS and not workspace_save_errors)
+        if can_wrap_up:
+            print(f"[AgentLoop] iterations exhausted; wrapping up without tools after {llm_call_count} calls")
+            llm_call_count += 1
+            for callback in callbacks or []:
+                begin_call = getattr(callback, "begin_call", None)
+                if callable(begin_call):
+                    try:
+                        begin_call("final_response", _audit_llm_context(messages, preview_workspace))
+                    except TypeError:
+                        begin_call("final_response")
+            answer = await _wrap_up_without_tools(
+                messages, send_event, callbacks, call_number=llm_call_count, evidence=evidence,
+                model_kwargs=({} if deep_thinking else {"deep": False}) | ({"model_id": model_id} if model_id else {}),
+                executed_tool_names=executed_tool_names)
+            await stream_content(answer or WRAP_UP_FALLBACK, send_event)
+        else:
+            send_event({"type": "token", "content": "\n\n（已达到最大工具调用轮次限制）"})
 
     if negotiator.denied and not (signal and signal.is_set()):
         await stream_content(negotiator.limitation_note(), send_event)
@@ -1539,6 +1745,7 @@ async def run_agent(
         f"execution_llm_calls={max(0, llm_call_count - final_response_calls)} "
         f"final_response_llm_calls={final_response_calls} search_calls={search_calls} read_calls={read_calls}"
     )
+    _timing("total", run_started, llm_calls=llm_call_count, search_calls=search_calls, read_calls=read_calls)
 
 
 def _hide_presentation_schema_echo(content: str) -> str:

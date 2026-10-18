@@ -34,6 +34,12 @@ export default function ChatBox({
   fileEditMode,
   fileEditModeLoading,
   onFileEditModeChange,
+  thinkingMode,
+  thinkingModeLoading,
+  onThinkingModeChange,
+  chatModelId,
+  chatModelLoading,
+  onChatModelChange,
 }: ChatBoxProps) {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -97,6 +103,12 @@ export default function ChatBox({
           fileEditMode={fileEditMode}
           fileEditModeLoading={fileEditModeLoading}
           onFileEditModeChange={onFileEditModeChange}
+          thinkingMode={thinkingMode}
+          thinkingModeLoading={thinkingModeLoading}
+          onThinkingModeChange={onThinkingModeChange}
+          chatModelId={chatModelId}
+          chatModelLoading={chatModelLoading}
+          onChatModelChange={onChatModelChange}
           input={input}
           setInput={setInput}
           isLoading={isLoading}

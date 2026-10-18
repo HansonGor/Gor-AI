@@ -97,7 +97,8 @@ class VSCodeBridgeClient:
                 if lock is not None and not lock.locked():
                     self._workspace_tree_locks.pop(key, None)
 
-    async def call(self, workspace_id: str, method: str, params: dict[str, Any]) -> Any:
+    async def call(self, workspace_id: str, method: str, params: dict[str, Any],
+                   timeout_seconds: float | None = None) -> Any:
         connection = self._connections.get(workspace_id)
         if connection is None:
             self._raise_workspace_unavailable(workspace_id)
@@ -136,7 +137,7 @@ class VSCodeBridgeClient:
                 if self._connections.get(workspace_id) is not connection:
                     raise ProjectAPIError("WORKSPACE_DISCONNECTED", "VS Code 工作区连接已断开。")
                 await connection.websocket.send_json(request)
-            result = await asyncio.wait_for(future, timeout=self.timeout_seconds)
+            result = await asyncio.wait_for(future, timeout=timeout_seconds or self.timeout_seconds)
             if method == "project.applyPatches" and isinstance(result, dict) and result.get("success") is True:
                 changed_files = result.get("changedFiles", []) if isinstance(result, dict) else []
                 logger.info(

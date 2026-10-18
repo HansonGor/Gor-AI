@@ -6,6 +6,10 @@ import type { InputAreaProps } from '../../types';
 import { Button } from '../ui/button';
 import { Textarea } from '../ui/textarea';
 import FileEditModeSelector from '../chat/FileEditModeSelector';
+import ThinkingModeSelector from '../chat/ThinkingModeSelector';
+import ModelSelector from '../chat/ModelSelector';
+import { useChatModels } from '../../hooks/useChatModels';
+import { setShowThinking, useShowThinking } from '../../utils/thinkingVisibility';
 
 const { INPUT_MAX_HEIGHT } = CHAT_CONFIG;
 
@@ -29,7 +33,15 @@ export default function InputArea({
   fileEditMode,
   fileEditModeLoading,
   onFileEditModeChange,
+  thinkingMode,
+  thinkingModeLoading,
+  onThinkingModeChange,
+  chatModelId,
+  chatModelLoading,
+  onChatModelChange,
 }: InputAreaProps) {
+  const showThinking = useShowThinking();
+  const chatModels = useChatModels();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const importPopoverRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -245,7 +257,13 @@ export default function InputArea({
             </section>
           )}
         </div>
-        <FileEditModeSelector value={fileEditMode} loading={fileEditModeLoading} onChange={onFileEditModeChange} />
+        <div className="chat-composer-modes">
+          <FileEditModeSelector value={fileEditMode} loading={fileEditModeLoading} onChange={onFileEditModeChange} />
+          <ThinkingModeSelector value={thinkingMode} loading={thinkingModeLoading} onChange={onThinkingModeChange}
+            showThinking={showThinking} onShowThinkingChange={setShowThinking} />
+          <ModelSelector models={chatModels.models} value={chatModelId ?? chatModels.defaultModelId}
+            loading={chatModelLoading} onChange={onChatModelChange} />
+        </div>
         <input
           ref={fileInputRef}
           type="file"

@@ -40,6 +40,8 @@ import { useChatShare } from '../../share/useChatShare';
 import { isShareableMessage } from '../../share/shareContent';
 import { ChatShareToolbar, ChatSharePreview } from '../../components/chat/ChatShareControls';
 import { saveBlob } from '../../preview/core/saveFile';
+import { ToolchainRunsContext } from '../../components/chat/toolchainRun';
+import { useVscodeToolchainRuns } from '../../vscode/toolchainRuns';
 
 function isUntouchedStarterProject(project: {
   name?: string;
@@ -69,6 +71,12 @@ export default function ChatPage() {
     fileEditMode,
     fileEditModeLoading,
     setFileEditMode,
+    thinkingMode,
+    thinkingModeLoading,
+    setThinkingMode,
+    chatModelId,
+    chatModelLoading,
+    setChatModel,
     projectChanges,
     projectRevision,
     previewRevision,
@@ -93,6 +101,8 @@ export default function ChatPage() {
     initApp,
   } = useChat();
   const share = useChatShare(sessionId, messages);
+  // 施行审阅只在插件端注入；Web 端不提供 Provider，消息里不会出现施行卡片。
+  const toolchainRuns = useVscodeToolchainRuns(sessionId, messages, handleStop);
 
   const {
     isPC,
@@ -1044,6 +1054,7 @@ export default function ChatPage() {
     >
       <div className="chat-conversation min-w-0 flex-1">
         {!isVscodePluginMode && <ChatSharePreview share={share} save={saveBlob} />}
+        <ToolchainRunsContext.Provider value={isVscodePluginMode ? toolchainRuns : null}>
         {isSessionReady && !isSessionCacheLoading ? (
           <ChatBox
             shareSelection={isVscodePluginMode ? undefined : share.selection}
@@ -1051,6 +1062,12 @@ export default function ChatPage() {
             fileEditMode={fileEditMode}
             fileEditModeLoading={fileEditModeLoading}
             onFileEditModeChange={setFileEditMode}
+            thinkingMode={thinkingMode}
+            thinkingModeLoading={thinkingModeLoading}
+            onThinkingModeChange={setThinkingMode}
+            chatModelId={chatModelId}
+            chatModelLoading={chatModelLoading}
+            onChatModelChange={setChatModel}
             key={sessionId ?? 'chat'}
             messages={messages}
             currentPreviewProject={isVscodePluginMode ? undefined : currentPreviewProject}
@@ -1110,6 +1127,7 @@ export default function ChatPage() {
         ) : (
           <SessionCacheLoader statusText={isSessionReady ? '正在读取会话缓存' : '正在初始化会话'} />
         )}
+        </ToolchainRunsContext.Provider>
       </div>
       {visiblePreviewOpen && (
         <WebPreview revision={projectRevision} onClose={() => setPreviewOpen(false)} />

@@ -12,6 +12,16 @@ import type { SaveFileOptions } from '../../preview/core/saveFile';
 import './ChatShare.less';
 
 type ShareState = ReturnType<typeof useChatShare>;
+export async function saveShareImage(
+  save: (options: SaveFileOptions) => Promise<boolean>,
+  options: SaveFileOptions,
+  onSaved: () => void,
+) {
+  const saved = await save(options);
+  if (saved) onSaved();
+  return saved;
+}
+
 export function ChatShareToolbar({ share }: { share: ShareState }) {
   const slotRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -76,7 +86,11 @@ export function ChatSharePreview({
     setSaving(true);
     setSaveError('');
     try {
-      await save({ suggestedName: 'Gor-聊天.png', blob: share.image.blob });
+      await saveShareImage(
+        save,
+        { suggestedName: 'Gor-聊天.png', blob: share.image.blob },
+        share.completeDownload,
+      );
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : '保存失败，请重试。');
     } finally {

@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import { homedir } from 'node:os';
 import * as vscode from 'vscode';
 import { decodeSharePng } from './shareImageSave';
+import { cancelToolchainRun, type ApprovalReply, type ApprovalRequest, type RunUpdate } from './workspace/toolchain/host';
 
 type WebviewRequest = {
   type?: string;
@@ -14,9 +15,34 @@ type WebviewRequest = {
   message?: string;
   suggestedName?: string;
   base64?: string;
+  approvalId?: string;
+  answer?: string;
+  runId?: string;
+  url?: string;
 };
 
-type ActiveRequest = http.ClientRequest;
+export function isLocalDevUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'http:' || url.protocol === 'https:')
+      && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+// 卡片需在这段时间内被聊天页确认已展示，否则退回原生确认框（例如面板停在别的会话）。
+const APPROVAL_SHOWN_TIMEOUT_MS = 1500;
+
+type PendingApproval = {
+  shown: boolean;
+  onShown: () => void;
+  onAnswer: (answer: ApprovalReply) => void;
+};
+
+type ActiveRequest = { destroy(error?: Error): unknown };
+// 后端重启或网络抖动后插件会重新登记工作区；这几秒内发出的消息会缺工作区 ID，先等登记完成。
+const WORKSPACE_WAIT_MS = 5000;
 
 export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
   static readonly viewType = 'gor.chatView';
@@ -25,6 +51,7 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
   private webview: vscode.Webview | undefined;
   private readonly extensionUri: vscode.Uri;
   private readonly activeRequests = new Map<string, ActiveRequest>();
+  private readonly pendingApprovals = new Map<string, PendingApproval>();
   private registration: vscode.Disposable | undefined;
   private disposed = false;
 
@@ -32,6 +59,7 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     extensionUri: vscode.Uri,
     output: vscode.OutputChannel,
     private readonly getWorkspaceId: () => string | undefined,
+    private readonly waitForWorkspaceId: (timeoutMs: number) => Promise<string | undefined>,
   ) {
     this.extensionUri = extensionUri;
     this.output = output;
@@ -43,8 +71,9 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     extensionUri: vscode.Uri,
     output: vscode.OutputChannel,
     getWorkspaceId: () => string | undefined = () => undefined,
+    waitForWorkspaceId: (timeoutMs: number) => Promise<string | undefined> = async () => undefined,
   ): ChatView {
-    const provider = new ChatView(extensionUri, output, getWorkspaceId);
+    const provider = new ChatView(extensionUri, output, getWorkspaceId, waitForWorkspaceId);
     provider.registration = vscode.window.registerWebviewViewProvider(
       ChatView.viewType,
       provider,
@@ -92,6 +121,49 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
 
   private sendWorkspaceContext(): void {
     this.setWorkspaceContext(this.getWorkspaceId());
+  }
+
+  /**
+   * 在聊天面板中展示施行审阅卡片并等待回答。
+   * 面板不可见、或卡片未在限定时间内被展示时返回 undefined，由调用方退回原生确认框。
+   */
+  async requestToolchainApproval(request: ApprovalRequest, signal: AbortSignal): Promise<ApprovalReply | undefined> {
+    if (this.disposed || !this.webview || !this.view?.visible) return undefined;
+    return new Promise<ApprovalReply | undefined>((resolve) => {
+      let settled = false;
+      const timers: Array<ReturnType<typeof setTimeout>> = [];
+      const settle = (answer: ApprovalReply | undefined) => {
+        if (settled) return;
+        settled = true;
+        timers.forEach(clearTimeout);
+        signal.removeEventListener('abort', onAbort);
+        this.pendingApprovals.delete(request.approvalId);
+        if (answer === undefined || answer === 'timeout' || answer === 'cancelled') {
+          // 收回卡片：之后的状态由 update 消息给出。
+          this.post({ type: 'gor.toolchain', kind: 'withdrawn', approvalId: request.approvalId, runId: request.runId });
+        }
+        resolve(answer);
+      };
+      const onAbort = () => settle('cancelled');
+      signal.addEventListener('abort', onAbort, { once: true });
+      this.pendingApprovals.set(request.approvalId, {
+        shown: false,
+        onShown: () => {
+          const pending = this.pendingApprovals.get(request.approvalId);
+          if (pending) pending.shown = true;
+        },
+        onAnswer: settle,
+      });
+      timers.push(setTimeout(() => {
+        if (!this.pendingApprovals.get(request.approvalId)?.shown) settle(undefined);
+      }, APPROVAL_SHOWN_TIMEOUT_MS));
+      timers.push(setTimeout(() => settle('timeout'), Math.max(0, request.deadline - Date.now())));
+      this.post({ type: 'gor.toolchain', kind: 'approval', request });
+    });
+  }
+
+  postToolchainUpdate(update: RunUpdate): void {
+    this.post({ type: 'gor.toolchain', kind: 'update', update });
   }
 
   static watchDevelopmentBuild(extensionUri: vscode.Uri, output: vscode.OutputChannel): vscode.Disposable {
@@ -213,6 +285,28 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       case 'gor.workspaceContextReady':
         this.sendWorkspaceContext();
         break;
+      case 'gor.toolchainApprovalShown':
+        if (typeof message.approvalId === 'string') this.pendingApprovals.get(message.approvalId)?.onShown();
+        break;
+      case 'gor.toolchainApprovalAnswer':
+        if (typeof message.approvalId === 'string') {
+          const allowed = ['approve', 'approve_round', 'apply_and_run', 'stop'] as const;
+          const answer = allowed.find((value) => value === message.answer) ?? 'skip';
+          // 只有提交说明这类可改写字段会随回答带回；长度在执行前还会再校验。
+          const edited = typeof message.message === 'string' && message.message.trim() ? message.message.slice(0, 5_000) : undefined;
+          this.pendingApprovals.get(message.approvalId)?.onAnswer(edited && answer !== 'stop' ? { answer, message: edited } : answer);
+        }
+        break;
+      case 'gor.toolchainCancel':
+        // 「止令」只终止这一条命令，本轮对话继续；模型会收到 cancelled 回执。
+        if (typeof message.runId === 'string') cancelToolchainRun({ runId: message.runId });
+        break;
+      case 'gor.toolchainOpenUrl':
+        // 只打开常驻进程打印的本机地址，其他地址一律忽略。
+        if (typeof message.url === 'string' && isLocalDevUrl(message.url)) {
+          void vscode.env.openExternal(vscode.Uri.parse(message.url));
+        }
+        break;
       case 'loadSessions':
         this.requestJson('loadSessions', requestId, 'GET', '/api/chat/sessions?userId=default%3Avscode', undefined);
         break;
@@ -303,6 +397,22 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
   }
 
   private streamChat(requestId: string, sessionId: string, message: string): void {
+    const workspaceId = this.getWorkspaceId();
+    if (workspaceId) {
+      this.sendChat(requestId, sessionId, message, workspaceId);
+      return;
+    }
+    let cancelled = false;
+    this.activeRequests.set(requestId, { destroy: () => { cancelled = true; } });
+    void this.waitForWorkspaceId(WORKSPACE_WAIT_MS).catch(() => undefined).then((registered) => {
+      if (cancelled || this.disposed) return;
+      this.activeRequests.delete(requestId);
+      // 超时仍未登记就照常发出，服务端会如实说明工作区未连接。
+      this.sendChat(requestId, sessionId, message, registered ?? this.getWorkspaceId());
+    });
+  }
+
+  private sendChat(requestId: string, sessionId: string, message: string, workspaceId: string | undefined): void {
     let url: URL;
     try {
       url = new URL('/api/chat', this.getBaseUrl());
@@ -311,7 +421,6 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       return;
     }
     const transport = url.protocol === 'https:' ? https : http;
-    const workspaceId = this.getWorkspaceId();
     const payload = Buffer.from(JSON.stringify({
       sessionId,
       message,
@@ -395,6 +504,8 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     this.registration = undefined;
     for (const request of this.activeRequests.values()) request.destroy();
     this.activeRequests.clear();
+    for (const pending of [...this.pendingApprovals.values()]) pending.onAnswer('cancelled');
+    this.pendingApprovals.clear();
     this.view = undefined;
     this.webview = undefined;
     if (ChatView.current === this) ChatView.current = undefined;

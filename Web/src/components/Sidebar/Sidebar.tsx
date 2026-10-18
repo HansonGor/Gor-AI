@@ -5,6 +5,7 @@ import type { SidebarProps } from '../../types';
 import { Button } from '../ui/button';
 import AppAvatar from '../AppAvatar';
 import GorBrandLogo from '../GorBrandLogo';
+import { getUserNickname } from '../../user/profile';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -136,7 +137,7 @@ export default function Sidebar({
 
         <footer className="conversation-account">
           <AppAvatar className="conversation-account-avatar" editable />
-          <span className="conversation-account-copy"><strong>樺</strong><small>Plus</small></span>
+          <span className="conversation-account-copy"><strong>{getUserNickname()}</strong><small>Plus</small></span>
           <button type="button" className="conversation-settings" aria-label="设置" title="设置"><Settings /></button>
         </footer>
       </section>

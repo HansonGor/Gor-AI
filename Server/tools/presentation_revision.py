@@ -109,9 +109,6 @@ def restore_unaffected(design: PresentationDesign, original: PresentationDesign,
                       (item.id.startswith(slide.id + "-cont-") and
                        (item.id not in original_ids or item.id in affected))]
         if not any(item.id == slide.id for item in candidates):
-            root = re.sub(r"-cont-\d+$", "", slide.id)
-            if root != slide.id and root in affected and root in emitted:
-                continue  # The paginator merged this continuation back into its parent.
             raise ValueError("局部修改重排后页面缺失，未生成新快照。")
         slides.extend(candidates)
         emitted.update(item.id for item in candidates)

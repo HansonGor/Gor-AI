@@ -1,4 +1,6 @@
 /** Runtime-only URL adaptation for the existing Gor chat page inside VS Code. */
+import { installToolchainBridge } from './toolchainRuns';
+
 let vscodeApi: { postMessage: (message: unknown) => void } | undefined;
 export function postVscodeMessage(message: unknown): boolean {
   if (!vscodeApi) return false;
@@ -23,6 +25,7 @@ export function installVscodeWebviewRuntime(): void {
   });
   vscodeApi = (window as any).acquireVsCodeApi?.();
   vscodeApi?.postMessage?.({ type: 'gor.workspaceContextReady' });
+  installToolchainBridge(postVscodeMessage);
 
   const apiMeta = document.querySelector<HTMLMetaElement>('meta[name="gor-api-base"]');
   const assetsMeta = document.querySelector<HTMLMetaElement>('meta[name="gor-assets-base"]');

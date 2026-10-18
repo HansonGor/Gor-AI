@@ -74,5 +74,52 @@ class BochaSearchTest(unittest.TestCase):
                 web_search._search_bocha("杭州天气")
 
 
+class ExaSearchTest(unittest.TestCase):
+    def test_missing_key_skips_without_request(self):
+        with (patch.object(web_search.config.Search, "EXA_API_KEY", ""),
+              patch.object(web_search.httpx, "post") as post):
+            self.assertEqual(web_search._search_exa("美国最新新闻"), [])
+            post.assert_not_called()
+
+    def test_requests_highlights_and_maps_them_to_content(self):
+        payload = {
+            "results": [
+                {
+                    "title": "US news",
+                    "url": "https://apnews.com/article/1",
+                    "highlights": ["First key passage.", "  ", "Second key passage."],
+                    "publishedDate": "2026-10-18T02:00:00.000Z",
+                },
+                {"title": "No highlights", "url": "https://example.com/2", "text": "fallback text"},
+            ]
+        }
+        with (patch.object(web_search.config.Search, "EXA_API_KEY", "exa-test"),
+              patch.object(web_search.httpx, "post", return_value=_FakeResponse(payload)) as post):
+            items = web_search._search_exa("美国最新新闻", max_results=5, sites=["apnews.com"])
+
+        body = post.call_args.kwargs["json"]
+        self.assertEqual(body["contents"], {"highlights": True})
+        self.assertEqual(body["type"], "auto")
+        self.assertEqual(body["numResults"], 5)
+        self.assertEqual(body["includeDomains"], ["apnews.com"])
+        self.assertEqual(post.call_args.kwargs["headers"]["x-api-key"], "exa-test")
+        self.assertEqual(items[0]["content"], "First key passage. … Second key passage.")
+        self.assertEqual(items[0]["source"], "exa")
+        self.assertEqual(items[0]["published_date"], "2026-10-18T02:00:00.000Z")
+        self.assertEqual(items[1]["content"], "fallback text")
+
+    def test_omits_include_domains_without_sites(self):
+        with (patch.object(web_search.config.Search, "EXA_API_KEY", "exa-test"),
+              patch.object(web_search.httpx, "post", return_value=_FakeResponse({"results": []})) as post):
+            self.assertEqual(web_search._search_exa("美国最新新闻"), [])
+        self.assertNotIn("includeDomains", post.call_args.kwargs["json"])
+
+    def test_search_type_is_forwarded(self):
+        with (patch.object(web_search.config.Search, "EXA_API_KEY", "exa-test"),
+              patch.object(web_search.httpx, "post", return_value=_FakeResponse({"results": []})) as post):
+            web_search._search_exa("美国最新新闻", search_type="fast")
+        self.assertEqual(post.call_args.kwargs["json"]["type"], "fast")
+
+
 if __name__ == "__main__":
     unittest.main()

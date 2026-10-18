@@ -20,10 +20,14 @@ const toolIcons: Record<string, IconName> = {
   create_project_directory: 'FilePenLine', delete_project_directory: 'FilePenLine',
   run_command: 'Terminal', execute_command: 'Terminal', execute_script: 'Terminal',
   run_tests: 'ListChecks', build_project: 'Hammer',
+  git_status: 'GitBranch', git_commit: 'GitBranch', git_push: 'GitBranch',
+  run_toolchain_action: 'Terminal', list_toolchains: 'ListChecks',
 };
 
 const titleIcons: ReadonlyArray<[RegExp, IconName]> = [
+  [/施行结果/, 'Terminal'],
   [/错误|调试|冲突|构建问题|排查|debug|error|conflict/i, 'Bug'],
+  [/提交结果|推送结果|Git 状态|git commit|git push/i, 'GitBranch'],
   [/依赖|模块关系|dependencies|dependency/i, 'GitBranch'],
   [/项目结构|文件结构|目录结构|检查目录|project structure/i, 'FolderSearch'],
   [/测试|验证|类型检查|TypeScript 检查|test|verify/i, 'ListChecks'],

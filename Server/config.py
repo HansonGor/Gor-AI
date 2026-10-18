@@ -31,6 +31,22 @@ class Config:
         MAX_OUTPUT_TOKENS = max(1024, min(32768, int(os.getenv("ARK_MAX_OUTPUT_TOKENS", "16384"))))
         # 视觉/多模态模型 ID（用于图像理解等任务）
         VISION_MODEL_ID = os.getenv("ARK_VISION_MODEL_ID", "doubao-seed-2.0-1ite")
+        # 模型选择器中额外可选的模型（JSON 数组），默认模型始终是 ARK_MODEL_ID。
+        # 例：[{"id":"ep-xxx","name":"DeepSeek V4 Pro","description":"更强推理，较慢"}]
+        # 以后接入 OpenRouter 时，同一列表可增加 "provider":"openrouter" 的条目。
+        EXTRA_MODELS = os.getenv("GOR_EXTRA_MODELS", "")
+
+    class Qwen:
+        """千问聊天模型独立配置，不复用方舟或 Embedding 密钥。"""
+        API_KEY = os.getenv("QWEN_API_KEY", "")
+        API_URL = os.getenv("QWEN_API_URL", "https://maas.qianwenaiapi.com/compatible-mode/v1")
+        MAX_OUTPUT_TOKENS = max(1024, min(32768, int(os.getenv("QWEN_MAX_OUTPUT_TOKENS", "16384"))))
+
+    class OpenRouter:
+        """OpenRouter 聚合模型的独立 OpenAI 兼容配置。"""
+        API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+        API_URL = os.getenv("OPENROUTER_API_URL", "https://openrouter.ai/api/v1")
+        MAX_OUTPUT_TOKENS = max(1024, min(32768, int(os.getenv("OPENROUTER_MAX_OUTPUT_TOKENS", "16384"))))
 
     # ================================================================
     # 多搜索引擎 API 配置
@@ -51,6 +67,12 @@ class Config:
         EXA_API_KEY = os.getenv("EXA_API_KEY", "")
         # GitHub Token（用于 GitHub 代码搜索，需要 public_repo 权限）
         GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+        # 临时停用的搜索源（逗号分隔，如 "doubao,bocha"）：保留 Key，额度恢复后删掉即可
+        DISABLED_PROVIDERS = frozenset(
+            name.strip().lower()
+            for name in os.getenv("SEARCH_DISABLED_PROVIDERS", "").split(",")
+            if name.strip()
+        )
 
     # ================================================================
     # 小云雀视频生成 API 配置
@@ -88,7 +110,9 @@ class Config:
     class Amap:
         """高德地图 Web 服务 API 配置。"""
         # Web 服务 Key（用于后端调用逆地理编码、天气等 REST 接口）
-        WEB_SERVICE_KEY = os.getenv("AMAP_WEB_SERVICE_KEY", "")
+        # 优先使用 AMAP_WEB_SERVICE_KEY2（2026-10-18 起的“Web 服务”类型密钥），未配置时兼容旧变量。
+        # 旧密钥类型不对，所有 Web 服务接口返回 USERKEY_PLAT_NOMATCH。
+        WEB_SERVICE_KEY = os.getenv("AMAP_WEB_SERVICE_KEY2") or os.getenv("AMAP_WEB_SERVICE_KEY", "")
 
     class Pexels:
         """Pexels photo search used for optional presentation imagery."""

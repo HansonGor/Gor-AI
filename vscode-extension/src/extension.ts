@@ -4,6 +4,7 @@ import { ChatView } from './chatPanel';
 import { WorkspaceRequestHandler } from './workspace/requestHandler';
 import { rememberTextDocumentVersion } from './workspace/edits';
 import { normalizeWorkspaceRelativePath, workspaceRelativePath } from './workspace/paths';
+import { configureToolchainUi, disposeToolchainProcesses, nativeUi } from './workspace/toolchain/host';
 
 let connection: GorConnection | undefined;
 
@@ -126,7 +127,23 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   const reconnectCommand = vscode.commands.registerCommand('gor.reconnect', connect);
-  chatView = ChatView.register(context.extensionUri, output, () => connection?.workspaceId);
+  chatView = ChatView.register(context.extensionUri, output, () => connection?.workspaceId,
+    async (timeoutMs) => connection?.waitForWorkspace(timeoutMs));
+  const toolchainOutput = vscode.window.createOutputChannel('Gor 工具链');
+  configureToolchainUi({
+    // 审阅卡片优先展示在聊天面板；面板不可见或未能展示时退回原生确认框。
+    requestApproval: async (request, signal) =>
+      (await chatView?.requestToolchainApproval(request, signal)) ?? nativeUi.requestApproval(request, signal),
+    update: (update) => {
+      // 开始施行时把「输出」面板切到 Gor 工具链（不抢编辑器焦点），完整输出直接可见。
+      if (update.status === 'running' && vscode.workspace.getConfiguration('gor.toolchain').get<boolean>('revealOutput', true)) {
+        toolchainOutput.show(true);
+      }
+      chatView?.postToolchainUpdate(update);
+    },
+    output: (text) => toolchainOutput.append(text),
+  });
+  context.subscriptions.push(toolchainOutput, { dispose: disposeToolchainProcesses });
   const openChatCommand = vscode.commands.registerCommand('gor.openChat', () => {
     void ChatView.reveal();
   });
@@ -140,6 +157,7 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
+  disposeToolchainProcesses();
   connection?.dispose();
   connection = undefined;
 }

@@ -274,6 +274,14 @@ test('terminal fields cannot override real tool presentation or resurrect comple
    assert.equal(getThinkingIcon({title:'思考中',toolName:'read_project_file'}).name,'PencilLine');
    assert.equal(getThinkingIcon({title:'思考中',toolName:'unknown_tool'}).name,'PencilLine');
    assert.equal(getThinkingIcon({title:'思考中',toolName:'constructor'}).name,'PencilLine');
+   // 真实 Git 工具与根据其结果命名的最后一轮使用 GitBranch
+   for (const toolName of ['git_status','git_commit','git_push']) {
+     assert.equal(getThinkingIcon({title:'读取改动差异',toolName}).name,'GitBranch');
+   }
+   assert.equal(getThinkingIcon({title:'汇总提交结果'}).name,'GitBranch');
+   assert.equal(getThinkingIcon({title:'汇总推送结果'}).name,'GitBranch');
+   assert.equal(getThinkingIcon({title:'汇总修改结果'}).name,'FilePenLine');
+   assert.equal(getThinkingIcon({title:'汇总检索结果'}).name,'Search');
  });
 
  test('delayed title switches the icon once, summary deltas do not restart it, completion uses a book', async () => {
@@ -320,3 +328,36 @@ test('terminal fields cannot override real tool presentation or resurrect comple
      } finally { await act(async () => root.unmount()); }
    }
  });
+
+test('酌思 resolved mode travels over SSE, survives escalation and history restore, and shows in the panel', async () => {
+  const frames = [
+    { type: 'thinking_mode', mode: 'light', reason: '联网新闻', escalated: false },
+    event('thinking_start', 1), event('thinking_end', 1),
+    { type: 'thinking_mode', mode: 'deep', reason: '引用核验未通过', escalated: true },
+    { type: 'done' },
+  ];
+  let trace;
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join(''));
+  try {
+    await sendChatMessage({ sessionId: 's', message: '广州新闻' }, {
+      onThinking: item => { trace = acceptThinkingEvent(trace, item); },
+      onDone: status => { trace = finishThinking(trace, status); },
+    });
+  } finally { globalThis.fetch = previousFetch; }
+  assert.deepEqual(trace.thinkingMode, { mode: 'deep', reason: '引用核验未通过', escalated: true, initialReason: '联网新闻' });
+  assert.equal(trace.rounds.length, 1);
+
+  const restored = restoreThinking(JSON.parse(JSON.stringify({ ...trace, status: 'completed' })));
+  assert.deepEqual(restored.thinkingMode, trace.thinkingMode);
+  assert.equal(restoreThinking({ rounds: [], status: 'completed', thinkingMode: { mode: 'max' } }).thinkingMode, undefined);
+
+  const root = createRoot(document.getElementById('root'));
+  await act(async () => root.render(React.createElement(Panel, { trace: restored })));
+  assert.equal(document.querySelector('.thinking-mode-note').textContent, '酌思 · 由随思转为深思（引用核验未通过）');
+  await act(async () => root.render(React.createElement(Panel, { trace: { ...restored, thinkingMode: { mode: 'light', reason: '联网新闻', escalated: false } } })));
+  assert.equal(document.querySelector('.thinking-mode-note').textContent, '酌思 · 本轮随思（联网新闻）');
+  await act(async () => root.render(React.createElement(Panel, { trace: { rounds: restored.rounds, status: 'completed' } })));
+  assert.equal(document.querySelector('.thinking-mode-note'), null);   // 随思/深思固定模式不显示
+  await act(async () => root.unmount());
+});

@@ -11,6 +11,8 @@
     &.is-open { grid-template-rows: 1fr; opacity: 1; visibility: visible; transition-delay: 0s; }
   }
   .thinking-fold-inner { min-height: 0; overflow: hidden; }
+  // 酌思本轮实际采用的深浅，放在思考记录最上方的一行小字
+  .thinking-mode-note { margin: 0 0 8px; font-size: 12px; line-height: 18px; color: #9e9cb8; }
   .thinking-summary { animation: thinking-summary-in 180ms ease-out; }
   .thinking-running > .thinking-fold-inner, .thinking-rounds { display: flex; flex-direction: column; min-width: 0; }
   .thinking-previous { margin-bottom: 14px; }

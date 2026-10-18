@@ -5,8 +5,17 @@ import type { ShareMessage } from '../../share/shareContent';
 import { shareCitations } from '../../share/shareContent';
 import './ChatShare.less';
 import { shareCodeComponents } from './MarkdownCodeBlock';
+import { FALLBACK_USER_LABEL } from '../../user/profile';
 
-export default function ShareImageTemplate({ messages }: { messages: ShareMessage[] }) {
+export default function ShareImageTemplate({
+  messages,
+  userName = FALLBACK_USER_LABEL,
+}: {
+  messages: ShareMessage[];
+  /** 用户消息的署名；缺省或空白时显示「你」。 */
+  userName?: string;
+}) {
+  const label = userName.trim() || FALLBACK_USER_LABEL;
   return (
     <article className="gor-share-sheet">
       <div className="gor-share-frame">
@@ -25,7 +34,7 @@ export default function ShareImageTemplate({ messages }: { messages: ShareMessag
           {messages.map((message) => (
             <section className="gor-share-message" key={message.id} data-message-id={message.id}>
               <h2 className="gor-share-label">
-                {message.role === 'user' ? '你 · 提问' : 'Gor · 回答'}
+                {message.role === 'user' ? label : 'Gor'}
               </h2>
               <div className="gor-share-card">
                 <ReactMarkdown

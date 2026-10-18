@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ChatMessage } from '../types';
 import { extractShareMessages, isShareableMessage } from './shareContent';
 import { disposeShareImage, exportShareImage, type ShareImage } from './exportShareImage';
+import { getUserNickname } from '../user/profile';
 
 /** Session-owned sharing state. Export freezes a narrow body snapshot, not Agent state. */
 export function useChatShare(sessionId: string | null, messages: ChatMessage[]) {
@@ -54,7 +55,7 @@ export function useChatShare(sessionId: string | null, messages: ChatMessage[]) 
     setOpen(true);
     setBusy(true);
     try {
-      const result = await exportShareImage(selected, controller.signal);
+      const result = await exportShareImage(selected, controller.signal, getUserNickname());
       if (job.current !== controller) {
         disposeShareImage(result);
         return;
@@ -79,6 +80,7 @@ export function useChatShare(sessionId: string | null, messages: ChatMessage[]) 
     cancel,
     clearAll,
     generate,
+    completeDownload: cancel,
     open,
     busy,
     error,

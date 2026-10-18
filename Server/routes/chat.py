@@ -31,7 +31,8 @@ from services.context_engine import context_engine, estimate_tokens, fallback_co
 from project_api.vscode_context import create_current_vscode_project_api
 from project_api.changes import ChangeRecorder, current_recorder, snapshot
 from project_api.types import ProjectRef
-from db.project_changes import change_sets, get_edit_mode
+from db.project_changes import change_sets, get_edit_mode, get_thinking_mode, get_model_preference  # legacy symbol for downstream patches; model lookup is intentionally unused
+from models import registry as model_registry
 import uuid
 
 router = APIRouter()
@@ -60,6 +61,8 @@ class ChatRequest(BaseModel):
     assistantMessageId: str | None = Field(default=None, max_length=80)
     newPreviewProject: bool = False
     editMode: Literal['auto', 'review'] | None = None
+    thinkingMode: Literal['auto', 'light', 'deep'] | None = None
+    modelId: str | None = Field(default=None, max_length=200)
 
 
 @router.post("/chat")
@@ -72,6 +75,13 @@ async def chat(request: Request, body: ChatRequest):
     # Freeze before the stream/Agent starts; later session preference updates
     # cannot change the execution policy of this request.
     edit_mode = body.editMode or await get_edit_mode(body.sessionId)
+    # 同样在请求开始时冻结；读取失败按默认的酌思处理，不阻止发送
+    try:
+        thinking_mode = body.thinkingMode or await get_thinking_mode(body.sessionId)
+    except Exception:
+        thinking_mode = "auto"
+    # 模型选择不持久化；当前页面可显式指定，缺省/重载后始终使用默认模型。
+    chat_model_id = model_registry.resolve_model_id(body.modelId)
 
     async def event_generator() -> AsyncGenerator[str, None]:
         # ===== SSE 连接建立 =====
@@ -434,6 +444,13 @@ async def chat(request: Request, body: ChatRequest):
                         "stored_in_chat_history=false included_in_llm_prompt=false"
                     )
                     return
+                if event.get("type") == "answer_verification":
+                    # 引用核验摘要随 search_trace 持久化（只有数量，没有正文）
+                    full_search_trace = dict(full_search_trace or {})
+                    full_search_trace["answerVerification"] = {
+                        key: event.get(key) for key in ("revised", "removedSentences", "factSentences",
+                                                        "citedFactSentences", "uncited", "invalidCitations", "coverage")
+                    }
                 if event.get("type") == "search_sources":
                     # 合并多次搜索（Agent 单轮可能调用 web_search 两次）：按 url 去重
                     for src in event.get("sources") or []:
@@ -481,6 +498,9 @@ async def chat(request: Request, body: ChatRequest):
                     plugin_workspace_request,
                     session_id,
                     **({"presentation_source_explicit": True} if body.presentationMessageId else {}),
+                    **({"deep_thinking": False} if thinking_mode == "light" else
+                       {"auto_thinking": True} if thinking_mode == "auto" else {}),
+                    **({"model_id": chat_model_id} if chat_model_id != model_registry.default_model_id() else {}),
                 )
             )
 
@@ -692,7 +712,7 @@ async def chat(request: Request, body: ChatRequest):
             })
 
             # 10. 模型额度扣减，发送 model_quota_info 事件
-            model_display_name = get_model_display_name(config.Ark.MODEL_ID)
+            model_display_name = get_model_display_name(chat_model_id)
             total_tokens = token_usage["total_tokens"]
             quota_result = await deduct_model_quota(model_display_name, total_tokens)
 
@@ -713,7 +733,7 @@ async def chat(request: Request, body: ChatRequest):
 
             # 11. 全局埋点：写入监控日志
             print(
-                f"[MetricsLog] sessionId={session_id}, model={config.Ark.MODEL_ID}, "
+                f"[MetricsLog] sessionId={session_id}, model={chat_model_id}, "
                 f"prompt_tokens={token_usage['prompt_tokens']}, "
                 f"completion_tokens={token_usage['completion_tokens']}, "
                 f"total_tokens={token_usage['total_tokens']}, "

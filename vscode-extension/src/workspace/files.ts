@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { createHash } from 'node:crypto';
 import {
   describeWorkspaceRoots,
   isUriWithinWorkspaceRoot,
@@ -240,7 +241,8 @@ export async function createProjectDirectory(params: WorkspaceParams): Promise<R
   return { success: true, path, created: true };
 }
 
-export async function deleteProjectFile(params: WorkspaceParams): Promise<Record<string, unknown>> {
+/** confirm：所有检查通过后、真正删除前调用（审阅卡片）；拒绝时应抛出错误。 */
+export async function deleteProjectFile(params: WorkspaceParams, confirm?: () => Promise<void>): Promise<Record<string, unknown>> {
   const path = mutationPath(params.path);
   if (isProtectedDeletePath(path)) {
     throw new WorkspaceRequestError('PROTECTED_PATH', '不允许删除 Git 或 VS Code 元数据路径。');
@@ -257,13 +259,21 @@ export async function deleteProjectFile(params: WorkspaceParams): Promise<Record
     throw new WorkspaceRequestError('FILE_NOT_FOUND', '目标路径不是普通文件。');
   }
 
-  const open = findOpenDocument(uri);
   const expected = expectedDeleteVersion(params.expectedFileVersion ?? params.expectedVersion);
-  if (open && expected !== undefined && open.version !== expected) {
-    throw new WorkspaceRequestError('VERSION_CONFLICT', `文件版本已变化，请重新读取后再删除：${path}`);
-  }
-  if (open?.isDirty) {
-    throw new WorkspaceRequestError('FILE_HAS_UNSAVED_CHANGES', '文件有未保存的编辑，已取消删除。');
+  const checkOpenDocument = () => {
+    const open = findOpenDocument(uri);
+    if (open && expected !== undefined && open.version !== expected) {
+      throw new WorkspaceRequestError('VERSION_CONFLICT', `文件版本已变化，请重新读取后再删除：${path}`);
+    }
+    if (open?.isDirty) {
+      throw new WorkspaceRequestError('FILE_HAS_UNSAVED_CHANGES', '文件有未保存的编辑，已取消删除。');
+    }
+  };
+  checkOpenDocument();
+  if (confirm) {
+    // 先过完所有检查再请用户确认；确认期间文件可能被编辑，确认后再查一次。
+    await confirm();
+    checkOpenDocument();
   }
 
   try {
@@ -274,7 +284,7 @@ export async function deleteProjectFile(params: WorkspaceParams): Promise<Record
   return { success: true, path, deleted: true };
 }
 
-export async function deleteProjectDirectory(params: WorkspaceParams): Promise<Record<string, unknown>> {
+export async function deleteProjectDirectory(params: WorkspaceParams, confirm?: () => Promise<void>): Promise<Record<string, unknown>> {
   if (params.recursive === true) {
     throw new WorkspaceRequestError('UNSUPPORTED_OPERATION', '第一版不允许递归删除目录。');
   }
@@ -308,6 +318,12 @@ export async function deleteProjectDirectory(params: WorkspaceParams): Promise<R
   }
   if (entries.length > 0) {
     throw new WorkspaceRequestError('DIRECTORY_NOT_EMPTY', '目录不为空；为避免误删，未执行删除。');
+  }
+  if (confirm) {
+    await confirm();
+    if ((await vscode.workspace.fs.readDirectory(uri)).length > 0) {
+      throw new WorkspaceRequestError('DIRECTORY_NOT_EMPTY', '确认期间目录中出现了文件；为避免误删，未执行删除。');
+    }
   }
 
   try {
@@ -675,6 +691,39 @@ export async function readProjectFile(params: WorkspaceParams): Promise<Record<s
 
   const document = await openDocument(uri);
   const entireText = document.getText();
+  const readVersion = document.version;
+  const readDirty = document.isDirty;
+  let diskVerified = readDirty;
+  // Dirty editor buffers are authoritative. Clean buffers must also agree with
+  // disk, including Git/terminal writes that VS Code has not synchronized yet.
+  if (!readDirty) {
+    if (stat.size > MAX_RANGE_FILE_BYTES) {
+      throw new WorkspaceRequestError('FILE_TOO_LARGE', '磁盘文件超过安全核对限制，请同步编辑器状态后重试。');
+    }
+    let diskBytes: Uint8Array;
+    try { diskBytes = await vscode.workspace.fs.readFile(uri); }
+    catch (error) { throw mapFsError(error); }
+    // Preserve native reads for non-UTF8 source; uncertain encoding disables reuse.
+    let diskText: string | undefined;
+    try { diskText = new TextDecoder('utf-8', { fatal: true }).decode(diskBytes); } catch { /* native encoding */ }
+    if (diskText !== undefined && !looksLikeBinaryContent(diskText)) {
+      if (diskText !== entireText) {
+        throw new WorkspaceRequestError('VERSION_CONFLICT', '磁盘文件已变化，编辑器尚未同步；请重新读取后再继续。');
+      }
+      diskVerified = true;
+    }
+  }
+  if (findOpenDocument(uri) !== document || document.isClosed || document.version !== readVersion
+    || document.isDirty !== readDirty || document.getText() !== entireText) {
+    throw new WorkspaceRequestError('VERSION_CONFLICT', '读取期间文档发生变化，请重新读取。');
+  }
+  const readState = diskVerified ? {
+    provider: 'vscode',
+    identity: createHash('sha256').update(uri.toString()).digest('hex'),
+    fileVersion: readVersion,
+    dirty: readDirty,
+    contentHash: createHash('sha256').update(entireText, 'utf8').digest('hex'),
+  } : undefined;
   if (looksLikeBinaryContent(entireText)) {
     throw new WorkspaceRequestError('UNSUPPORTED_FILE_TYPE', '文件内容不是可读取的文本。');
   }
@@ -706,6 +755,7 @@ export async function readProjectFile(params: WorkspaceParams): Promise<Record<s
       version: document.version,
       fileVersion: document.version,
       workspaceVersion: getWorkspaceVersion(params),
+      readState,
     };
     if (rootInfo.isMultiRoot) response.root = rootInfo.id;
     else response.rootName = root.name;
@@ -739,6 +789,7 @@ export async function readProjectFile(params: WorkspaceParams): Promise<Record<s
     version: document.version,
     fileVersion: document.version,
     workspaceVersion: getWorkspaceVersion(params),
+    readState,
   };
   if (rootInfo.isMultiRoot) response.root = rootInfo.id;
   else response.rootName = root.name;
