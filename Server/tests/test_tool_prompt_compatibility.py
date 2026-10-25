@@ -11,7 +11,9 @@ def test_unrelated_instruction_cards_remain_unchanged():
         "PROJECT_BASE_PROMPT": "8d2722380453fbce4dc34be78467e286c712c03f6d9b87828f51348a4fd2033e",
         "WEB_PROMPT": "67ea77a0f7eda6ca370144f1762ae853c62fbac064c45add7c01a20e4acab756",
         "WEB_FALLBACK_PROMPT": "45ab0fa929dba2c4008fdac1a3ebf34ff0de1df43671a8d67188d07a59f20a4b",
-        "NEWS_RESEARCH_PROMPT": "0067d02de0499978179e078cedde1b7974c00f119e380fc3b92cfd279efee611",
+        # 2026-10-19 有意修改（提速）：资讯 3–4 条、每条 2～3 句、全文约 600～800 字；检索只做一轮、
+        # 最多读 5 篇；每个事实句句末标 [S#]（不能只在段尾统一标注）；段尾来源只写媒体名与日期、不写网址
+        "NEWS_RESEARCH_PROMPT": "bf995eaac6e6b22a708ad041f870ee318ee1dd456f26280ff98fbae1691a064e",
         "WEB_READER_PROMPT": "0a31aada7b8079927e64a380e735d2ac36fce8ed021b3b02dbcc3d43de228069",
         "GITHUB_CODE_PROMPT": "52930b5fa0c1085dbe92d1427d11f6e6e919db8ce60b6cc9b3974c0d52fc5be3",
         "WEATHER_PROMPT": "e80d00bcb9fa3888ae4c84ff60be4346aab44c22f786f065dce8f0cefbe0caa5",

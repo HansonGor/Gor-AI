@@ -5,7 +5,7 @@ import { useFeedback } from '../components/ui/feedback';
 import { useFileEditMode } from './useFileEditMode';
 import { useThinkingMode } from './useThinkingMode';
 import { applyChatModelSelection, useChatModel } from './useChatModel';
-import { sendChatMessage } from '../api/chat';
+import { cancelChatRun, sendChatMessage } from '../api/chat';
 import { acceptThinkingEvent, finishThinking } from '../utils/thinking';
 import { saveGeneratedGlb } from '../api/webProjectArtifacts';
 import { validateSceneSpec, type SceneSpec } from '../modeling/sceneSpec.ts';
@@ -96,6 +96,9 @@ export function useMessage(sessionId: string | null) {
   } | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
+  // 回复在服务端独立运行：停止要凭 runId 调用取消接口；本端发起的回复按 assistantMessageId 识别，多端同步时跳过
+  const runIdRef = useRef<string | null>(null);
+  const localAssistantIdsRef = useRef(new Set<string>());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const { startVideoPolling, stopVideoPolling } = useVideoPolling();
 
@@ -259,6 +262,7 @@ export function useMessage(sessionId: string | null) {
         executionPhase: 'thinking',
       };
 
+      localAssistantIdsRef.current.add(assistantMsg.id);
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
       setInput('');
       if (uploadSummary) setPendingUploadSummary(null);
@@ -371,6 +375,9 @@ export function useMessage(sessionId: string | null) {
             modelId,
           },
           {
+            onRun: (runId) => {
+              runIdRef.current = runId;
+            },
             onThinking: (event) => {
               setMessages(previous => previous.map(message => message.id === assistantMsg.id
                 ? { ...message, thinkingTrace: acceptThinkingEvent(message.thinkingTrace, event) } : message));
@@ -795,6 +802,7 @@ export function useMessage(sessionId: string | null) {
       } finally {
         setIsLoading(false);
         abortRef.current = null;
+        runIdRef.current = null;
         stopVideoPolling();
       }
     },
@@ -855,6 +863,9 @@ export function useMessage(sessionId: string | null) {
    * 停止生成
    */
   const handleStop = useCallback(() => {
+    // 回复在服务端运行，断开连接不会停止它：先请服务端取消，再停止本端接收
+    const runId = runIdRef.current;
+    if (runId) void cancelChatRun(runId).catch((error) => console.warn('[Message] 停止回复失败:', error));
     abortRef.current?.abort();
     updateLastAssistant((last) => ({
       ...last,
@@ -864,6 +875,14 @@ export function useMessage(sessionId: string | null) {
     }));
     stopVideoPolling();
   }, [stopVideoPolling, updateLastAssistant]);
+
+  /** 只停止本端接收（页面卸载等），不取消服务端的回复；其他设备照常看到它完成。 */
+  const detachStream = useCallback(() => {
+    abortRef.current?.abort();
+    stopVideoPolling();
+  }, [stopVideoPolling]);
+
+  const isLocalAssistantId = useCallback((id: string) => localAssistantIdsRef.current.has(id), []);
 
   return {
     // 状态
@@ -895,6 +914,8 @@ export function useMessage(sessionId: string | null) {
     addGeneratedFileToLatestAssistant,
     hasPendingUploadSummary: pendingUploadSummary !== null,
     handleStop,
+    detachStream,
+    isLocalAssistantId,
     handleImageSelect,
     removePendingImage,
     triggerFileInput,

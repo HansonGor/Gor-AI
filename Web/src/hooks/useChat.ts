@@ -1,10 +1,12 @@
 // 聊天状态管理 Hook（组合入口）
 // 整合 useSession（会话管理）、useMessage（消息发送）、图片处理
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFeedback } from '../components/ui/feedback';
-import { useSession } from './useSession';
+import { getSessionUserId, useSession } from './useSession';
 import { useMessage } from './useMessage';
-import { uploadSessionAttachment } from '../api/chat';
+import { useChatSync } from './useChatSync';
+import { cancelChatRun, uploadSessionAttachment } from '../api/chat';
+import { remoteRunMessages } from '../utils/remoteRun';
 import { compressImages } from '../utils/image';
 import { usePreviewProjectStore } from '../stores/previewProjectStore.ts';
 import { deleteSessionPreview } from '../utils/sessionPreviewStorage.ts';
@@ -55,7 +57,9 @@ export function useChat() {
     clearPendingUploadSummary,
     addGeneratedFileToLatestAssistant,
     hasPendingUploadSummary,
-    handleStop,
+    handleStop: handleStopBase,
+    detachStream,
+    isLocalAssistantId,
     handleImageSelect: handleImageSelectBase,
     removePendingImage,
     triggerFileInput,
@@ -73,6 +77,54 @@ export function useChat() {
       if (requestId === sessionCacheRequestRef.current) setIsSessionCacheLoading(false);
     }
   }, [loadHistory, setMessagesList]);
+
+  // ===== 多端同步：其他设备发消息、生成回复、增删会话时本端实时更新 =====
+  const [remotePreviewTick, setRemotePreviewTick] = useState(0);
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+  const isLoadingRef = useRef(isLoading);
+  isLoadingRef.current = isLoading;
+  const syncSessionDeletedRef = useRef<() => void>(() => undefined);
+  const syncUserId = useMemo(() => (isSessionReady ? getSessionUserId() : null), [isSessionReady]);
+
+  /** 静默重新拉取当前会话（不显示加载动画）：其他设备的回复结束后用服务器记录替换临时显示 */
+  const reloadSessionQuietly = useCallback(async (sid: string) => {
+    if (sessionIdRef.current !== sid || isLoadingRef.current) return;
+    try {
+      const history = await loadHistory(sid);
+      if (sessionIdRef.current === sid && !isLoadingRef.current) setMessagesList(history);
+    } catch (error) {
+      console.warn('[Sync] 刷新会话失败:', error);
+    }
+  }, [loadHistory, setMessagesList]);
+
+  const { currentRun: remoteRun } = useChatSync(syncUserId, sessionId, {
+    onSessionsChanged: () => { void fetchSessions(); },
+    onCurrentSessionDeleted: () => syncSessionDeletedRef.current(),
+    onRemoteRunFinished: async (sid) => {
+      if (sid !== sessionIdRef.current) return;
+      await reloadSessionQuietly(sid);
+      setRemotePreviewTick((tick) => tick + 1);
+    },
+    onPreviewChanged: (sid) => {
+      if (sid === sessionIdRef.current && !isLoadingRef.current) setRemotePreviewTick((tick) => tick + 1);
+    },
+    isLocalAssistant: isLocalAssistantId,
+  });
+
+  const displayMessages = useMemo(
+    () => (remoteRun && !isLoading ? [...messages, ...remoteRunMessages(remoteRun, messages)] : messages),
+    [messages, remoteRun, isLoading],
+  );
+
+  /** 停止：本端的回复走原有流程；其他设备正在生成的回复，请服务端停止（所有设备同步停止） */
+  const handleStop = useCallback(() => {
+    if (!isLoading && remoteRun) {
+      void cancelChatRun(remoteRun.runId).catch((error) => notify(error instanceof Error ? error.message : '停止失败'));
+      return;
+    }
+    handleStopBase();
+  }, [isLoading, remoteRun, handleStopBase, notify]);
 
   /**
    * 页面初始化
@@ -203,20 +255,34 @@ export function useChat() {
         notify('会话未初始化，请刷新页面');
         return;
       }
+      if (remoteRun) {
+        notify('另一台设备正在回复这个会话，请稍候或先停止');
+        return;
+      }
       if (!(await waitForSessionCreation(sessionId))) return;
       await handleSendBase(presetText);
       // 刷新会话列表（标题可能已更新）
       await fetchSessions();
     },
-    [sessionId, waitForSessionCreation, handleSendBase, fetchSessions, notify],
+    [sessionId, remoteRun, waitForSessionCreation, handleSendBase, fetchSessions, notify],
   );
 
-  // 组件卸载时清理
+  // 当前会话在别的设备上被删除：切到剩下的第一个会话，没有则新建
+  syncSessionDeletedRef.current = () => {
+    notify('这个会话已在另一台设备上删除');
+    void fetchSessions().then((list) => {
+      const next = list.find((session) => session.id !== sessionIdRef.current);
+      if (next) void selectSession(next.id);
+      else void createNewSession();
+    });
+  };
+
+  // 组件卸载时只停止本端接收；回复在服务端继续，其他设备照常看到它完成
   useEffect(() => {
     return () => {
-      handleStop();
+      detachStream();
     };
-  }, [handleStop]);
+  }, [detachStream]);
 
   return {
     // 会话状态
@@ -224,8 +290,12 @@ export function useChat() {
     sessionId,
     isSessionReady,
     isSessionCacheLoading,
-    // 消息状态
-    messages,
+    // 消息状态（含其他设备正在生成的回复）
+    messages: displayMessages,
+    /** 其他设备正在回复当前会话（发送按钮置灰、停止按钮可停止它） */
+    isRemoteReplying: Boolean(remoteRun) && !isLoading,
+    /** 其他设备更新了当前会话的预览项目，或其回复已结束：页面据此从服务器刷新预览 */
+    remotePreviewTick,
     fileEditMode,
     fileEditModeLoading,
     setFileEditMode,
@@ -239,7 +309,8 @@ export function useChat() {
     setInput,
     pendingImages,
     pendingUploadAttachments,
-    isLoading,
+    // 界面上的「回复中」：本端或其他设备正在回复当前会话
+    isLoading: isLoading || Boolean(remoteRun),
     contextRemain,
     modelQuotaInfo,
     projectChanges,

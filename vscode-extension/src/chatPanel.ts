@@ -19,7 +19,16 @@ type WebviewRequest = {
   answer?: string;
   runId?: string;
   url?: string;
+  token?: string;
 };
+
+// 账号凭证（与 Web 共用账号）存于 VS Code SecretStorage，不写入设置或工作区文件。
+const AUTH_TOKEN_SECRET = 'gor.authToken';
+
+/** 后端签发的凭证是 token_urlsafe(32)，只接受这种形态，拒绝任意字符串写入密钥库。 */
+export function isPlausibleAuthToken(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{20,128}$/.test(value);
+}
 
 export function isLocalDevUrl(value: string): boolean {
   try {
@@ -54,12 +63,15 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private registration: vscode.Disposable | undefined;
   private disposed = false;
+  // undefined 表示尚未从 SecretStorage 读取
+  private authToken: string | null | undefined;
 
   private constructor(
     extensionUri: vscode.Uri,
     output: vscode.OutputChannel,
     private readonly getWorkspaceId: () => string | undefined,
     private readonly waitForWorkspaceId: (timeoutMs: number) => Promise<string | undefined>,
+    private readonly secrets?: vscode.SecretStorage,
   ) {
     this.extensionUri = extensionUri;
     this.output = output;
@@ -72,8 +84,10 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     output: vscode.OutputChannel,
     getWorkspaceId: () => string | undefined = () => undefined,
     waitForWorkspaceId: (timeoutMs: number) => Promise<string | undefined> = async () => undefined,
+    secrets?: vscode.SecretStorage,
   ): ChatView {
-    const provider = new ChatView(extensionUri, output, getWorkspaceId, waitForWorkspaceId);
+    const provider = new ChatView(extensionUri, output, getWorkspaceId, waitForWorkspaceId, secrets);
+    void provider.getAuthToken();
     provider.registration = vscode.window.registerWebviewViewProvider(
       ChatView.viewType,
       provider,
@@ -193,15 +207,16 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     }
   }
 
-  private async reloadWebview(): Promise<void> {
+  private async reloadWebview(reason = 'after frontend rebuild'): Promise<void> {
     if (this.disposed || !this.view) return;
     try {
       const view = this.view;
       const html = await this.getHtml(this.extensionUri, view.webview);
       if (this.disposed || this.view !== view) return;
-      view.webview.html = html;
+      // 内容与上次完全相同时 VS Code 不会重新加载，附上时间戳确保真正重载
+      view.webview.html = `${html}<!-- reload ${Date.now()} -->`;
       this.sendWorkspaceContext();
-      this.output.appendLine('[Gor] Refreshed Chat Webview after frontend rebuild');
+      this.output.appendLine(`[Gor] Refreshed Chat Webview ${reason}`);
     } catch (error) {
       this.output.appendLine(`[Gor] Could not refresh Chat Webview: ${this.errorText(error)}`);
     }
@@ -285,6 +300,24 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       case 'gor.workspaceContextReady':
         this.sendWorkspaceContext();
         break;
+      case 'gor.reloadWebview':
+        // 登录、注册、退出后按新身份重新加载聊天页（页面自身不能 location.reload，否则空白）
+        void this.reloadWebview('after sign-in state changed');
+        break;
+      case 'gor.authTokenRequest':
+        this.post({ type: 'gor.authToken', token: await this.getAuthToken() });
+        break;
+      case 'gor.saveAuthToken':
+      case 'gor.clearAuthToken': {
+        const token = message.type === 'gor.saveAuthToken' && isPlausibleAuthToken(message.token) ? message.token : null;
+        try {
+          await this.setAuthToken(token);
+        } catch (error) {
+          this.output.appendLine(`[Gor] Could not store sign-in state: ${this.errorText(error)}`);
+        }
+        this.post({ type: 'gor.authTokenSaved' });
+        break;
+      }
       case 'gor.toolchainApprovalShown':
         if (typeof message.approvalId === 'string') this.pendingApprovals.get(message.approvalId)?.onShown();
         break;
@@ -332,6 +365,32 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     }
   }
 
+  private async getAuthToken(): Promise<string | null> {
+    if (this.authToken === undefined) {
+      let stored: string | undefined;
+      try {
+        stored = await this.secrets?.get(AUTH_TOKEN_SECRET);
+      } catch {
+        stored = undefined;
+      }
+      // 读取期间若已登录/退出，以那次写入为准，不用旧值覆盖
+      if (this.authToken === undefined) this.authToken = isPlausibleAuthToken(stored) ? stored : null;
+    }
+    return this.authToken ?? null;
+  }
+
+  private async setAuthToken(token: string | null): Promise<void> {
+    this.authToken = token;
+    if (token) await this.secrets?.store(AUTH_TOKEN_SECRET, token);
+    else await this.secrets?.delete(AUTH_TOKEN_SECRET);
+  }
+
+  /** 扩展代发的 API 请求同样带上账号凭证（注册时已预读 SecretStorage），与 Webview 直连时一致。 */
+  private authHeaders(): Record<string, string> {
+    const token = this.authToken;
+    return { 'X-Gor-Client': 'vscode', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  }
+
   private isSafeSessionId(value: unknown): value is string {
     return typeof value === 'string' && /^[\w-]{1,80}$/.test(value);
   }
@@ -365,6 +424,7 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       method,
       headers: {
         Accept: 'application/json',
+        ...this.authHeaders(),
         ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': payload.length } : {}),
       },
       timeout: 30_000,
@@ -441,6 +501,7 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       method: 'POST',
       headers: {
         Accept: 'text/event-stream',
+        ...this.authHeaders(),
         'Content-Type': 'application/json',
         'Content-Length': payload.length,
       },

@@ -44,7 +44,8 @@ test('selector defaults to 酌思 at the top, switches to 随思, closes and ret
   const changes = [];
   const root = await mount(React.createElement(Selector, { onChange: mode => changes.push(mode) }));
   const trigger = document.querySelector('.thinking-mode-selector .file-edit-mode-trigger');
-  assert.equal(trigger.textContent, '酌思（auto）');
+  assert.equal(trigger.textContent, '酌思', '胶囊上各端都只显示名称，「（auto）」只在弹框里');
+  assert.equal(trigger.querySelector('.thinking-mode-tag'), null);
   assert.equal(trigger.getAttribute('aria-label'), '思考方式：酌思（auto）');
   assert.ok(trigger.querySelector('.lucide-scale'));
   await act(async () => trigger.click());

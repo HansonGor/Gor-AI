@@ -5,13 +5,17 @@ SSE 流式聊天路由
 import asyncio
 import json
 import re
+import time
 from typing import AsyncGenerator, Dict, Any, Literal
 
 from fastapi import APIRouter, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from agent.agent import run_agent
+from db import auth as auth_db
+from routes.auth import ensure_session_access
+from services.chat_runs import RunConflictError, registry as chat_runs, stream_run
 from tools.presentation_revision import saved_presentation
 from services.preview.workspace import PreviewProjectWorkspace
 from agent.token_callback import TokenCountCallback
@@ -72,23 +76,45 @@ async def chat(request: Request, body: ChatRequest):
     SSE 流式聊天接口
     """
     print("[SSE] 收到请求")
-    # Freeze before the stream/Agent starts; later session preference updates
-    # cannot change the execution policy of this request.
-    edit_mode = body.editMode or await get_edit_mode(body.sessionId)
-    # 同样在请求开始时冻结；读取失败按默认的酌思处理，不阻止发送
+    # 分步计时：每步耗时与距请求开始的累计耗时，只记录步骤名与毫秒数
+    timing = {"start": time.perf_counter()}
+    timing["last"] = timing["start"]
+
+    def mark(step: str) -> None:
+        now = time.perf_counter()
+        print(f"[RouteTiming] step={step} ms={round((now - timing['last']) * 1000)} "
+              f"total_ms={round((now - timing['start']) * 1000)}")
+        timing["last"] = now
+    # 会话归属校验与读取偏好并行，不额外拉长首包时间；不通过时在开始推流前返回 404
+    access_check = asyncio.create_task(ensure_session_access(request, body.sessionId)) if body.sessionId else None
+    # 会话所属命名空间：回复事件按它广播给同账号的其他设备；与上面的读取并行
+    owner_lookup = asyncio.create_task(auth_db.get_session_owner(body.sessionId)) if body.sessionId else None
     try:
-        thinking_mode = body.thinkingMode or await get_thinking_mode(body.sessionId)
-    except Exception:
-        thinking_mode = "auto"
+        # Freeze before the stream/Agent starts; later session preference updates
+        # cannot change the execution policy of this request.
+        edit_mode = body.editMode or await get_edit_mode(body.sessionId)
+        # 同样在请求开始时冻结；读取失败按默认的酌思处理，不阻止发送
+        try:
+            thinking_mode = body.thinkingMode or await get_thinking_mode(body.sessionId)
+        except Exception:
+            thinking_mode = "auto"
+    finally:
+        if access_check:
+            await access_check
+    mark("read_modes")
     # 模型选择不持久化；当前页面可显式指定，缺省/重载后始终使用默认模型。
     chat_model_id = model_registry.resolve_model_id(body.modelId)
 
-    async def event_generator() -> AsyncGenerator[str, None]:
+    async def event_generator(run) -> AsyncGenerator[str, None]:
         # ===== SSE 连接建立 =====
         yield ": connected\n\n"
+        # 发起端凭 runId 停止回复（断开连接不再取消，回复在服务端继续）
+        yield f"data: {json.dumps({'type': 'run', 'runId': run.id}, ensure_ascii=False)}\n\n"
 
         # ===== SSE 事件发送辅助函数 =====
         def send_event(event: Dict[str, Any]) -> str:
+            # 记录并广播给同账号的其他设备
+            run.record(event)
             return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
         from models.thinking import ThinkingTrace
@@ -116,6 +142,16 @@ async def chat(request: Request, body: ChatRequest):
                 yield send_event({"type": "error", "message": "消息内容不能为空"})
                 yield send_event({"type": "done"})
                 return
+
+            # 读历史是只读操作，和下面读预览项目同时进行；保存提问仍在预览成功之后，
+            # 预览出错直接结束时不会留下没有回复的提问
+            async def load_history_early():
+                try:
+                    return await load_messages(session_id)
+                except Exception as load_err:
+                    return load_err
+
+            history_task = asyncio.create_task(load_history_early())
 
             # The session table is canonical. The browser sends only its project ID
             # and row revision after the initial bootstrap; full source is sent only
@@ -243,6 +279,7 @@ async def chat(request: Request, body: ChatRequest):
                 return
             print(f"[SSE] Preview Project: {preview_workspace.project_id if preview_workspace else 'none'} (server revision={preview_project_row_revision})")
 
+            mark("preview_project")
             # 1. 保存用户消息到数据库（包含图片信息）
             user_images = None
             if isinstance(messages, list) and len(messages) > 0:
@@ -280,32 +317,36 @@ async def chat(request: Request, body: ChatRequest):
                             item["previewStorageId"] = preview_record["id"]
                     user_attachments.append(item)
 
-            saved_current_id = None
-            try:
-                saved_current_id = await save_message(
-                    session_id,
-                    "user",
-                    user_content,
-                    images=user_images,
-                    attachments=user_attachments or None,
-                )
-                print("[SSE] 用户消息已保存（含图片和附件信息）")
-            except Exception as db_err:
-                print(f"[SSE] 保存用户消息失败: {db_err}")
-                # 不中断流程，继续执行
+            # 历史须在开始保存提问之前读完，这样读到的必然不含本轮提问；随后保存与构建上下文同时进行
+            db_messages = await history_task
+
+            async def save_user_message():
+                try:
+                    saved_id = await save_message(
+                        session_id,
+                        "user",
+                        user_content,
+                        images=user_images,
+                        attachments=user_attachments or None,
+                    )
+                    print("[SSE] 用户消息已保存（含图片和附件信息）")
+                    return saved_id
+                except Exception as db_err:
+                    print(f"[SSE] 保存用户消息失败: {db_err}")
+                    # 不中断流程，继续执行
+                    return None
+
+            save_user_task = asyncio.create_task(save_user_message())
 
             # 2. 从数据库加载历史消息，并在发送模型前压缩较旧上下文
             history_messages = []
             context_summary = None
             latest_presentation_schema = None
             try:
-                db_messages = await load_messages(session_id)
-                # Keep the current user turn outside compression, even though it
-                # has already been persisted for chat history and UI recovery.
-                prior_messages = [
-                    m for m in db_messages
-                    if saved_current_id is None or m["db_message_id"] < saved_current_id
-                ]
+                if isinstance(db_messages, Exception):
+                    raise db_messages
+                # 历史在保存本轮提问之前读取，本身就不含本轮提问，无需再按 ID 过滤。
+                prior_messages = list(db_messages)
                 current_message = {"role": "user", "content": user_content, "images": user_images}
                 try:
                     context = await context_engine.build_context(session_id, prior_messages, current_message)
@@ -382,6 +423,8 @@ async def chat(request: Request, body: ChatRequest):
                 else:
                     history_messages.append({"role": "user", "content": analyzed_content})
 
+            await save_user_task
+            mark("save_user_message_and_build_context")
             # 3. 累计 AI 完整回答，用于流结束后存库
             full_assistant_content = ""
             full_assistant_files = []
@@ -484,6 +527,7 @@ async def chat(request: Request, body: ChatRequest):
                 print(f"[SSE] VS Code ProjectRef provider=vscode project={vscode_project_context[1].project_id}")
 
             # 启动 Agent 执行（后台任务）
+            mark("prepare_agent")
             agent_task = asyncio.create_task(
                 run_agent(
                     history_messages,
@@ -506,9 +550,9 @@ async def chat(request: Request, body: ChatRequest):
 
             # 6. 从队列读取事件并发送
             while not agent_task.done() or not event_queue.empty():
-                # 检查连接是否断开
-                if await request.is_disconnected():
-                    print("[SSE] 客户端连接关闭，取消 Agent")
+                # 只有显式停止才取消；发起端断开（手机锁屏、切到后台）时回复继续，其他设备照常收到
+                if run.cancel_event.is_set():
+                    print("[SSE] 收到停止请求，取消 Agent")
                     cancel_event.set()
                     thinking_trace.status = "cancelled"
                     agent_task.cancel()
@@ -522,6 +566,7 @@ async def chat(request: Request, body: ChatRequest):
             # 等待 Agent 完成
             try:
                 await agent_task
+                mark("agent")
             except asyncio.CancelledError:
                 cancel_event.set()
                 thinking_trace.status = "cancelled"
@@ -711,36 +756,12 @@ async def chat(request: Request, body: ChatRequest):
                 "warning": context_remain["warning"],
             })
 
+            mark("after_agent_events")
             # 10. 模型额度扣减，发送 model_quota_info 事件
             model_display_name = get_model_display_name(chat_model_id)
             total_tokens = token_usage["total_tokens"]
-            quota_result = await deduct_model_quota(model_display_name, total_tokens)
-
-            if quota_result:
-                print(
-                    f"[SSE] 模型额度扣减: {quota_result['model_name']}, "
-                    f"旧={quota_result['old_remain']}, 消耗={quota_result['cost_total']}, 新={quota_result['new_remain']}"
-                )
-                yield send_event({
-                    "type": "model_quota_info",
-                    "model_name": quota_result["model_name"],
-                    "old_remain": quota_result["old_remain"],
-                    "cost_total": quota_result["cost_total"],
-                    "new_remain": quota_result["new_remain"],
-                })
-            else:
-                print(f"[SSE] 模型 {model_display_name} 额度扣减失败或表中无记录")
-
-            # 11. 全局埋点：写入监控日志
-            print(
-                f"[MetricsLog] sessionId={session_id}, model={chat_model_id}, "
-                f"prompt_tokens={token_usage['prompt_tokens']}, "
-                f"completion_tokens={token_usage['completion_tokens']}, "
-                f"total_tokens={token_usage['total_tokens']}, "
-                f"remain_token={context_remain['remain_token']}, "
-                f"warning={context_remain['warning']}, "
-                f"model_quota={quota_result['new_remain'] if quota_result else 'N/A'}"
-            )
+            # 扣额度与下面的保存回答、生成标题同时进行；结果在保存完成后再发给前端
+            quota_task = asyncio.create_task(deduct_model_quota(model_display_name, total_tokens))
 
             # 12. 流结束后保存 AI 完整回答（包含 token 数据）
             # A tool may successfully create a deliverable even when the model's
@@ -814,15 +835,50 @@ async def chat(request: Request, body: ChatRequest):
                         "full_source=false included_in_next_prompt=false"
                     )
                     print("[SSE] AI 回答已保存（含 token 数据）")
+                    mark("save_assistant_message")
 
                     # 13. AI 回答保存后，判断是否需要自动生成会话标题
                     try:
                         await auto_generate_session_title(session_id)
                     except Exception as title_err:
                         print(f"[SSE] 自动生成标题失败: {title_err}")
+                    mark("session_title")
                 except Exception as db_err:
                     print(f"[SSE] 保存 AI 回答失败: {db_err}")
 
+            try:
+                quota_result = await quota_task
+            except Exception as quota_err:
+                print(f"[SSE] 模型额度扣减异常: {type(quota_err).__name__}")
+                quota_result = None
+
+            if quota_result:
+                print(
+                    f"[SSE] 模型额度扣减: {quota_result['model_name']}, "
+                    f"旧={quota_result['old_remain']}, 消耗={quota_result['cost_total']}, 新={quota_result['new_remain']}"
+                )
+                yield send_event({
+                    "type": "model_quota_info",
+                    "model_name": quota_result["model_name"],
+                    "old_remain": quota_result["old_remain"],
+                    "cost_total": quota_result["cost_total"],
+                    "new_remain": quota_result["new_remain"],
+                })
+            else:
+                print(f"[SSE] 模型 {model_display_name} 额度扣减失败或表中无记录")
+
+            # 11. 全局埋点：写入监控日志
+            print(
+                f"[MetricsLog] sessionId={session_id}, model={chat_model_id}, "
+                f"prompt_tokens={token_usage['prompt_tokens']}, "
+                f"completion_tokens={token_usage['completion_tokens']}, "
+                f"total_tokens={token_usage['total_tokens']}, "
+                f"remain_token={context_remain['remain_token']}, "
+                f"warning={context_remain['warning']}, "
+                f"model_quota={quota_result['new_remain'] if quota_result else 'N/A'}"
+            )
+
+            mark("deduct_quota_wait")
             # Bind the real journal to this assistant message, not to a guessed
             # filename/latest project. History can recover this compact reference.
             for item in recorder.sets.values():
@@ -834,6 +890,7 @@ async def chat(request: Request, body: ChatRequest):
                     yield send_event({"type": "change_set", "changeSetId": item["id"],
                                      "roundId": item["roundId"], "projectRef": item["projectRef"]})
             thinking_trace.status = "cancelled" if cancel_event.is_set() else "completed"
+            mark("seal_change_sets")
             yield send_event({"type": "done", "status": thinking_trace.status})
 
         except Exception as err:
@@ -849,6 +906,7 @@ async def chat(request: Request, body: ChatRequest):
                     await save_thinking_trace(body.sessionId, body.assistantMessageId, thinking_trace.snapshot())
                 except Exception as trace_error:
                     print(f"[Thinking] history persistence failed: {type(trace_error).__name__}")
+                mark("save_thinking_trace_after_done")
             try:
                 await recorder.seal()
             except Exception as journal_error:
@@ -858,8 +916,27 @@ async def chat(request: Request, body: ChatRequest):
                 current_recorder.reset(recorder_token)
             print("[SSE] 连接已关闭")
 
+    try:
+        namespace = await owner_lookup if owner_lookup else None
+    except Exception as owner_error:  # 归属读取失败只影响多端同步，不阻止本次回复
+        print(f"[Sync] session owner lookup failed: {type(owner_error).__name__}")
+        namespace = None
+    last = body.messages[-1] if body.messages and isinstance(body.messages[-1], dict) else {}
+    user_message = {
+        "content": body.message,
+        "attachments": body.attachments or [],
+        **({"images": last.get("images")} if last.get("role") == "user" and last.get("images") else {}),
+    }
+    try:
+        run = chat_runs.start(session_id=body.sessionId, namespace=namespace,
+                              assistant_message_id=body.assistantMessageId, user_message=user_message,
+                              produce=event_generator)
+    except RunConflictError as conflict:
+        return JSONResponse({"detail": "另一台设备正在回复这个会话，请等它完成或先停止", "runId": conflict.run.id},
+                            status_code=409)
+
     return StreamingResponse(
-        event_generator(),
+        stream_run(run),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",

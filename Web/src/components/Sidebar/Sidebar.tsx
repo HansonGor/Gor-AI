@@ -1,6 +1,6 @@
 // 侧边栏 - 会话列表（移动端，Tailwind）
 import { useMemo, useState } from 'react';
-import { Archive, FileImage, FolderOpen, MessageSquareMore, Plus, Search, Settings, Star, Trash2 } from 'lucide-react';
+import { Archive, FileImage, FolderOpen, MessageSquareMore, Plus, Search, Star, Trash2 } from 'lucide-react';
 import type { SidebarProps } from '../../types';
 import { Button } from '../ui/button';
 import AppAvatar from '../AppAvatar';
@@ -45,6 +45,7 @@ export default function Sidebar({
   onCreateSession,
   onDeleteSession,
   theme = 'dark',
+  account,
 }: SidebarProps) {
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -136,9 +137,12 @@ export default function Sidebar({
         </div>
 
         <footer className="conversation-account">
-          <AppAvatar className="conversation-account-avatar" editable />
-          <span className="conversation-account-copy"><strong>{getUserNickname()}</strong><small>Plus</small></span>
-          <button type="button" className="conversation-settings" aria-label="设置" title="设置"><Settings /></button>
+          {account ?? (
+            <>
+              <AppAvatar className="conversation-account-avatar" editable />
+              <span className="conversation-account-copy"><strong>{getUserNickname()}</strong></span>
+            </>
+          )}
         </footer>
       </section>
       <AlertDialog

@@ -1,5 +1,6 @@
 import type { RefObject } from 'react';
 import { createPortal } from 'react-dom';
+import { Play } from 'lucide-react';
 import type { PreviewRuntimeState } from '../../preview/runtime/usePreviewRuntime.ts';
 import type { PreviewBuildState } from '../../preview/runtime/usePreviewCompiler.ts';
 import { Button } from '../ui/button';
@@ -34,6 +35,7 @@ export default function PreviewRuntimePanel({
         {sourcePending ? '等待源码' : `Build: ${buildState.status === 'error' ? 'Error' : buildState.status}`}
       </span>
       <Button type="button" variant="outline" size="sm" onClick={onBuildAndRun} disabled={buildDisabled || isSavingGlb} title={isSavingGlb ? '正在生成并保存 GLB…' : '构建并运行当前项目'}>
+        {!isSavingGlb && <Play size={12} aria-hidden="true" />}
         {isSavingGlb ? '正在生成 GLB…' : 'Build & Run'}
       </Button>
     </div>

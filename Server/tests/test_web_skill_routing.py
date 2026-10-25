@@ -18,9 +18,13 @@ HOSTS = [{}, {"has_preview": True}, {"vscode_client_mode": True},
 
 
 @pytest.mark.parametrize("host", [{}, {"vscode_client_mode": True}])
-def test_news_prefers_five_to_eight_independent_items_without_padding(host):
+def test_news_keeps_three_to_four_independent_items_without_padding(host):
     prompt = route_request("整理今日热点新闻", **host).system_prompt
-    assert "优先 5–8 条" in prompt
+    # 2026-10-19 提速：条数由 5–8 条逐步收紧为 3–4 条，每条 2～3 句、全文约 600～800 字，段尾来源不写网址
+    assert "3–4 条最重要的独立资讯" in prompt and "不超过 4 条" in prompt
+    assert "全文合计约 600～800 字" in prompt
+    assert "（来源：媒体/机构名称，发布日期）[S#]”，不写网址" in prompt
+    assert "5–8 条" not in prompt and "3–5 条" not in prompt
     assert "同一事件时合并成一条资讯" in prompt
     assert "来源篇数不等于独立资讯条数" in prompt
     assert "单一事件、型号或聚焦问题只回答所问" in prompt
@@ -131,11 +135,7 @@ def test_agent_corrects_unverified_answer_then_searches_and_emits_real_sources(m
                 return AIMessage(content="", tool_calls=[{
                     "id": "search", "name": "web_search", "args": {"query": payload["query"]},
                 }])
-            if len(calls) == 3:
-                return AIMessage(content="", tool_calls=[{
-                    "id": "read", "name": "web_reader",
-                    "args": {"urls": ["https://example.com/release"], "query": "xAI 新模型发布"},
-                }])
+            # 2026-10-19 起：新闻搜索后程序直接读网址，第 3 次模型调用即写回答
             date_label = f"，{published_at}" if published_at else ""
             return AIMessage(content=f"## 一、测试官方公告\n官方发布正文摘要。（来源：官方团队{date_label}）[S1]")
 
@@ -245,7 +245,8 @@ def test_reader_failure_keeps_user_reply_short_and_hides_provider_diagnostics(mo
                 return AIMessage(content="", tool_calls=[{
                     "id": "search", "name": "web_search", "args": {"query": "Grok 最新资讯"},
                 }])
-            if turn in {2, 4}:
+            # 搜索后程序先自动读一次（失败）；模型直接作答会被要求先读正文，第 3 次再读一次
+            if turn == 3:
                 return AIMessage(content="", tool_calls=[{
                     "id": f"reader-{turn}", "name": "web_reader", "args": {"urls": [url], "query": "Grok 最新资讯"},
                 }])

@@ -2475,6 +2475,8 @@
   width: 100%;
   max-width: 1030px;
   padding: 0 !important;
+  // 输入框宽度不只取决于视口（右侧 Preview 打开时会被挤窄），供 ThinkingModeSelector.less 按自身宽度换行
+  container: chat-composer / inline-size;
 }
 
 .chat-page .chat-composer-panel {
@@ -2523,8 +2525,9 @@
 .chat-page .chat-composer-panel .chat-input::placeholder { color: rgba(222, 229, 250, 0.62) !important; opacity: 1; }
 
 .chat-composer-actions { display: flex; grid-column: 3; grid-row: 2; align-items: center; gap: 10px; }
-.chat-page .send-btn { width: 58px !important; height: 58px !important; border: 1px solid rgba(255, 255, 255, 0.14) !important; background: linear-gradient(145deg, #792bff, #4410ee) !important; color: #fff !important; box-shadow: 0 8px 24px rgba(65, 22, 230, 0.45) !important; }
-.chat-page .send-btn svg { width: 22px; height: 22px; color: #fff !important; }
+// 发送按钮与左侧「+」同为 44px，两侧圆形按钮大小一致
+.chat-page .send-btn { width: 44px !important; height: 44px !important; border: 1px solid rgba(255, 255, 255, 0.14) !important; background: linear-gradient(145deg, #792bff, #4410ee) !important; color: #fff !important; box-shadow: 0 8px 24px rgba(65, 22, 230, 0.45) !important; }
+.chat-page .send-btn svg { width: 21px; height: 21px; color: #fff !important; }
 .chat-page .send-btn:disabled { border-color: rgba(255, 255, 255, 0.08) !important; background: rgba(167, 174, 202, 0.24) !important; box-shadow: none !important; }
 .chat-page .send-btn-stop { background: rgba(255, 255, 255, 0.18) !important; }
 
@@ -2603,8 +2606,8 @@
     font-size: 17px !important;
   }
   .chat-page:not(.is-vscode-plugin) .chat-composer-panel .send-btn {
-    width: 58px !important;
-    height: 58px !important;
+    width: 44px !important;
+    height: 44px !important;
   }
   .chat-page:not(.is-vscode-plugin) .chat-composer-panel .file-edit-mode-trigger {
     height: 36px;

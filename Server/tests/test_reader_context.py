@@ -88,7 +88,8 @@ def test_default_eight_page_cache_limit_and_explicit_smaller_read():
 
 
 @pytest.mark.parametrize("plugin", [False, True])
-def test_agent_reads_all_eight_authorized_sources_without_losing_citations(monkeypatch, plugin):
+def test_news_reads_at_most_five_authorized_sources_without_losing_citations(monkeypatch, plugin):
+    # 2026-10-19 提速：新闻每次最多读 5 篇（原为读满 8 篇），未授权的 URL 仍被排除
     urls = [f"https://example.com/news/{i}" for i in range(8)]
     calls, read_urls, events = [], [], []
     class Model:
@@ -96,9 +97,8 @@ def test_agent_reads_all_eight_authorized_sources_without_losing_citations(monke
             calls.append(list(messages))
             if len(calls) == 1:
                 return AIMessage(content="", tool_calls=[{"id": "search", "name": "web_search", "args": {"query": "今日热点"}}])
-            if len(calls) == 2:
-                return AIMessage(content="", tool_calls=[{"id": "reader", "name": "web_reader", "args": {"urls": urls + ["https://unknown.com/other"]}}])
-            return AIMessage(content="八条不同事件的资讯：" + " ".join(f"[S{i}]" for i in range(1, 9)))
+            # 2026-10-19 起新闻搜索后由程序直接读排名前 5 的网址，第 2 次模型调用即写回答
+            return AIMessage(content="五条不同事件的资讯：" + " ".join(f"[S{i}]" for i in range(1, 6)))
     async def execute(name, args, *rest):
         if name == "web_search":
             return _SEARCH_RESULT_MARKER + json.dumps({"text": "\n".join(f"[S{i+1}] 新闻{i}" for i in range(8)),
@@ -110,9 +110,10 @@ def test_agent_reads_all_eight_authorized_sources_without_losing_citations(monke
     monkeypatch.setattr(agent_module, "TYPING_DELAY_MS", 0)
     asyncio.run(agent_module.run_agent([{"role": "user", "content": "整理今日热点新闻"}], events.append,
                 vscode_client_mode=plugin, vscode_project_context=(object(), ProjectRef("ws", "vscode")) if plugin else None))
-    assert read_urls == urls
-    result = next(m for m in calls[-1] if isinstance(m, ToolMessage) and m.tool_call_id == "reader")
-    assert [p["sourceId"] for p in json.loads(result.content)["pages"]] == [f"S{i}" for i in range(1, 9)]
+    assert read_urls == urls[:5]
+    assert len(calls) == 2                       # 跳过了只用来挑网址的那次模型调用
+    result = next(m for m in calls[-1] if isinstance(m, ToolMessage) and m.tool_call_id.startswith("auto_reader"))
+    assert [p["sourceId"] for p in json.loads(result.content)["pages"]] == [f"S{i}" for i in range(1, 6)]
 
 
 @pytest.mark.parametrize("plugin", [False, True])
@@ -124,8 +125,9 @@ def test_agent_reader_reuse_keeps_source_ids_and_complete_final_answer(monkeypat
             calls.append(list(messages))
             if len(calls) == 1:
                 return AIMessage(content="", tool_calls=[{"id": "search", "name": "web_search", "args": {"query": "官方最新发布"}}])
-            if len(calls) in (2, 3):
-                return AIMessage(content="", tool_calls=[{"id": str(len(calls)), "name": "web_reader", "args": {"urls": [url], "query": "发布"}}])
+            if len(calls) == 2:
+                # 程序已自动读过该网址；模型再次请求同一网址、同一问题时应命中缓存，不重复下载
+                return AIMessage(content="", tool_calls=[{"id": "2", "name": "web_reader", "args": {"urls": [url], "query": "查询最新新闻发布"}}])
             return AIMessage(content="官方发布事实已核实[S1]。")
     async def execute(name, args, *rest):
         operations.append(name)
@@ -138,7 +140,8 @@ def test_agent_reader_reuse_keeps_source_ids_and_complete_final_answer(monkeypat
     asyncio.run(agent_module.run_agent([{"role": "user", "content": "查询最新新闻发布"}], events.append,
                 vscode_client_mode=plugin, vscode_project_context=(object(), ProjectRef("ws", "vscode")) if plugin else None))
     assert operations == ["web_search", "web_reader"]
-    readers = [m for m in calls[-1] if isinstance(m, ToolMessage) and m.tool_call_id in ("2", "3")]
+    readers = [m for m in calls[-1] if isinstance(m, ToolMessage)
+               and (m.tool_call_id == "2" or m.tool_call_id.startswith("auto_reader"))]
     assert all(json.loads(m.content)["pages"][0]["sourceId"] == "S1" for m in readers)
     assert json.loads(readers[-1].content)["pages"][0]["cache_hit"]
     assert "事实已核实[S1]" in "".join(event.get("content", "") for event in events if event["type"] == "token")

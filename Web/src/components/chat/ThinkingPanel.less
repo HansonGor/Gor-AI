@@ -4,6 +4,9 @@
   min-width: 0;
   margin: 12px 0;
   color: #c7c9dc;
+  // 固定与回复正文同字号：消息气泡的字号按屏宽缩放（0.28rem），半屏时会放大到近 30px，不能直接继承
+  font-size: 14px;
+  line-height: 1.6;
   overflow-anchor: none;
   .thinking-fold {
     display: grid; grid-template-rows: 0fr; opacity: 0; visibility: hidden;
@@ -11,8 +14,6 @@
     &.is-open { grid-template-rows: 1fr; opacity: 1; visibility: visible; transition-delay: 0s; }
   }
   .thinking-fold-inner { min-height: 0; overflow: hidden; }
-  // 酌思本轮实际采用的深浅，放在思考记录最上方的一行小字
-  .thinking-mode-note { margin: 0 0 8px; font-size: 12px; line-height: 18px; color: #9e9cb8; }
   .thinking-summary { animation: thinking-summary-in 180ms ease-out; }
   .thinking-running > .thinking-fold-inner, .thinking-rounds { display: flex; flex-direction: column; min-width: 0; }
   .thinking-previous { margin-bottom: 14px; }
@@ -50,6 +51,13 @@
 @keyframes thinking-reveal { from { grid-template-rows: 0fr; opacity: 0; } to { grid-template-rows: 1fr; opacity: 1; } }
 @media (max-width: 1023px) {
   .thinking-panel { .thinking-previous { margin-bottom: 10px; } .thinking-heading { gap: 10px; padding: 14px 12px; } .thinking-card { border-radius: 16px; } .thinking-content { margin: 0 12px; } }
+}
+// 手机上思考卡片的标题（如"思考已完成"）与副标题（"共 N 轮思考"）字号收小，避免比正文还醒目
+@media (max-width: 640px) {
+  .thinking-panel {
+    .thinking-heading { font-size: 14px; line-height: 20px; }
+    .thinking-copy small { margin-top: 2px; font-size: 12px; line-height: 17px; }
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .thinking-panel { *, *::before, *::after { animation: none !important; transition: none !important; } }

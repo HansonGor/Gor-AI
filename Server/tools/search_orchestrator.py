@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 import json
+import time
 from datetime import date, datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, wait
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -46,7 +47,10 @@ MIN_PREFERRED = 3      # 命中优先来源的最少条数，不足则扩大搜�
 MIN_TOTAL = 1          # 仅无结果时扩大检索；不为数量补齐资讯
 MAX_RESULTS = 8        # 返回给模型的结果上限
 PROVIDER_TIMEOUT_SECONDS = 18
-_PROVIDER_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="gor-search")
+# 新闻一次并行 3 个查询、每个查询同时调 3 个搜索源，8 个线程会让后发的请求排队；24 个足够同时跑完
+_PROVIDER_POOL = ThreadPoolExecutor(max_workers=24, thread_name_prefix="gor-search")
+# 同一查询的"官方域名批"与"补充媒体批"同时发出用；与上面的线程池分开，避免批次线程占满后搜索源请求无线程可用
+_BATCH_POOL = ThreadPoolExecutor(max_workers=12, thread_name_prefix="gor-search-batch")
 
 INTENTS = [
     "official_fact",
@@ -934,13 +938,28 @@ def _run_provider_batch(plan: list[str], query: str, sites: list[str] | None,
                         max_per_provider: int, *, exa_type: str | None = None,
                         ) -> tuple[dict[str, list[dict]], list[dict]]:
     configured = [provider for provider in plan if _provider_configured(provider)]
+    batch_started = time.perf_counter()
+    elapsed_ms: dict[str, int] = {}
+
+    def timed_call(provider: str, *args, **kwargs):
+        # 从真正开始执行算起（不含在线程池里排队的时间），用于判断哪个搜索源最慢
+        started = time.perf_counter()
+        try:
+            return _call_provider(provider, *args, **kwargs)
+        finally:
+            elapsed_ms[provider] = round((time.perf_counter() - started) * 1000)
+
     futures = {
-        _PROVIDER_POOL.submit(_call_provider, provider, query,
+        _PROVIDER_POOL.submit(timed_call, provider, query,
                               min(max_per_provider, 5 if provider != "github" else 6), sites,
                               **({"exa_type": exa_type} if provider == "exa" and exa_type else {})): provider
         for provider in configured
     }
     done, pending = wait(futures, timeout=PROVIDER_TIMEOUT_SECONDS)
+    print("[SearchBatch] " + json.dumps({
+        "sites": len(sites or []), "ms": round((time.perf_counter() - batch_started) * 1000),
+        "providers": {provider: elapsed_ms.get(provider, "timeout") for provider in configured},
+    }, ensure_ascii=False))
     for future in pending:
         future.cancel()
     results: dict[str, list[dict]] = {}
@@ -1222,6 +1241,19 @@ class SearchOrchestrator:
         # broaden. Intent preferences are a first-pass lane, then the query is
         # widened only when that lane returns too few distinct pages.
         first_pass_sites = explicit_sites or authority_domains or domains or None
+        # 补充媒体批要搜哪些站点事先就确定、不依赖第一批结果，且新闻/普通检索几乎总会用到：
+        # 与第一批同时发出，耗时从"两批相加"变成"取较慢的一批"（实测每批 2～4.5 秒）。
+        # 第一批已找到独立媒体、用不上时直接丢弃，只多花一次搜索调用。
+        supporting_domains: list[str] = []
+        supporting_future = None
+        if authority_domains and not hard_domain_filter:
+            supporting_domains = (
+                list(_TECH_NEWS_DOMAINS)
+                if current_version_query
+                else [domain for domain in domains if domain not in authority_domains]
+            )
+            if supporting_domains:
+                supporting_future = _BATCH_POOL.submit(run_batch, plan, provider_query, supporting_domains, 3)
         preferred_map, preferred_trace = run_batch(
             plan, provider_query, first_pass_sites, max(5, min_preferred)
         )
@@ -1236,11 +1268,6 @@ class SearchOrchestrator:
         # Product searches always visit their own indexed official pages first.
         # Other sources supplement that lane; failures never invent official hits.
         if authority_domains and not hard_domain_filter:
-            supporting_domains = (
-                list(_TECH_NEWS_DOMAINS)
-                if current_version_query
-                else [domain for domain in domains if domain not in authority_domains]
-            )
             has_independent_news_results = intent == "news" and any(
                 not _site_matches(item.get("domain", ""), authority_domains)
                 and _domain_news_type(item.get("domain", "")) != "official"
@@ -1252,7 +1279,7 @@ class SearchOrchestrator:
             # independent publishers when the official pass found none.
             should_supplement = not current_query or not has_independent_news_results
             if supporting_domains and should_supplement:
-                supporting, supporting_trace = run_batch(plan, provider_query, supporting_domains, 3)
+                supporting, supporting_trace = supporting_future.result()
                 trace.extend(supporting_trace)
                 providers_used.extend((name, "supporting-domain") for name in selected_providers)
                 for name in plan:

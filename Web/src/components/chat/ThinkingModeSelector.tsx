@@ -32,7 +32,8 @@ export default function ThinkingModeSelector({ value, onChange, loading = false,
       aria-label={`思考方式：${selected.name}${selected.tag}${showThinking ? '' : '，已隐藏思考过程'}`}
       disabled={loading} aria-busy={loading}
       onClick={() => setOpen((current) => !current)}>
-      <selected.Icon aria-hidden="true" /><span>{selected.name}{selected.tag && <span className="thinking-mode-tag">{selected.tag}</span>}</span>
+      {/* 胶囊上各端都只显示名称（如「酌思」）；「（auto）」标注只在弹框选项与读屏标签里 */}
+      <selected.Icon aria-hidden="true" /><span>{selected.name}</span>
       {loading ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
     </button>
     {open && <section id={panelId} role="dialog" aria-label="思考方式" className="file-edit-mode-popover">

@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import type { Session, ThemeType } from '../../types';
 import Sidebar from '../Sidebar/Sidebar';
@@ -16,6 +17,8 @@ export interface ChatSidebarLayerProps {
   onDeleteSession: (id: string) => void;
   onToggleDesktopSidebar: () => void;
   onCloseMobileSidebar: () => void;
+  /** 账号区，桌面侧栏与手机抽屉共用。 */
+  account?: ReactNode;
 }
 
 /** Desktop and mobile session navigation, isolated from chat orchestration. */
@@ -33,6 +36,7 @@ export default function ChatSidebarLayer({
   onDeleteSession,
   onToggleDesktopSidebar,
   onCloseMobileSidebar,
+  account,
 }: ChatSidebarLayerProps) {
   return (
     <>
@@ -45,6 +49,7 @@ export default function ChatSidebarLayer({
           onDeleteSession={onDeleteSession}
           theme={theme}
           isCollapsed={false}
+          account={account}
         />
       </aside>
       <button
@@ -74,6 +79,7 @@ export default function ChatSidebarLayer({
               onDeleteSession={onDeleteSession}
               theme={theme}
               isCollapsed={false}
+              account={account}
             />
           </div>
         </>

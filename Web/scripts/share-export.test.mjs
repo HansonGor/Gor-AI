@@ -269,13 +269,16 @@ test('Web saves the single PNG blob/name; picker cancel remains retryable', asyn
 test('VS Code single image uses the existing bridge and correlates cancellation/failure', async () => {
   reset();
   let sent;
+  const startup = [];
   window.acquireVsCodeApi = () => ({
     postMessage: (message) => {
       sent = message;
+      startup.push(message.type);
     },
   });
   installVscodeWebviewRuntime();
-  assert.equal(sent.type, 'gor.workspaceContextReady');
+  // 启动时先报告工作区就绪，再向扩展索取已存的账号凭证
+  assert.deepEqual(startup, ['gor.workspaceContextReady', 'gor.authTokenRequest']);
   for (const result of [{ saved: true }, { saved: false }, { saved: false, error: '保存失败' }]) {
     const promise = saveVscodeShareImage({
       suggestedName: 'Gor-聊天.png',

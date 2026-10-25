@@ -18,4 +18,6 @@ if __name__ == "__main__":
         port=config.Server.PORT,
         reload=True,
         log_level="info",
+        # 多端同步的推送流是长连接，重载/退出时最多等 3 秒，不让它们拖住进程
+        timeout_graceful_shutdown=3,
     )

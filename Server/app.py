@@ -18,6 +18,8 @@ from routes.music import router as music_router
 from routes.judge import router as judge_router
 from routes.vscode import router as vscode_router
 from routes.project_changes import router as project_changes_router
+from routes.auth import SessionAccessMiddleware, router as auth_router
+from routes.sync import router as sync_router
 
 
 @asynccontextmanager
@@ -46,6 +48,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# 会话归属校验：先于 CORS 注册，使其位于 CORS 内层，拒绝响应同样带 CORS 头
+app.add_middleware(SessionAccessMiddleware)
+
 # CORS 中间件
 app.add_middleware(
     CORSMiddleware,
@@ -72,3 +77,5 @@ app.include_router(music_router, prefix="/api")              # GET /api/music/ra
 app.include_router(judge_router, prefix="/api")              # POST /api/judge/execute
 app.include_router(vscode_router)                              # WebSocket /ws/vscode
 app.include_router(project_changes_router, prefix="/api/chat")
+app.include_router(auth_router, prefix="/api/auth")                    # 账号: /register, /login, /logout, /me
+app.include_router(sync_router, prefix="/api")                         # 多端同步: /sync/events, /chat/runs/{id}/cancel

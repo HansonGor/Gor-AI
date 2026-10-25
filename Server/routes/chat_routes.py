@@ -33,6 +33,19 @@ from services.preview.workspace import BINARY_EXTENSIONS, PreviewProjectWorkspac
 from tools.scene_spec import SceneSpec
 from storage import GENERATED_ROOT, UPLOAD_ROOT, ensure_storage_dirs
 from glb_validation import GlbValidationError, validate_glb_stream
+from routes.auth import current_account, ensure_session_access
+from services.auth import account_namespace, namespace_account
+from services.chat_runs import hub as sync_hub
+from db import auth as auth_db
+
+
+async def _publish_to_session_owner(session_id: str, event: dict, owner: str | None = None) -> None:
+    """把会话相关的变化推给同账号的其他设备；推送失败不影响接口本身。"""
+    try:
+        sync_hub.publish(owner if owner is not None else await auth_db.get_session_owner(session_id),
+                         {**event, "sessionId": session_id})
+    except Exception as error:
+        print(f"[Sync] publish failed: {type(error).__name__}")
 
 router = APIRouter()
 
@@ -114,11 +127,25 @@ def _validate_uploaded_source_project(project: dict) -> dict:
     return {"id": project_id, "name": name.strip(), "template": template, "files": validated_files, "revision": revision}
 
 
+async def _session_namespace(request: Request | None, requested_user_id: str) -> str:
+    """登录后会话归入账号命名空间（插件为 user:<id>:vscode），忽略客户端自报的 userId。"""
+    account = await current_account(request) if request is not None else None
+    if account:
+        return account_namespace(account["id"], requested_user_id)
+    if namespace_account(requested_user_id) is not None:
+        # 未登录时不能冒用账号命名空间读写他人会话
+        raise HTTPException(status_code=401, detail="请先登录")
+    return requested_user_id
+
+
 @router.post("/session/create")
-async def create_session_endpoint(body: CreateSessionRequest):
+async def create_session_endpoint(body: CreateSessionRequest, request: Request = None):
     """创建新会话"""
+    user_id = await _session_namespace(request, body.userId)
     try:
-        session = await create_session(body.userId, str(body.sessionId) if body.sessionId else None)
+        session = await create_session(user_id, str(body.sessionId) if body.sessionId else None)
+        # 数据库 UUID 列返回 uuid.UUID 对象，转成字符串再广播
+        await _publish_to_session_owner(str(session["id"]), {"type": "sessions_changed", "reason": "created"}, owner=user_id)
         return {"success": True, "sessionId": session["id"], "session": session}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"创建会话失败: {str(e)}")
@@ -454,6 +481,7 @@ async def save_session_preview_project_endpoint(session_id: str, body: SavePrevi
             body.uploadName.strip() if body.uploadName else None,
             body.expectedRevision,
         )
+        await _publish_to_session_owner(session_id, {"type": "preview_changed", "revision": result.get("revision")})
         return {"success": True, **result}
     except RuntimeError as e:
         if str(e) == "PREVIEW_PROJECT_REVISION_CONFLICT":
@@ -474,18 +502,21 @@ async def delete_session_preview_project_endpoint(session_id: str):
 
 
 @router.get("/sessions")
-async def get_sessions(userId: str = "default"):
+async def get_sessions(userId: str = "default", request: Request = None):
     """查询用户会话列表"""
+    user_id = await _session_namespace(request, userId)
     try:
-        sessions = await list_sessions(userId)
+        sessions = await list_sessions(user_id)
         return {"success": True, "sessions": sessions}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"查询会话列表失败: {str(e)}")
 
 
 @router.post("/message/save")
-async def save_message_endpoint(body: SaveMessageRequest):
+async def save_message_endpoint(body: SaveMessageRequest, request: Request = None):
     """保存单条消息"""
+    if request is not None:
+        await ensure_session_access(request, body.sessionId)
     try:
         await save_message(body.sessionId, body.role, body.content, body.tokenUsage, attachments=body.attachments)
         return {"success": True}
@@ -497,7 +528,10 @@ async def save_message_endpoint(body: SaveMessageRequest):
 async def delete_session_endpoint(session_id: str):
     """删除会话及关联消息"""
     try:
+        # 删除后就查不到归属了，先取命名空间再删
+        owner = await auth_db.get_session_owner(session_id)
         await delete_session(session_id)
+        await _publish_to_session_owner(session_id, {"type": "sessions_changed", "reason": "deleted"}, owner=owner)
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"删除会话失败: {str(e)}")

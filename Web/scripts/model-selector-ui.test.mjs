@@ -193,3 +193,58 @@ test('model catalog is shared across components and retried after a failure', as
   assert.equal(api.calls.filter(c => c.url === '/api/chat/models').length, 1, 'one shared request');
   await act(async () => root.unmount());
 });
+
+test('Web phone, Web narrowed by Preview and the VS Code plugin share one compact composer style', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const { default: less } = await import('less');
+  const chatBox = await readFile(new URL('../src/components/ChatBox/ChatBox.less', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../src/components/chat/ThinkingModeSelector.less', import.meta.url), 'utf8');
+  assert.match(chatBox, /\.chat-page \.input-area \{[^}]*container: chat-composer \/ inline-size;/);
+  const { css } = await less.render(source);
+  const panel = '.chat-composer-panel.chat-composer-panel.chat-composer-panel.chat-composer-panel:has(.model-selector)';
+  // 把三处生成的规则按「去掉宿主前缀后的选择器 → 声明」归一化后比较，必须完全相同
+  const rulesFor = (scope, prefix) => [...scope.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(([, selector]) => selector.includes(prefix + ' ' + panel))
+    .map(([, selector, body]) => `${selector.trim().split(prefix).join('<host>').replace(/\s+/g, ' ')} {${body.replace(/\s+/g, ' ').trim()}}`)
+    .sort();
+  const section = (header) => {
+    const start = css.indexOf(header);
+    assert.notEqual(start, -1, header);
+    let depth = 0;
+    for (let index = css.indexOf('{', start); index < css.length; index += 1) {
+      if (css[index] === '{') depth += 1;
+      if (css[index] === '}' && (depth -= 1) === 0) return css.slice(css.indexOf('{', start) + 1, index);
+    }
+    return '';
+  };
+  const phone = rulesFor(section('@media (max-width: 640px)'), '.chat-page.chat-page');
+  const narrowed = rulesFor(section('@container chat-composer (max-width: 700px)'), '.chat-page.chat-page');
+  const plugin = rulesFor(css.replace(/@(media|container)[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g, ''), '.chat-page.chat-page.is-vscode-plugin');
+  assert.ok(phone.length > 10, '窄输入框样式应生成完整规则');
+  assert.deepEqual(narrowed, phone);
+  assert.deepEqual(plugin, phone, '插件不再单独设计输入框');
+  const all = phone.join('\n');
+  assert.match(all, /\.upload-btn, <host> .* \.send-btn \{width: 44px !important; height: 44px !important;/);
+  const panelRule = phone.find((rule) => rule.startsWith('<host> .chat-composer-panel') && rule.includes('{grid-template-rows')) ?? '';
+  for (const declaration of ['grid-template-rows: auto auto auto;', 'display: grid;', 'grid-template-columns: 48px minmax(0, 1fr) auto;',
+    'gap: 10px 8px;', 'padding: 13px 16px 13px 15px;', 'border-radius: 27px;']) {
+    assert.ok(panelRule.includes(declaration), declaration);
+  }
+  assert.match(all, /\.file-edit-mode-trigger \{[^}]*overflow: hidden;[^}]*font-size: 12px;/);
+  assert.match(all, /> span \{min-width: 0; overflow: hidden; text-overflow: ellipsis;\}/);
+  assert.doesNotMatch(all, /\.chat-composer-modes \{[^}]*overflow/, 'popovers anchored to the chip row must not be clipped');
+  assert.doesNotMatch(css, /36px !important/, '不再有插件专用的 36px 按钮');
+  // 外观也统一为对话中的输入框：欢迎页窄屏的发光圆钮、胶囊形面板不再覆盖
+  assert.match(all, /\.upload-btn \{border: 1px solid rgba\(236, 239, 255, 0\.06\) !important; background: transparent !important; box-shadow: none;\}/);
+  assert.match(all, /\.send-btn:disabled \{opacity: 0\.4 !important; border-color: rgba\(255, 255, 255, 0\.08\) !important; background: rgba\(167, 174, 202, 0\.24\) !important; box-shadow: none !important;\}/);
+  assert.match(all, /border: 1px solid rgba\(227, 233, 255, 0\.17\); border-radius: 27px; background: rgba\(21, 37, 66, 0\.76\);/);
+});
+
+test('conversation composer send button matches the 44px upload button', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const chatBox = await readFile(new URL('../src/components/ChatBox/ChatBox.less', import.meta.url), 'utf8');
+  assert.match(chatBox, /\.chat-page \.chat-composer-panel \.upload-btn \{ width: 44px !important; height: 44px !important;/);
+  assert.match(chatBox, /\.chat-page \.send-btn \{ width: 44px !important; height: 44px !important;/);
+  assert.match(chatBox, /:not\(\.is-vscode-plugin\) \.chat-composer-panel \.send-btn \{\s*width: 44px !important;\s*height: 44px !important;/);
+  assert.doesNotMatch(chatBox, /\.send-btn \{[^}]*width: 58px/, 'no breakpoint may enlarge send past the upload button');
+});

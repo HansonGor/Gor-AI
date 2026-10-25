@@ -961,8 +961,8 @@
   flex: none;
   align-items: center;
   justify-content: flex-start;
-  gap: 10px;
-  padding: 6px 10px;
+  gap: 8px;
+  padding: 8px 10px 8px 12px;
   border-bottom: 1px solid var(--preview-worker-glass-edge);
   background: var(--gor-glass-bg-strong);
   box-shadow: 0 4px 14px rgba(3, 9, 24, 0.12);
@@ -970,11 +970,13 @@
   -webkit-backdrop-filter: blur(24px) saturate(125%);
 }
 .preview-worker-tabsbar .preview-worker-modes {
-  min-height: 38px;
-  border-bottom: 0;
-  border-radius: 10px;
+  min-height: 34px;
+  gap: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 11px;
   padding: 3px;
-  background: rgba(12, 25, 49, 0.38);
+  background: rgba(8, 16, 34, 0.42);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.18);
 }
 .preview-worker-actions {
   display: flex;
@@ -1018,10 +1020,48 @@
 .preview-worker-runtime-actions .preview-runtime-status { min-width: 0; }
 .preview-worker-runtime-actions .preview-runtime-summary > * { font-size: 10px; }
 .preview-worker-runtime-actions .preview-build-status {
+  display: inline-flex;
+  height: 26px;
   min-width: 0;
-  font-size: 10px;
-  font-weight: 700;
+  box-sizing: border-box;
+  align-items: center;
+  gap: 6px;
   margin-right: 0;
+  padding: 0 10px 0 9px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+  font-size: 11px;
+  font-weight: 600;
+}
+.preview-worker-runtime-actions .preview-build-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent);
+}
+.preview-worker-runtime-actions .preview-runtime-summary button {
+  display: inline-flex;
+  height: 28px;
+  min-height: 28px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px 0 10px;
+  border-color: rgba(167, 139, 250, 0.34);
+  border-radius: 8px;
+  background: rgba(124, 104, 238, 0.16);
+  color: #e4dfff;
+  font-size: 11.5px;
+  font-weight: 600;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.preview-worker-runtime-actions .preview-runtime-summary button:hover:not(:disabled) {
+  border-color: rgba(196, 181, 253, 0.55);
+  background: rgba(124, 104, 238, 0.3);
+  color: #fff;
 }
 .preview-worker-close,
 .preview-worker-download,
@@ -1029,8 +1069,8 @@
 .preview-worker-delete {
   position: relative;
   z-index: 3;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   box-sizing: border-box;
   align-self: center;
   flex: none;
@@ -1045,6 +1085,17 @@
   border-color: rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.09);
   color: #fff;
+}
+.preview-worker-close { margin-left: 9px; }
+.preview-worker-close::before {
+  content: '';
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: -7px;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.1);
+  pointer-events: none;
 }
 .preview-worker-delete { color: rgba(248, 113, 113, 0.82); }
 .preview-worker-delete:hover {
@@ -1079,13 +1130,21 @@
   background: rgba(124, 104, 238, 0.18);
   color: #dcd6ff;
 }
+.chat-page .preview-worker-tabsbar .preview-worker-modes button {
+  min-height: 26px;
+  padding: 3px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
 .chat-page .preview-worker-modes [data-state='active'] {
-  border: 1px solid rgba(185, 171, 255, 0.38);
-  background: linear-gradient(135deg, rgba(111, 73, 247, 0.82), rgba(76, 43, 202, 0.76));
-  box-shadow: 0 4px 14px rgba(69, 42, 194, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.14);
-  color: #ded9ff;
+  border: 1px solid rgba(196, 181, 253, 0.28);
+  background: linear-gradient(180deg, rgba(124, 104, 238, 0.5), rgba(91, 70, 214, 0.4));
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  color: #f3f0ff;
 }
 .chat-page .preview-worker-modes [data-state='inactive'] {
+  border: 1px solid transparent;
   background: transparent;
   box-shadow: none;
   color: rgba(255, 255, 255, 0.62);
@@ -2103,7 +2162,9 @@
     background: linear-gradient(180deg, #fff 0%, #f7f7fb 100%);
     box-shadow: 0 4px 14px rgba(31, 41, 55, 0.06);
   }
-  .preview-worker-tabsbar .preview-worker-modes { background: rgba(30, 41, 59, 0.045); }
+  .preview-worker-tabsbar .preview-worker-modes { border-color: rgba(30, 41, 59, 0.06); background: rgba(30, 41, 59, 0.045); box-shadow: none; }
+  .preview-worker-runtime-actions .preview-build-status { border-color: rgba(30, 41, 59, 0.1); background: rgba(30, 41, 59, 0.04); }
+  .preview-worker-close::before { background: rgba(30, 41, 59, 0.12); }
   &.chat-page .preview-worker-modes [data-state='active'] {
     border-color: rgba(91, 74, 191, 0.2);
     background: linear-gradient(135deg, #f0edff, #e9e6fb);

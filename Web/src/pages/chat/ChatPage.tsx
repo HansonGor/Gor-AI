@@ -11,6 +11,7 @@ import {
 } from '../../components/chat';
 import type { PreviewWorkerMode, PreviewWorkerTarget } from '../../components/chat';
 import GorBrandLogo from '../../components/GorBrandLogo';
+import AccountControl from '../../components/account/AccountControl';
 import { useChat } from '../../hooks/useChat';
 import { useLayout } from '../../hooks/useLayout';
 import { useTheme } from '../../hooks/useTheme';
@@ -85,6 +86,7 @@ export default function ChatPage() {
     pendingImages,
     pendingUploadAttachments,
     isLoading,
+    remotePreviewTick,
     selectSession,
     createNewSession,
     waitForSessionCreation,
@@ -774,6 +776,32 @@ export default function ChatPage() {
     setPreviewWorkerOpen(true);
   }, [isVscodePluginMode, isPreviewSessionLoaded, previewRevision, previewProjectState.project.id, restorePreviewArtifact]);
 
+  // 多端同步：其他设备更新了当前会话的预览项目（或其回复已结束），从服务器取回最新版本。
+  // 本端有未保存的修改、或版本已一致时不覆盖。
+  useEffect(() => {
+    if (!remotePreviewTick || isVscodePluginMode || !sessionId) return;
+    let cancelled = false;
+    const sid = sessionId;
+    void getSessionPreviewProject(sid).then((snapshot) => {
+      if (cancelled || activeSessionRef.current !== sid || !snapshot || isUntouchedStarterProject(snapshot.project)) return;
+      const store = usePreviewProjectStore.getState();
+      const current = store.project;
+      const hasUnsavedEdits = Boolean(current.id) && current.serverRevision !== undefined
+        && (current.revision ?? 0) !== (current.persistedRevision ?? -1);
+      if (hasUnsavedEdits) return;
+      if (current.id === snapshot.project.id && current.serverRevision === snapshot.revision) return;
+      skipContentSaveSessionRef.current = sid;
+      const saved = snapshot.project;
+      store.importProject(saved.template, saved.files, saved.name, saved.id,
+        saved.revision, snapshot.revision, snapshot.origin, snapshot.uploadName);
+      persistedSourceProjectIdRef.current = store.project.id;
+      store.requestBuildAndRun();
+      setHasServerPreviewProject(true);
+    }).catch((error) => console.warn('[Sync] 刷新预览项目失败:', error));
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在收到远端变化时刷新
+  }, [remotePreviewTick]);
+
   useEffect(() => {
     if (!isLoading) return;
     const latest = messages[messages.length - 1];
@@ -1022,6 +1050,7 @@ export default function ChatPage() {
           onDeleteSession={deleteSessionById}
           onToggleDesktopSidebar={togglePCSidebar}
           onCloseMobileSidebar={closeMobileSidebar}
+          account={<AccountControl busy={isLoading} />}
         />
       )}
       header={(

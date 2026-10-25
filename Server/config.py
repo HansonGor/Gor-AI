@@ -164,10 +164,10 @@ class Config:
         """AI Agent 运行时的行为参数配置。"""
         # Agent 最大迭代次数（防止无限循环）
         MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "5"))
-        # 流式输出时每次推送的字符块大小
-        TYPING_CHUNK_SIZE = int(os.getenv("AGENT_TYPING_CHUNK_SIZE", "5"))
-        # 流式输出时每个字符块之间的推送延迟（毫秒）
-        TYPING_DELAY_MS = int(os.getenv("AGENT_TYPING_DELAY_MS", "20"))
+        # 最终回答分段推送的字符块大小（核验已在显示前完成，无需逐字等待）
+        TYPING_CHUNK_SIZE = int(os.getenv("AGENT_TYPING_CHUNK_SIZE", "40"))
+        # 每个字符块之间的推送延迟（毫秒）；默认 0，不再人为放慢输出
+        TYPING_DELAY_MS = int(os.getenv("AGENT_TYPING_DELAY_MS", "0"))
 
     # ================================================================
     # 模型上下文窗口配置

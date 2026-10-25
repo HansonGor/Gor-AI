@@ -21,7 +21,8 @@ const compiled = await build({
  export { useChatShare } from '../src/share/useChatShare';
  export { default as Header } from '../src/components/ChatLayout/ChatHeader';
  export { ChatShareToolbar, saveShareImage } from '../src/components/chat/ChatShareControls';
- export { getUserNickname, DEFAULT_USER_NICKNAME } from '../src/user/profile';
+ export { getUserNickname, FALLBACK_USER_LABEL } from '../src/user/profile';
+ export { getAuthState, subscribeAuth } from '../src/user/auth';
 `,
     resolveDir: dirname(filename),
     loader: 'ts',
@@ -74,7 +75,7 @@ const {
   ChatShareToolbar,
   saveShareImage,
   getUserNickname,
-  DEFAULT_USER_NICKNAME,
+  FALLBACK_USER_LABEL,
 } = fixture.exports;
 const messages = [
   { id: 'u1', role: 'user', content: '原始提问 [S1]' },
@@ -267,8 +268,8 @@ test('share image signs user messages with the nickname, falling back to 你 whe
   assert.deepEqual(labels({}), ['你', 'Gor']);
   assert.deepEqual(labels({ userName: '   ' }), ['你', 'Gor']);
   assert.deepEqual(labels({ userName: '<b>x</b>' }), ['<b>x</b>', 'Gor'], '昵称按文本显示，不当作 HTML');
-  assert.equal(getUserNickname(), DEFAULT_USER_NICKNAME, '侧栏与分享图共用同一个昵称来源');
-  assert.equal(DEFAULT_USER_NICKNAME, '樺');
+  assert.equal(getUserNickname(), FALLBACK_USER_LABEL, '未登录时分享图署名为「你」');
+  assert.equal(FALLBACK_USER_LABEL, '你');
 });
 
 test('generating the share image passes the current nickname to the exporter', async () => {

@@ -248,6 +248,8 @@ test('terminal fields cannot override real tool presentation or resurrect comple
    assert.match(css,/animation: none !important/);
    assert.match(css,/transition: none !important/);
    assert.match(css,/overflow-anchor: none/);
+   // 半屏时消息气泡字号随屏宽放大，思考卡片自身固定字号，不随之变大
+   assert.match(css,/^\.thinking-panel \{[^}]*font-size: 14px;/m);
  });
 
  test('only the matching active tool status is deduplicated; independent polling stays visible', () => {
@@ -329,7 +331,7 @@ test('terminal fields cannot override real tool presentation or resurrect comple
    }
  });
 
-test('酌思 resolved mode travels over SSE, survives escalation and history restore, and shows in the panel', async () => {
+test('酌思 resolved mode travels over SSE and survives escalation and history restore, but the panel no longer shows it', async () => {
   const frames = [
     { type: 'thinking_mode', mode: 'light', reason: '联网新闻', escalated: false },
     event('thinking_start', 1), event('thinking_end', 1),
@@ -353,11 +355,9 @@ test('酌思 resolved mode travels over SSE, survives escalation and history res
   assert.equal(restoreThinking({ rounds: [], status: 'completed', thinkingMode: { mode: 'max' } }).thinkingMode, undefined);
 
   const root = createRoot(document.getElementById('root'));
+  // 2026-10-19 用户要求：思考面板不再显示"酌思 · 本轮随思/由随思转为深思"说明行，数据仍保留在记录里
   await act(async () => root.render(React.createElement(Panel, { trace: restored })));
-  assert.equal(document.querySelector('.thinking-mode-note').textContent, '酌思 · 由随思转为深思（引用核验未通过）');
-  await act(async () => root.render(React.createElement(Panel, { trace: { ...restored, thinkingMode: { mode: 'light', reason: '联网新闻', escalated: false } } })));
-  assert.equal(document.querySelector('.thinking-mode-note').textContent, '酌思 · 本轮随思（联网新闻）');
-  await act(async () => root.render(React.createElement(Panel, { trace: { rounds: restored.rounds, status: 'completed' } })));
-  assert.equal(document.querySelector('.thinking-mode-note'), null);   // 随思/深思固定模式不显示
+  assert.equal(document.querySelector('.thinking-mode-note'), null);
+  assert.doesNotMatch(document.querySelector('.thinking-panel').textContent, /酌思/);
   await act(async () => root.unmount());
 });

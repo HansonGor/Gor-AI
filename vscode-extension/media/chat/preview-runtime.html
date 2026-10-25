@@ -13,8 +13,10 @@
           margin: 0;
         }
 
-        /* A fallback canvas, not an overlay on the project's own background. */
-        html {
+        /* Keep html transparent so a project's body background propagates to the
+           whole scrollable canvas; the dark fallback has zero specificity and
+           yields to any project body rule instead of showing below the fold. */
+        :where(body) {
           background: #171923;
         }
 
@@ -22,11 +24,22 @@
         body,
         #root {
           display: flow-root;
+        }
+
+        #root {
           background: transparent;
         }
 
         body {
           overflow: auto;
+        }
+
+        /* Same native thin scrollbar as the chat sidebar and page
+           (scrollbar-width/scrollbar-color in pages/chat/chat.less). Zero
+           specificity, so any project scrollbar rule still wins. */
+        :where(html) {
+          scrollbar-width: thin;
+          scrollbar-color: rgba(148, 144, 174, 0.4) transparent;
         }
       </style>
       <script type="module" crossorigin src="./assets/preview-runtime-nDPA47Q5.js"></script>

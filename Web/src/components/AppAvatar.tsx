@@ -1,56 +1,23 @@
-// 公共头像组件：优先加载用户头像，读取失败时默认显示 Gor App 图标
+// 公共头像组件：登录后显示账号头像，未登录、没有头像或读取失败时显示默认的 Gor 图标
 import React, { useEffect, useRef, useState } from 'react';
 import * as AvatarDialog from '@radix-ui/react-alert-dialog';
 import { Pencil, X } from 'lucide-react';
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
 import { cn } from '@/lib/utils';
 import { USER_CONFIG } from '@/config';
+import { useAccountAvatarUrl } from '@/user/avatar';
 import './AppAvatar.less';
 import AvatarCropDialog, { type AvatarCropImage } from './AvatarCropDialog';
 
-const AVATAR_STORAGE_KEY = 'gor-custom-avatar';
-function readAvatar() {
-  try { return localStorage.getItem(AVATAR_STORAGE_KEY) || ''; } catch { return ''; }
-}
-
-// Store the original image as a Blob instead of a size-limited localStorage data URL.
-async function avatarDatabase() {
-  return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open('gor-avatar', 1);
-    request.onupgradeneeded = () => request.result.createObjectStore('images');
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-async function loadAvatarBlob() {
-  const db = await avatarDatabase();
-  try {
-    return await new Promise<Blob | undefined>((resolve, reject) => {
-      const request = db.transaction('images').objectStore('images').get('current');
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-  } finally { db.close(); }
-}
-async function saveAvatarBlob(file: Blob) {
-  const db = await avatarDatabase();
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction('images', 'readwrite');
-      transaction.objectStore('images').put(file, 'current');
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error);
-    });
-  } finally { db.close(); }
-}
-
 interface AppAvatarProps {
-  /** 头像图片地址，默认取 USER_CONFIG.AVATAR_URL */
+  /** 头像图片地址；不传时取当前账号头像，未登录则为 USER_CONFIG.AVATAR_URL */
   src?: string;
   alt?: string;
   className?: string;
+  /** 允许放大查看与修改（需同时提供 onSaveAvatar，否则只可查看） */
   editable?: boolean;
+  /** 保存裁剪后的头像；失败时抛出的错误信息会显示在头像旁 */
+  onSaveAvatar?: (image: Blob) => Promise<void>;
 }
 
 const AppAvatar: React.FC<AppAvatarProps> = ({
@@ -58,42 +25,18 @@ const AppAvatar: React.FC<AppAvatarProps> = ({
   alt = '用户头像',
   className,
   editable = false,
+  onSaveAvatar,
 }) => {
-  const [customAvatar, setCustomAvatar] = useState(readAvatar);
+  const accountAvatar = useAccountAvatarUrl();
   const [previewOpen, setPreviewOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [error, setError] = useState('');
   const [cropImage, setCropImage] = useState<AvatarCropImage | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const avatarSrc = src || customAvatar || USER_CONFIG.AVATAR_URL;
+  const avatarSrc = src || accountAvatar || USER_CONFIG.AVATAR_URL;
   useEffect(() => () => {
     if (cropImage) URL.revokeObjectURL(cropImage.url);
   }, [cropImage]);
-  useEffect(() => {
-    let disposed = false;
-    let imageUrl = '';
-    let revision = 0;
-    const sync = async () => {
-      const current = ++revision;
-      try {
-        const blob = await loadAvatarBlob();
-        if (disposed || current !== revision) return;
-        const nextUrl = blob ? URL.createObjectURL(blob) : readAvatar();
-        if (imageUrl) URL.revokeObjectURL(imageUrl);
-        imageUrl = blob ? nextUrl : '';
-        setCustomAvatar(nextUrl);
-      } catch { /* Keep the existing/default avatar when storage is unavailable. */ }
-    };
-    void sync();
-    window.addEventListener('storage', sync);
-    window.addEventListener('gor-avatar-updated', sync);
-    return () => {
-      disposed = true;
-      if (imageUrl) URL.revokeObjectURL(imageUrl);
-      window.removeEventListener('storage', sync);
-      window.removeEventListener('gor-avatar-updated', sync);
-    };
-  }, []);
 
   const changeAvatar = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -132,8 +75,12 @@ const AppAvatar: React.FC<AppAvatarProps> = ({
     <>
       <div className="app-avatar-control">
         <button type="button" className="app-avatar-view" aria-label="放大查看头像" onClick={() => { setZoom(1); setPreviewOpen(true); }}>{avatar}</button>
-        <button type="button" className="app-avatar-edit" aria-label="修改头像" title="修改头像" onClick={() => inputRef.current?.click()}><Pencil aria-hidden="true" /></button>
-        <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="app-avatar-file" aria-label="选择头像图片" onChange={changeAvatar} />
+        {onSaveAvatar && (
+          <>
+            <button type="button" className="app-avatar-edit" aria-label="修改头像" title="修改头像" onClick={() => inputRef.current?.click()}><Pencil aria-hidden="true" /></button>
+            <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="app-avatar-file" aria-label="选择头像图片" onChange={changeAvatar} />
+          </>
+        )}
         {error && <span className="app-avatar-error" role="alert" onClick={() => setError('')}>{error}</span>}
       </div>
       <AvatarDialog.Root open={previewOpen} onOpenChange={setPreviewOpen}>
@@ -153,13 +100,16 @@ const AppAvatar: React.FC<AppAvatarProps> = ({
           </AvatarDialog.Content>
         </AvatarDialog.Portal>
       </AvatarDialog.Root>
-      {cropImage && (
+      {cropImage && onSaveAvatar && (
         <AvatarCropDialog
           image={cropImage}
           onCancel={() => setCropImage(null)}
           onSave={async (blob) => {
-            await saveAvatarBlob(blob);
-            window.dispatchEvent(new Event('gor-avatar-updated'));
+            try {
+              await onSaveAvatar(blob);
+            } catch (reason) {
+              setError(reason instanceof Error && reason.message ? reason.message : '头像保存失败，请稍后再试');
+            }
             setCropImage(null);
           }}
         />

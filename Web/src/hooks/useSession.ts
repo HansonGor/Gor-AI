@@ -12,12 +12,14 @@ import {
 } from '../api/chat';
 import { CHAT_CONFIG } from '../config';
 import { initialSessionId } from '../utils/sessionSelection';
+import { createUuid } from '../utils/uuid';
+import { consumeOpenFirstSession } from '../user/auth';
 import type { Session, ChatMessage } from '../types';
 import { createMessagePreviewSnapshot } from '../preview/core/projectSnapshot';
 import { restorePresentationSnapshot } from '../preview/core/presentationSnapshot';
 import { restoreChangeSetReference } from '../utils/changeSetReference';
 
-function getSessionUserId(): string {
+export function getSessionUserId(): string {
   // The web app keeps its existing account namespace. The VS Code Webview uses
   // a separate user_id so both clients can share the API/database without
   // mixing their session lists.
@@ -159,7 +161,10 @@ export function useSession() {
       }
 
       let lastUsed: string | null = null;
-      try { lastUsed = localStorage.getItem(`gor-last-session:${getSessionUserId()}`); } catch { /* use API ordering */ }
+      // 刚登录/注册时进入列表第一个会话，不沿用本机上次打开的会话
+      if (!consumeOpenFirstSession()) {
+        try { lastUsed = localStorage.getItem(`gor-last-session:${getSessionUserId()}`); } catch { /* use API ordering */ }
+      }
       sid = initialSessionId(sessionList, sid, lastUsed);
       if (sid) {
         updateUrlSessionId(sid);
@@ -210,7 +215,8 @@ export function useSession() {
         return null;
       }
 
-      const sid = crypto.randomUUID();
+      // 手机经局域网 http 访问时没有 crypto.randomUUID，用兼容实现
+      const sid = createUuid();
       const previousSessionId = sessionId;
       const optimisticSession: Session = {
         id: sid,

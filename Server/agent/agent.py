@@ -27,9 +27,11 @@ from agent.evidence import EvidenceLedger
 from agent import answer_verifier
 from agent.project_read_context import ProjectReadContext
 from tools.web_reader import MAX_PAGES as MAX_READER_PAGES
+NEWS_READER_PAGES = 5
 from tools.presentation_revision import select_context as select_presentation_context, revision_source
 from models.vision import analyze_images
 from agent.tool_routing import route_request
+from agent.answer_stream import StreamingAnswerFilter
 from agent.thinking_policy import decide_thinking, tool_result_failed, ESCALATION_REASONS, TOOL_FAILURE_ESCALATION
 from agent.tool_negotiation import ToolNegotiator, RULES as NEGOTIATED_RULES
 from agent.project_task_boundary import project_kind_conflict
@@ -101,6 +103,15 @@ async def _wrap_up_without_tools(
             send_event({"type": "answer_verification", "revised": False, "removedSentences": removed, **report.counts()})
     print(f"[WrapUp] answered chars={len(content)}")
     return content
+
+
+# 引用覆盖率（已标来源的事实句 / 全部事实句）达到该比例时，核验不通过只删句、不重写
+CITATION_REWRITE_COVERAGE = 0.6
+
+
+def _citation_rewrite_needed(report: "answer_verifier.VerificationReport") -> bool:
+    coverage = report.coverage
+    return coverage is not None and coverage < CITATION_REWRITE_COVERAGE
 
 
 def _citation_revision_prompt(report: "answer_verifier.VerificationReport", evidence: EvidenceLedger) -> str:
@@ -573,6 +584,8 @@ async def run_agent(
     )
     negotiator.loaded_rules.update(rule for rule in NEGOTIATED_RULES.values() if rule in tool_route.system_prompt)
     use_presentation_context = "presentation" in tool_route.profile.split("+")
+    # 新闻每次最多读 NEWS_READER_PAGES 篇正文：实测每篇 1000～3000 字，读 8 篇会把后续每次模型调用的输入撑大
+    reader_page_limit = NEWS_READER_PAGES if "news_research" in tool_route.profile.split("+") else MAX_READER_PAGES
     print(
         f"[ToolRouter] profile={tool_route.profile} "
         f"tools={','.join(tool_route.tool_names) if tool_route.tool_names else '(none)'}"
@@ -787,6 +800,10 @@ async def run_agent(
     web_search_required = tool_route.requires_web_search
     web_reader_required = "web_reader" in tool_route.tool_names
     allowed_web_reader_urls: dict[str, str] = {}
+    # 新闻：搜索这一轮结束后由程序直接发起的读网页调用（跳过只用来挑网址的那次模型调用）
+    forced_reader_call: Optional[Dict[str, Any]] = None
+    # 写回答那次调用：边写边显示，逐句核验通过后再推送（见 agent/answer_stream.py）
+    answer_streamer: Optional[StreamingAnswerFilter] = None
     github_tool_attempted = False
     source_count = 0
     source_ids: dict[str, str] = {}
@@ -825,109 +842,133 @@ async def run_agent(
         if signal and signal.is_set():
             break
 
-        # 立即发送思考状态，避免连接建立后长时间无数据
-        send_event({"type": "thinking", "status": "模型思考中..."})
+        if forced_reader_call is None:
+            # 立即发送思考状态，避免连接建立后长时间无数据
+            send_event({"type": "thinking", "status": "模型思考中..."})
 
-        # 大模型调用期间发送心跳，防止 SSE 连接因长时间无数据而断开
-        thinking_heartbeat = asyncio.create_task(_heartbeat(send_event, "thinking", 1.0))
+            # 大模型调用期间发送心跳，防止 SSE 连接因长时间无数据而断开
+            thinking_heartbeat = asyncio.create_task(_heartbeat(send_event, "thinking", 1.0))
 
-        response = None
-        if patch_failure_seen:
-            call_reason = "patch_conflict"
-        elif task_kind == "SIMPLE_EDIT":
-            call_reason = "simple_patch_generation"
-        elif task_kind == "NORMAL_EDIT" and not search_plan_seen:
-            call_reason = "search_plan"
-        elif task_kind == "REPAIR" and llm_call_count == 0:
-            call_reason = "build_repair"
-        elif task_kind in {"NORMAL_EDIT", "REPAIR"} and search_plan_seen:
-            call_reason = "patch_generation"
-        else:
-            call_reason = "final_response" if llm_call_count else "initial_response"
-        if auto_thinking and not deep_thinking:
-            problem = (
-                call_reason if call_reason in {"patch_conflict", "build_repair"}
-                else "citation_revision" if answer_verification_retry
-                else "reader_retry" if web_reader_retry
-                else "tool_failures" if tool_failure_count >= TOOL_FAILURE_ESCALATION
-                else None
+            response = None
+            if patch_failure_seen:
+                call_reason = "patch_conflict"
+            elif task_kind == "SIMPLE_EDIT":
+                call_reason = "simple_patch_generation"
+            elif task_kind == "NORMAL_EDIT" and not search_plan_seen:
+                call_reason = "search_plan"
+            elif task_kind == "REPAIR" and llm_call_count == 0:
+                call_reason = "build_repair"
+            elif task_kind in {"NORMAL_EDIT", "REPAIR"} and search_plan_seen:
+                call_reason = "patch_generation"
+            else:
+                call_reason = "final_response" if llm_call_count else "initial_response"
+            if auto_thinking and not deep_thinking:
+                problem = (
+                    call_reason if call_reason in {"patch_conflict", "build_repair"}
+                    else "citation_revision" if answer_verification_retry
+                    else "reader_retry" if web_reader_retry
+                    else "tool_failures" if tool_failure_count >= TOOL_FAILURE_ESCALATION
+                    else None
+                )
+                if problem:
+                    deep_thinking = True
+                    print(f"[ThinkingMode] auto escalated=deep reason={problem} call={llm_call_count + 1}")
+                    send_event({"type": "thinking_mode", "mode": "deep",
+                                "reason": ESCALATION_REASONS[problem], "escalated": True})
+            llm_call_count += 1
+            patch_failure_seen = False
+            context_audit = _audit_llm_context(messages, preview_workspace)
+            print(
+                f"[LLMContextAudit] call={llm_call_count} "
+                f"contains_preview_committed_content={str(context_audit['contains_preview_committed_content']).lower()} "
+                f"contains_preview_file_changed_content={str(context_audit['contains_preview_file_changed_content']).lower()} "
+                f"contains_frontend_synced_full_source={str(context_audit['contains_frontend_synced_full_source']).lower()} "
+                f"preview_source_chars={context_audit['preview_source_chars']} "
+                f"project_file_text_matches_in_prompt={context_audit['project_file_text_matches_in_prompt']} "
+                f"committed_content_chars={context_audit['committed_content_chars']} "
+                f"preview_file_changed_chars={context_audit['preview_file_changed_chars']}"
             )
-            if problem:
-                deep_thinking = True
-                print(f"[ThinkingMode] auto escalated=deep reason={problem} call={llm_call_count + 1}")
-                send_event({"type": "thinking_mode", "mode": "deep",
-                            "reason": ESCALATION_REASONS[problem], "escalated": True})
-        llm_call_count += 1
-        patch_failure_seen = False
-        context_audit = _audit_llm_context(messages, preview_workspace)
-        print(
-            f"[LLMContextAudit] call={llm_call_count} "
-            f"contains_preview_committed_content={str(context_audit['contains_preview_committed_content']).lower()} "
-            f"contains_preview_file_changed_content={str(context_audit['contains_preview_file_changed_content']).lower()} "
-            f"contains_frontend_synced_full_source={str(context_audit['contains_frontend_synced_full_source']).lower()} "
-            f"preview_source_chars={context_audit['preview_source_chars']} "
-            f"project_file_text_matches_in_prompt={context_audit['project_file_text_matches_in_prompt']} "
-            f"committed_content_chars={context_audit['committed_content_chars']} "
-            f"preview_file_changed_chars={context_audit['preview_file_changed_chars']}"
-        )
-        for callback in callbacks:
-            begin_call = getattr(callback, "begin_call", None)
-            if callable(begin_call):
-                try:
-                    begin_call(call_reason, context_audit)
-                except TypeError:
-                    begin_call(call_reason)
-        print(f"[AgentLoop] call={llm_call_count} reason={call_reason} soft_budget={soft_call_budget or 'n/a'}")
-        if soft_call_budget and llm_call_count > soft_call_budget:
-            print(f"[AgentLoop] soft_budget_exceeded=true target={soft_call_budget} reason={call_reason}")
-        try:
-            # 非流式调用，检测是否需要工具，传入 callbacks 捕获 token 消耗
-            bound_tool_names = set(active_tool_names)
-            tool_key = tuple(sorted(bound_tool_names))
-            # 默认深思；随思显式关闭模型深度思考
-            model_kwargs = ({} if deep_thinking else {"deep": False}) | ({"model_id": model_id} if model_id else {})
-            selected_model = get_model_for_tools(tool_key, **model_kwargs)
-            definitions = getattr(selected_model, "kwargs", {}).get("tools", [])
-            print("[LLMInputBudget] " + json.dumps({
-                "call": llm_call_count, "phase": call_reason,
-                "estimated_text_tokens": input_token_breakdown(
-                    messages, definitions, current_input_message, history_input_ids),
-                "reserved_output_tokens": config.Ark.MAX_OUTPUT_TOKENS,
-                "configured_context_tokens": config.Context.MAX_CONTEXT,
-                "estimate_only": True,
-            }, ensure_ascii=False, separators=(",", ":")))
+            for callback in callbacks:
+                begin_call = getattr(callback, "begin_call", None)
+                if callable(begin_call):
+                    try:
+                        begin_call(call_reason, context_audit)
+                    except TypeError:
+                        begin_call(call_reason)
+            print(f"[AgentLoop] call={llm_call_count} reason={call_reason} soft_budget={soft_call_budget or 'n/a'}")
+            if soft_call_budget and llm_call_count > soft_call_budget:
+                print(f"[AgentLoop] soft_budget_exceeded=true target={soft_call_budget} reason={call_reason}")
             try:
-                llm_started = time.perf_counter()
-                response = await ThinkingAdapter(send_event, llm_call_count, phase=call_reason).invoke(selected_model, messages, callbacks)
-                _timing("llm", llm_started, call=llm_call_count, reason=call_reason,
-                        tool_calls=len(getattr(response, "tool_calls", None) or []))
-            except Exception as error:
-                # Exception text may contain request data; only log its class.
-                print("[LLMCallDiagnostics] " + json.dumps({
-                    "call": llm_call_count,
-                    "phase": call_reason,
-                    "model": model_id or config.Ark.MODEL_ID,
-                    "error_type": type(error).__name__,
+                # 非流式调用，检测是否需要工具，传入 callbacks 捕获 token 消耗
+                bound_tool_names = set(active_tool_names)
+                tool_key = tuple(sorted(bound_tool_names))
+                # 默认深思；随思显式关闭模型深度思考
+                model_kwargs = ({} if deep_thinking else {"deep": False}) | ({"model_id": model_id} if model_id else {})
+                selected_model = get_model_for_tools(tool_key, **model_kwargs)
+                # 新闻等必须先联网的问题：还没搜索过时要求模型这次必须调用工具，不给它凭记忆或上一轮回答
+                # 直接作答的机会（曾因此被打回重来、白跑约 5 秒）；之后的调用恢复为模型自行决定
+                if web_search_required and not web_tool_attempted and "web_search" in bound_tool_names:
+                    bind = getattr(selected_model, "bind", None)
+                    if callable(bind):
+                        selected_model = bind(tool_choice="required")
+                        print("[AgentLoop] tool_choice=required reason=web_search_required")
+                definitions = getattr(selected_model, "kwargs", {}).get("tools", [])
+                print("[LLMInputBudget] " + json.dumps({
+                    "call": llm_call_count, "phase": call_reason,
+                    "estimated_text_tokens": input_token_breakdown(
+                        messages, definitions, current_input_message, history_input_ids),
+                    "reserved_output_tokens": config.Ark.MAX_OUTPUT_TOKENS,
+                    "configured_context_tokens": config.Context.MAX_CONTEXT,
+                    "estimate_only": True,
                 }, ensure_ascii=False, separators=(",", ":")))
-                raise
-            _log_llm_response_diagnostics(
-                response,
-                call=llm_call_count,
-                phase=call_reason,
-                model_id=model_id or config.Ark.MODEL_ID,
-            )
-            tool_calls = getattr(response, "tool_calls", None) or []
-            content = _assistant_content_text(getattr(response, "content", ""))
-            if use_presentation_context:
-                content = _hide_presentation_schema_echo(content)
-            print(f"[Agent] 响应: tool_calls={len(tool_calls)}, content长度={len(content)}")
+                try:
+                    llm_started = time.perf_counter()
+                    # 已拿到来源、只用过查询类工具、需要读正文时已读成功：这次调用大概率就是写回答，
+                    # 开启逐句核验的流式显示；核验后重写的那一轮不开启（已改用整篇核验）
+                    answer_streamer = None
+                    if (evidence.source_ids and executed_tool_names and executed_tool_names <= RESEARCH_ONLY_TOOLS
+                            and (not web_reader_required or web_reader_succeeded) and not answer_verification_retry):
+                        answer_streamer = StreamingAnswerFilter(
+                            evidence.source_ids, lambda text: send_event({"type": "token", "content": text}))
+                    response = await ThinkingAdapter(send_event, llm_call_count, phase=call_reason).invoke(
+                        selected_model, messages, [*callbacks, answer_streamer] if answer_streamer else callbacks)
+                    _timing("llm", llm_started, call=llm_call_count, reason=call_reason,
+                            tool_calls=len(getattr(response, "tool_calls", None) or []))
+                except Exception as error:
+                    # Exception text may contain request data; only log its class.
+                    print("[LLMCallDiagnostics] " + json.dumps({
+                        "call": llm_call_count,
+                        "phase": call_reason,
+                        "model": model_id or config.Ark.MODEL_ID,
+                        "error_type": type(error).__name__,
+                    }, ensure_ascii=False, separators=(",", ":")))
+                    raise
+                _log_llm_response_diagnostics(
+                    response,
+                    call=llm_call_count,
+                    phase=call_reason,
+                    model_id=model_id or config.Ark.MODEL_ID,
+                )
+                tool_calls = getattr(response, "tool_calls", None) or []
+                content = _assistant_content_text(getattr(response, "content", ""))
+                if use_presentation_context:
+                    content = _hide_presentation_schema_echo(content)
+                print(f"[Agent] 响应: tool_calls={len(tool_calls)}, content长度={len(content)}")
+                messages.append(response)
+            finally:
+                thinking_heartbeat.cancel()
+                try:
+                    await thinking_heartbeat
+                except asyncio.CancelledError:
+                    pass
+        else:
+            # 新闻：直接读搜索排名靠前的网址，省掉一次只用来挑网址的模型调用
+            response = AIMessage(content="", tool_calls=[forced_reader_call])
+            answer_streamer = None
+            print(f"[AgentLoop] auto_reader=true pages={len(forced_reader_call['args']['urls'])} skipped_llm_call=true")
+            forced_reader_call = None
+            content = ""
             messages.append(response)
-        finally:
-            thinking_heartbeat.cancel()
-            try:
-                await thinking_heartbeat
-            except asyncio.CancelledError:
-                pass
 
         # A truncated JSON tool argument is not a successful empty answer.
         # Never execute partial tool calls or retry invisibly at additional cost.
@@ -967,10 +1008,13 @@ async def run_agent(
             if web_reader_required and web_tool_attempted and allowed_web_reader_urls and not web_reader_succeeded:
                 if not web_reader_retry and iterations > 0:
                     web_reader_retry = True
-                    candidate_urls = list(allowed_web_reader_urls.values())[:MAX_READER_PAGES]
+                    candidate_urls = list(allowed_web_reader_urls.values())[:reader_page_limit]
                     messages.append(SystemMessage(content=(
                         "新闻/最新版本检索不能只依据搜索摘要。请先用 web_reader 读取本轮 web_search 已返回的相关页面正文，"
-                        "选择 3–8 个 URL，综合资讯优先 5–8 个（候选不足时全部读取，最多 8 个，聚焦问题按需）；工具会提取标题、正文、发布时间、作者、链接和关键段落。"
+                        + (f"选择最相关的 3–{reader_page_limit} 个 URL（候选不足时全部读取，最多 {reader_page_limit} 个）；"
+                           if reader_page_limit < MAX_READER_PAGES else
+                           "选择 3–8 个 URL，综合资讯优先 5–8 个（候选不足时全部读取，最多 8 个，聚焦问题按需）；")
+                        + "工具会提取标题、正文、发布时间、作者、链接和关键段落。"
                         "读取后再综合回答，不能在这一步直接给最终答案。\n"
                         + json.dumps({"urls": candidate_urls, "query": latest_user_text}, ensure_ascii=False)
                     )))
@@ -1021,9 +1065,27 @@ async def run_agent(
                     continue
                 await stream_content("工作区工具已连接，但模型本轮没有发起文件操作，没有改动任何文件。请重试；若要恢复原值，请确认前文是否包含原始内容。", send_event)
                 break
-            if content and evidence and executed_tool_names <= RESEARCH_ONLY_TOOLS:
+            already_streamed = False
+            streamed = answer_streamer.finish(content) if (answer_streamer and content) else None
+            if content and evidence and executed_tool_names <= RESEARCH_ONLY_TOOLS and streamed is not None:
+                # 已边写边显示：每句在推送前完成核验，不再整篇重写或二次推送
                 report = answer_verifier.verify(content, evidence.source_ids)
-                if not report.ok and not answer_verification_retry and iterations > 0:
+                _log_answer_verification("stream", report, removed=answer_streamer.removed)
+                if answer_streamer.first_sent_at is not None:
+                    # 从 Agent 开始到第一句正文推送给前端的时间（不含接口在 Agent 之前的准备）
+                    print(f"[Timing] phase=first_text ms={round((answer_streamer.first_sent_at - run_started) * 1000)}")
+                send_event({"type": "answer_verification", "revised": answer_verification_retry,
+                            "removedSentences": answer_streamer.removed, **report.counts()})
+                if not streamed:
+                    streamed = "本轮检索到的来源不足以支持可靠的回答，请换个问法或稍后重试。"
+                    send_event({"type": "token", "content": streamed})
+                content = streamed
+                already_streamed = True
+            elif content and evidence and executed_tool_names <= RESEARCH_ONLY_TOOLS:
+                report = answer_verifier.verify(content, evidence.source_ids)
+                # 大部分事实句已有来源时只删掉未标注的句子；覆盖率过低才整篇重写一次
+                if (not report.ok and not answer_verification_retry and iterations > 0
+                        and _citation_rewrite_needed(report)):
                     answer_verification_retry = True
                     _log_answer_verification("revise", report)
                     messages.append(response)
@@ -1041,7 +1103,9 @@ async def run_agent(
                     _log_answer_verification("pass", report)
                     send_event({"type": "answer_verification", "revised": answer_verification_retry,
                                 "removedSentences": 0, **report.counts()})
-            if content:
+            if already_streamed:
+                _timing("stream", time.perf_counter(), chars=len(content), mode="live")
+            elif content:
                 stream_started = time.perf_counter()
                 await stream_content(content, send_event)
                 _timing("stream", stream_started, chars=len(content))
@@ -1051,10 +1115,37 @@ async def run_agent(
 
         # 执行所有工具调用
         search_results_this_round: List[Dict[str, Any]] = []
+        round_search_url_lists: list[list[str]] = []
         explicit_read_this_round = any(preview_operation_name(tc.get("name")) == "read_preview_file" for tc in tool_calls)
         round_had_search = False
         round_patch_failed = False
         pending_tool_rules: list[str] = []
+        # 同一轮的多个联网搜索并行执行，结果写入搜索缓存；下面的循环命中缓存，事件与来源仍按原顺序发出
+        if "web_search" in bound_tool_names and not web_search_declined(latest_user_text):
+            from tools.search_orchestrator import infer_search_language
+            prefetch: list[tuple[str, Dict[str, Any]]] = []
+            for tc in tool_calls:
+                if tc.get("name") != "web_search":
+                    continue
+                prefetch_args = dict(tc.get("args", {}) or {})
+                prefetch_args["original_query"] = (str(prefetch_args.get("query", ""))
+                                                   if local_or_private_subject(latest_user_text) else latest_user_text)
+                prefetch_args["user_language"] = infer_search_language(latest_user_text)
+                key = search_context.key("web_search", prefetch_args)
+                if key and search_context.get(key) is None and key not in [k for k, _ in prefetch]:
+                    prefetch.append((key, prefetch_args))
+            if len(prefetch) >= 2 and not (signal and signal.is_set()):
+                prefetch_started = time.perf_counter()
+                # 并行检索期间不发进度文字（2026-10-19 用户要求去掉"正在并行检索 N 个查询…"状态行）
+                prefetched = await asyncio.gather(*(
+                    execute_tool("web_search", args, signal, preview_workspace,
+                                 allow_workspace_edit, bound_tool_names, vscode_project_context)
+                    for _, args in prefetch
+                ), return_exceptions=True)
+                for (key, _), result in zip(prefetch, prefetched):
+                    if isinstance(result, str):
+                        search_context.remember(key, result)
+                _timing("search_prefetch", prefetch_started, searches=len(prefetch))
         for tc in tool_calls:
             tool_name = tc.get("name", "")
             executed_tool_names.add(tool_name)
@@ -1187,7 +1278,7 @@ async def run_agent(
                             canonical = _canonical_url(str(url))
                             if canonical in allowed_web_reader_urls:
                                 accepted_urls.append(allowed_web_reader_urls[canonical])
-                        tool_args["urls"] = list(dict.fromkeys(accepted_urls))[:MAX_READER_PAGES]
+                        tool_args["urls"] = list(dict.fromkeys(accepted_urls))[:reader_page_limit]
                     cache_key = search_context.key(tool_name, tool_args)
                     may_reuse = tool_name in bound_tool_names and not (signal and signal.is_set())
                     cached_result = search_context.get(cache_key) if may_reuse else None
@@ -1265,6 +1356,10 @@ async def run_agent(
                                                 canonical = _canonical_url(source["url"])
                                                 if canonical:
                                                     allowed_web_reader_urls[canonical] = source["url"]
+                                        round_search_url_lists.append([
+                                            source["url"] for source in sources
+                                            if isinstance(source, dict) and source.get("url")
+                                        ])
                                     replacements = {}
                                     for index, source in enumerate(sources, 1):
                                         original_id = source.get("sourceId", source.get("source_id", f"S{index}"))
@@ -1624,6 +1719,23 @@ async def run_agent(
         for rule in dict.fromkeys(pending_tool_rules):
             messages.append(SystemMessage(content=rule))
 
+        # 新闻：搜索这一轮结束、模型也没自己发起读网页时，各查询按排名轮流取网址凑满上限，
+        # 下一轮直接读，不再调用模型挑网址（实测这次调用约 2.4 秒）
+        if (reader_page_limit < MAX_READER_PAGES and web_reader_required and not web_reader_succeeded
+                and round_search_url_lists and "web_reader" in bound_tool_names
+                and not any(tc.get("name") == "web_reader" for tc in tool_calls)
+                and not (signal and signal.is_set())):
+            picked: list[str] = []
+            for rank in range(max(len(urls) for urls in round_search_url_lists)):
+                for urls in round_search_url_lists:
+                    if rank < len(urls) and urls[rank] not in picked:
+                        picked.append(urls[rank])
+            if picked:
+                forced_reader_call = {
+                    "id": f"auto_reader_{llm_call_count}", "name": "web_reader", "type": "tool_call",
+                    "args": {"urls": picked[:reader_page_limit], "query": latest_user_text},
+                }
+
         if round_patch_failed:
             patch_failure_seen = True
             successful_preview_patch = False
@@ -1758,7 +1870,8 @@ def _hide_presentation_schema_echo(content: str) -> str:
 
 async def stream_content(content: str, send_event: Callable[[Dict[str, Any]], None]) -> None:
     """
-    分段流式输出文本（模拟打字效果）
+    分段推送最终回答。核验与删句已在调用前完成，这里只负责把文本切块发给前端；
+    TYPING_DELAY_MS 为 0 时不等待。
     """
     # 按 TYPING_CHUNK_SIZE 个字符分段
     chunks = [content[i:i + TYPING_CHUNK_SIZE] for i in range(0, len(content), TYPING_CHUNK_SIZE)]
@@ -1769,7 +1882,8 @@ async def stream_content(content: str, send_event: Callable[[Dict[str, Any]], No
 
     for chunk in chunks:
         send_event({"type": "token", "content": chunk})
-        await asyncio.sleep(TYPING_DELAY_MS / 1000.0)
+        if TYPING_DELAY_MS > 0:
+            await asyncio.sleep(TYPING_DELAY_MS / 1000.0)
 
     print("[Stream] 流式输出完成")
 

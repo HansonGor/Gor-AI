@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react';
+
 export interface Session {
   id: string;
   title: string;
@@ -309,6 +311,8 @@ export interface SidebarProps {
   onDeleteSession: (id: string) => void;
   theme?: ThemeType;
   isCollapsed?: boolean;
+  /** 侧栏底部账号区内容（头像、昵称、账号菜单）；未提供时只显示头像与昵称。 */
+  account?: ReactNode;
 }
 
 export interface ShareSelection {

@@ -14,7 +14,7 @@ import * as Location from 'expo-location';
 export interface GeolocationResult {
   latitude: number;
   longitude: number;
-  accuracy?: number;
+  accuracy?: number | null;
   altitude?: number | null;
   heading?: number | null;
   speed?: number | null;
@@ -76,9 +76,6 @@ export async function requestGeolocation(): Promise<GeolocationResult> {
     // 2. 获取当前位置
     const location = await Location.getCurrentPositionAsync({
       accuracy: Location.Accuracy.Balanced,
-      enableHighAccuracy: true,
-      timeout: 10000,
-      maximumAge: 0,
     });
 
     // 3. 转换为统一格式

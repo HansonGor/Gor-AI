@@ -54,7 +54,8 @@ async def get_pool() -> asyncpg.Pool:
     首次调用时创建连接池，后续复用已有连接池。
     连接池配置：
       - dsn:      从 config.Database.URL 读取数据库连接字符串
-      - min_size: 1  最少保持 1 个连接
+      - min_size: 4  启动时预先建好 4 个连接：远端数据库新建连接约 0.5～1 秒，
+                     聊天接口会并行读写，只留 1 个时首个请求要临时建连接、慢约 3 秒
       - max_size: 10 最多同时保持 10 个连接
 
     Returns:
@@ -64,7 +65,7 @@ async def get_pool() -> asyncpg.Pool:
     if _pool is None:
         _pool = await asyncpg.create_pool(
             dsn=config.Database.URL,
-            min_size=1,
+            min_size=4,
             max_size=10,
         )
         print("[Database] 连接池已创建")
@@ -97,6 +98,8 @@ async def init_db():
             );
         """)
         from db.project_changes import DDL, SEED_GLOBAL_PREFERENCES, ensure_auto_thinking_mode
+        from db.auth import DDL as AUTH_DDL
+        await conn.execute(AUTH_DDL)
         await conn.execute(DDL)
         await ensure_auto_thinking_mode(conn)
         await conn.execute(SEED_GLOBAL_PREFERENCES)
@@ -831,42 +834,24 @@ async def auto_generate_session_title(session_id: str) -> None:
     Args:
         session_id: 目标会话 ID
     """
+    # 一条语句完成判断与更新：远端数据库每次往返约 240ms，原先 4 次查询要 1 秒以上
+    # （生成标题在回答结束前执行，会直接拖长用户的等待）。规则与原先一致：
+    # 标题仍是「新对话」且已有 assistant 消息时，取第一条 user 消息前 18 个字符，超出加「...」。
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # 1. 检查会话标题是否为「新对话」
-        session = await conn.fetchrow(
-            "SELECT title FROM chat_sessions WHERE id = $1", session_id,
-        )
-        if not session or session["title"] != "新对话":
-            return  # 会话不存在或标题已修改，跳过
-
-        # 2. 检查是否同时存在 user 和 assistant 消息
-        # 使用 PostgreSQL 的 FILTER 语法在同一次查询中统计两种角色
-        counts = await conn.fetchrow(
-            """SELECT
-                   COUNT(*) FILTER (WHERE role = 'user') as user_count,
-                   COUNT(*) FILTER (WHERE role = 'assistant') as assistant_count
-               FROM chat_messages WHERE session_id = $1""",
+        title = await conn.fetchval(
+            """UPDATE chat_sessions
+               SET title = CASE WHEN char_length(first_user.content) > 18
+                                THEN left(first_user.content, 18) || '...'
+                                ELSE first_user.content END
+               FROM (SELECT content FROM chat_messages
+                     WHERE session_id = $1 AND role = 'user'
+                     ORDER BY created_at ASC, id ASC LIMIT 1) AS first_user
+               WHERE chat_sessions.id = $1
+                 AND chat_sessions.title = '新对话'
+                 AND EXISTS (SELECT 1 FROM chat_messages WHERE session_id = $1 AND role = 'assistant')
+               RETURNING chat_sessions.title""",
             session_id,
         )
-        if not counts or counts["user_count"] == 0 or counts["assistant_count"] == 0:
-            return  # 缺少任一角色的消息，暂不生成标题
-
-        # 3. 获取第一条用户消息
-        first_user_msg = await conn.fetchrow(
-            "SELECT content FROM chat_messages WHERE session_id = $1 AND role = 'user' ORDER BY created_at ASC LIMIT 1",
-            session_id,
-        )
-        if not first_user_msg:
-            return
-
-        # 4. 截取前 18 个字符作为标题
-        content = first_user_msg["content"]
-        title = content[:18] + "..." if len(content) > 18 else content
-
-        # 5. 更新数据库
-        await conn.execute(
-            "UPDATE chat_sessions SET title = $1 WHERE id = $2",
-            title, session_id,
-        )
-        print(f"[Session] 自动生成标题: {title}")
+        if title is not None:
+            print(f"[Session] 自动生成标题: {title}")

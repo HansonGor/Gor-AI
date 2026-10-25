@@ -49,8 +49,20 @@ interface SendChatMessageCallbacks {
   }) => void | number | Promise<void | number>;
   onPreviewProjectConflict?: (message: string) => void;
   onSearchSources?: (sources: SearchSource[], searchTrace?: SearchTrace) => void;
+  /** 服务端为这次回复分配的运行 ID；停止回复要凭它调用取消接口（断开连接不再取消） */
+  onRun?: (runId: string) => void;
   onDone?: (status?: ThinkingStatus) => void;
   onError?: (error: Error) => void;
+}
+
+/** 停止一次正在服务端运行的回复（任一设备都可停止）；回复已结束时视为成功。 */
+export async function cancelChatRun(runId: string): Promise<void> {
+  const response = await fetch(`/api/chat/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' });
+  if (!response.ok && response.status !== 404) {
+    let detail = '';
+    try { detail = (await response.json())?.detail ?? ''; } catch { /* 按状态码提示 */ }
+    throw new Error(detail || `停止失败 (${response.status})`);
+  }
 }
 
 /**
@@ -222,7 +234,10 @@ export async function sendChatMessage(
     });
 
     if (!response.ok) {
-      throw new Error(`请求失败 (${response.status})`);
+      // 例如 409：另一台设备正在回复这个会话；展示服务端给出的原因
+      let detail = '';
+      try { detail = (await response.json())?.detail ?? ''; } catch { /* 非 JSON 时按状态码提示 */ }
+      throw Object.assign(new Error(detail || `请求失败 (${response.status})`), { status: response.status });
     }
 
     if (!response.body) {
@@ -231,6 +246,9 @@ export async function sendChatMessage(
 
     for await (const event of parseSSEStream(response.body)) {
       switch (event.type) {
+        case 'run':
+          if (typeof event.runId === 'string') callbacks.onRun?.(event.runId);
+          break;
         case 'thinking_start':
         case 'thinking_delta':
         case 'thinking_end':

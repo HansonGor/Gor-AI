@@ -6,6 +6,40 @@ export function postVscodeMessage(message: unknown): boolean {
   if (!vscodeApi) return false;
   vscodeApi.postMessage(message); return true;
 }
+
+// 账号凭证只存在扩展的 SecretStorage 与这里的内存中；Webview 启动时向扩展索取一次。
+const AUTH_TOKEN_WAIT_MS = 1500;
+let authToken: string | null = null;
+let authTokenReady: Promise<void> = Promise.resolve();
+const authSavedWaiters = new Set<() => void>();
+
+export function setVscodeAuthToken(token: string | null): void {
+  authToken = token;
+}
+
+/** 等扩展确认凭证已写入（或已清除）；超时后照常继续，最坏情况是刷新后需重新登录。 */
+export function waitForVscodeAuthSaved(timeoutMs = 3_000): Promise<void> {
+  if (!vscodeApi) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = () => { clearTimeout(timer); authSavedWaiters.delete(finish); resolve(); };
+    const timer = window.setTimeout(finish, timeoutMs);
+    authSavedWaiters.add(finish);
+  });
+}
+
+function requestStoredAuthToken(): void {
+  authTokenReady = new Promise((resolve) => {
+    const finish = () => { clearTimeout(timer); window.removeEventListener('message', onMessage); resolve(); };
+    const onMessage = (event: MessageEvent) => {
+      if (event.data?.type !== 'gor.authToken') return;
+      authToken = typeof event.data.token === 'string' && event.data.token ? event.data.token : null;
+      finish();
+    };
+    const timer = window.setTimeout(finish, AUTH_TOKEN_WAIT_MS);
+    window.addEventListener('message', onMessage);
+  });
+  vscodeApi?.postMessage?.({ type: 'gor.authTokenRequest' });
+}
 export function installVscodeWebviewRuntime(): void {
   // Keep VS Code conversations in their own server-side session namespace.
   document.documentElement.dataset.gorClientMode = 'vscode';
@@ -13,6 +47,10 @@ export function installVscodeWebviewRuntime(): void {
   const workspaceIdWaiters = new Set<(workspaceId: string) => void>();
   window.addEventListener('message', (event: MessageEvent) => {
     const data = event.data;
+    if (data?.type === 'gor.authTokenSaved') {
+      [...authSavedWaiters].forEach((resolve) => resolve());
+      return;
+    }
     if (!data || typeof data !== 'object' || data.type !== 'gor.workspaceContext') return;
     activeWorkspaceId = typeof data.workspaceId === 'string' ? data.workspaceId : undefined;
     if (activeWorkspaceId) {
@@ -25,6 +63,7 @@ export function installVscodeWebviewRuntime(): void {
   });
   vscodeApi = (window as any).acquireVsCodeApi?.();
   vscodeApi?.postMessage?.({ type: 'gor.workspaceContextReady' });
+  requestStoredAuthToken();
   installToolchainBridge(postVscodeMessage);
 
   const apiMeta = document.querySelector<HTMLMetaElement>('meta[name="gor-api-base"]');
@@ -73,7 +112,14 @@ export function installVscodeWebviewRuntime(): void {
     }
     if (!isApiPath(parsed.pathname)) return originalFetch(input, init);
 
-    let requestInit = init;
+    // 首批请求（会话列表等）要等扩展交回已存凭证，否则会按未登录读到 default:vscode 的列表。
+    await authTokenReady;
+    const headers = new Headers(input instanceof Request ? input.headers : undefined);
+    new Headers(init?.headers).forEach((value, key) => headers.set(key, value));
+    headers.set('X-Gor-Client', 'vscode');
+    if (authToken) headers.set('Authorization', `Bearer ${authToken}`);
+    else headers.delete('Authorization');
+    let requestInit: RequestInit | undefined = { ...init, headers };
     if (parsed.pathname === '/api/chat' && typeof init?.body === 'string') {
       try {
         const body = JSON.parse(init.body);
@@ -89,7 +135,7 @@ export function installVscodeWebviewRuntime(): void {
           if (workspaceId) chatBody.workspaceId = workspaceId;
           else delete chatBody.workspaceId;
           requestInit = {
-            ...init,
+            ...requestInit,
             body: JSON.stringify(chatBody),
           };
         }

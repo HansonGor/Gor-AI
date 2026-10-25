@@ -67,47 +67,95 @@
   .chat-page.is-empty-chat .chat-composer-panel { .compact-thinking-modes(); }
 }
 .chat-page.is-vscode-plugin.is-empty-chat .chat-composer-panel { .compact-thinking-modes(); }
-// 手机宽度下两个胶囊并排：覆盖 ChatBox.less 在 ≤1023px 时放大的 36px 触控尺寸，避免挤到发送按钮。
-@media (max-width: 480px) {
-  .chat-composer-modes { gap: 6px; }
-  .chat-page .chat-composer-panel .chat-composer-modes .file-edit-mode-selector .file-edit-mode-trigger {
-    height: 32px;
-    gap: 5px;
-    padding: 0 9px;
-    font-size: 12px;
-  }
-  // 手机上去掉三枚胶囊的下拉箭头（各省约 20px），让模型名在独立一行中完整显示；读取中的转圈图标保留。
-  .chat-page .chat-composer-panel .chat-composer-modes .file-edit-mode-trigger > .lucide-chevron-down { display: none; }
-  // 胶囊上只显示"酌思"，"（auto）"仍在弹框选项里显示，避免挤占模型名
-  .chat-page .chat-composer-panel .chat-composer-modes .file-edit-mode-trigger .thinking-mode-tag { display: none; }
-}
-// 窄屏 Web 与 VS Code 插件：三枚胶囊单独占输入框第三行（全宽），
-// 布局为：输入框 / “+”与发送 / 落笔·思考·模型。插件 Webview 报告的视口宽度不可靠，因此插件始终使用该布局。
+// 窄输入框：三枚胶囊单独占输入框第三行（全宽），布局为：输入框 / “+”与发送 / 落笔·思考·模型。
 // （2026-10-17 曾试过“胶囊浮在输入框上方”的方案 A，用户确认仍用本布局。）
-// 选择器叠加类名以高于 ChatBox.less 与欢迎页紧凑布局中特异性较高的规则。
-// @side：第二行左右两个圆形按钮（添加文件 / 发送）的统一尺寸，二者始终一致，
-// 不再随 ChatBox.less 各断点分别取 33/38/44/58px。
+// @side：第二行左右两个圆形按钮（添加文件 / 发送）的统一尺寸，二者始终一致。
 .composer-modes-own-row(@side) {
   grid-template-rows: auto auto auto;
   > div:first-child { grid-column: 1; grid-row: 2; }
   // flex 基准也一并设置：插件欢迎页的规则带有 flex: 0 0 44px，会把宽度撑回 44px 变成椭圆
   .upload-btn, .send-btn { width: @side !important; height: @side !important; flex: 0 0 @side; }
   .upload-btn svg, .send-btn svg { width: @side * 0.5; height: @side * 0.5; }
+  // 停止按钮的实心方块几乎占满图标框，而"+"只占中间约 58%；按此比例缩小，让两侧图标看起来一样大
+  .send-btn-stop svg { width: @side * 0.39; height: @side * 0.39; }
   .chat-input { grid-column: 1 / 4; grid-row: 1; }
   .chat-composer-actions { grid-column: 3; grid-row: 2; }
   .chat-composer-modes { grid-column: 1 / 4; grid-row: 3; justify-self: stretch; }
   .chat-composer-modes > .model-selector { flex: 0 1 auto; }
   .model-selector .file-edit-mode-trigger { max-width: 100%; }
 }
-@media (max-width: 640px) {
-  .chat-page.chat-page .chat-composer-panel.chat-composer-panel.chat-composer-panel.chat-composer-panel:has(.model-selector) {
-    .composer-modes-own-row(44px);
+// 窄输入框的唯一一套样式：Web 手机宽度、Web 输入框被右侧 Preview 挤窄、VS Code 插件三处共用，
+// 不再各自设计。面板尺寸、按钮、输入文字与胶囊都在这里定义，覆盖 ChatBox.less 各断点的取值。
+// 胶囊保持一行，放不下时只有模型名以省略号截断；不给胶囊行设 overflow: hidden，否则会裁掉以它为定位基准的弹框。
+.compact-composer() {
+  .composer-modes-own-row(44px);
+  // 外观沿用对话中的输入框（ChatBox.less 基础样式）；欢迎页窄屏的发光圆钮、胶囊形面板不再覆盖它，
+  // 因此无论欢迎页还是对话中、Web 还是插件，窄输入框看起来都一样
+  display: grid;
+  min-height: 0;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  gap: 10px 8px;
+  padding: 13px 16px 13px 15px;
+  border: 1px solid rgba(227, 233, 255, 0.17);
+  border-radius: 27px;
+  background: rgba(21, 37, 66, 0.76);
+  box-shadow: 0 18px 52px rgba(3, 10, 28, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(30px) saturate(135%);
+  -webkit-backdrop-filter: blur(30px) saturate(135%);
+  &:focus-within {
+    border-color: rgba(179, 160, 255, 0.47);
+    box-shadow: 0 18px 52px rgba(3, 10, 28, 0.36), 0 0 0 3px rgba(116, 79, 255, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.12);
   }
+  .chat-input { min-height: 38px; margin-left: 0; padding: 4px !important; line-height: 1.5 !important; }
+  .chat-input, .chat-input::placeholder { font-size: 15px !important; }
+  .chat-input::placeholder { color: rgba(222, 229, 250, 0.62) !important; }
+  .upload-btn {
+    border: 1px solid rgba(236, 239, 255, 0.06) !important;
+    background: transparent !important;
+    box-shadow: none;
+    &:hover { background: rgba(231, 235, 255, 0.11) !important; }
+  }
+  .send-btn {
+    border: 1px solid rgba(255, 255, 255, 0.14) !important;
+    background: linear-gradient(145deg, #792bff, #4410ee) !important;
+    box-shadow: 0 8px 24px rgba(65, 22, 230, 0.45) !important;
+    &:disabled {
+      opacity: 0.4 !important;
+      border-color: rgba(255, 255, 255, 0.08) !important;
+      background: rgba(167, 174, 202, 0.24) !important;
+      box-shadow: none !important;
+    }
+  }
+  .send-btn-stop { background: rgba(255, 255, 255, 0.18) !important; box-shadow: none !important; }
+  .chat-composer-modes { flex-wrap: nowrap; gap: 6px; }
+  // 落笔、思考两枚名称很短，保持完整；只有模型名在空间不足时省略
+  .chat-composer-modes > .file-edit-mode-selector { min-width: 0; flex: 0 0 auto; }
+  .chat-composer-modes > .model-selector { flex: 0 1 auto; }
+  .chat-composer-modes .file-edit-mode-trigger {
+    max-width: 100%;
+    min-width: 0;
+    height: 32px;
+    gap: 5px;
+    padding: 0 10px;
+    overflow: hidden;
+    font-size: 12px;
+  }
+  .chat-composer-modes .file-edit-mode-trigger > svg { width: 15px; height: 15px; flex-basis: 15px; }
+  .chat-composer-modes .file-edit-mode-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  // 去掉下拉箭头；读取中的转圈图标保留
+  .chat-composer-modes .file-edit-mode-trigger > .lucide-chevron-down { display: none; }
 }
-// 插件侧栏更窄，两个按钮统一为 36px
-.chat-page.chat-page.is-vscode-plugin .chat-composer-panel.chat-composer-panel.chat-composer-panel.chat-composer-panel:has(.model-selector) {
-  .composer-modes-own-row(36px);
+// 选择器叠加类名以高于 ChatBox.less 与欢迎页紧凑布局中特异性较高的规则。
+@compact-composer-panel: ~'.chat-composer-panel.chat-composer-panel.chat-composer-panel.chat-composer-panel:has(.model-selector)';
+@media (max-width: 640px) {
+  .chat-page.chat-page @{compact-composer-panel} { .compact-composer(); }
 }
+// 宽屏 Web 打开右侧 Preview 时视口仍宽、输入框却被挤窄，按输入框自身宽度切换
+@container chat-composer (max-width: 700px) {
+  .chat-page.chat-page @{compact-composer-panel} { .compact-composer(); }
+}
+// 插件 Webview 报告的视口宽度不可靠，始终使用窄输入框样式
+.chat-page.chat-page.is-vscode-plugin @{compact-composer-panel} { .compact-composer(); }
 @media (prefers-reduced-motion: reduce) {
   .thinking-mode-visibility, .thinking-mode-switch, .thinking-mode-switch::after { transition: none; }
 }

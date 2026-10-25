@@ -30,9 +30,17 @@ import type { PresentationMotionCue, PresentationSchema } from '../src/types.ts'
 test('Web preview canvas does not mask project backgrounds, collapse app margins or clip scrolling', () => {
   const html = readFileSync(new URL('../preview-runtime.html', import.meta.url), 'utf8');
   const css = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
-  assert.match(css, /html\s*\{\s*background:\s*#171923;/, 'theme fallback belongs to html only');
-  assert.match(css, /body,\s*#root\s*\{\s*display:\s*flow-root;\s*background:\s*transparent;/);
+  // html must stay transparent: a project body background then propagates to the
+  // whole canvas instead of ending at the first viewport over a dark html fill.
+  assert.doesNotMatch(css, /(^|[\s,}])html\s*\{[^}]*background/, 'html must not paint a background');
+  assert.match(css, /:where\(body\)\s*\{\s*background:\s*#171923;/, 'zero-specificity fallback yields to project body rules');
+  assert.doesNotMatch(css, /(^|[\s,}])body\s*(,[^{]*)?\{[^}]*background/, 'no specific body background may mask project styles');
+  assert.match(css, /body,\s*#root\s*\{\s*display:\s*flow-root;/);
   assert.match(css, /body\s*\{\s*overflow:\s*auto;/);
+  // Native thin scrollbar matching the chat page tokens; zero specificity so
+  // project scrollbar rules still win.
+  assert.match(css, /:where\(html\)\s*\{\s*scrollbar-width:\s*thin;\s*scrollbar-color:\s*rgba\(148, 144, 174, 0\.4\) transparent;/);
+  assert.doesNotMatch(css, /::-webkit-scrollbar/, 'custom webkit bars would differ from the page style');
   assert.doesNotMatch(css, /overflow:\s*hidden/);
   assert.match(css, /html,\s*body,\s*#root\s*\{\s*width:\s*100%;\s*height:\s*100%;\s*margin:\s*0;/,
     'retain the viewport height chain required by full-height scenes');

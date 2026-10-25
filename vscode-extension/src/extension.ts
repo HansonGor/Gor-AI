@@ -128,7 +128,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const reconnectCommand = vscode.commands.registerCommand('gor.reconnect', connect);
   chatView = ChatView.register(context.extensionUri, output, () => connection?.workspaceId,
-    async (timeoutMs) => connection?.waitForWorkspace(timeoutMs));
+    async (timeoutMs) => connection?.waitForWorkspace(timeoutMs), context.secrets);
   const toolchainOutput = vscode.window.createOutputChannel('Gor 工具链');
   configureToolchainUi({
     // 审阅卡片优先展示在聊天面板；面板不可见或未能展示时退回原生确认框。
