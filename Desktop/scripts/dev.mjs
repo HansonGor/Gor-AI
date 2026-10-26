@@ -68,7 +68,7 @@ function shutdown(code) {
 await waitForDevServer();
 
 let started = false;
-const tsc = spawn(process.execPath, [tscPath, '-p', '.', '--watch', '--preserveWatchOutput'], { cwd: root });
+const tsc = spawn(process.execPath, [tscPath, '-b', '.', '--watch', '--preserveWatchOutput'], { cwd: root });
 tsc.stdout.setEncoding('utf8');
 tsc.stdout.on('data', (chunk) => {
   process.stdout.write(chunk);

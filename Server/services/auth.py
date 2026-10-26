@@ -19,6 +19,9 @@ SESSION_SECONDS = 7 * 24 * 3600
 
 ACCOUNT_PREFIX = "user:"
 VSCODE_SUFFIX = ":vscode"
+# 桌面端「书斋」（本地模式）的会话独立于 Web 与插件；桌面端「云笺」模式仍用 Web 的命名空间。
+DESKTOP_SUFFIX = ":desktop"
+CLIENT_SUFFIXES = (VSCODE_SUFFIX, DESKTOP_SUFFIX)
 
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 14, 8, 1
 _EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]+\.[^@\s]{2,}$")
@@ -120,9 +123,10 @@ def token_client(headers) -> str | None:
 
 
 def account_namespace(account_id: str, requested_user_id: str | None) -> str:
-    """登录后按账号划分会话：Web 用 user:<id>，插件沿用两端隔离规则用 user:<id>:vscode。"""
+    """登录后按账号划分会话：Web（及桌面端云笺）用 user:<id>，插件用 user:<id>:vscode，桌面端书斋用 user:<id>:desktop。"""
     base = f"{ACCOUNT_PREFIX}{account_id}"
-    return base + VSCODE_SUFFIX if (requested_user_id or "").endswith(VSCODE_SUFFIX) else base
+    requested = requested_user_id or ""
+    return base + next((suffix for suffix in CLIENT_SUFFIXES if requested.endswith(suffix)), "")
 
 
 def namespace_account(user_id: str | None) -> str | None:
@@ -130,7 +134,10 @@ def namespace_account(user_id: str | None) -> str | None:
     if not user_id or not user_id.startswith(ACCOUNT_PREFIX):
         return None
     rest = user_id[len(ACCOUNT_PREFIX):]
-    return rest[: -len(VSCODE_SUFFIX)] if rest.endswith(VSCODE_SUFFIX) else rest
+    for suffix in CLIENT_SUFFIXES:
+        if rest.endswith(suffix):
+            return rest[: -len(suffix)]
+    return rest
 
 
 def can_access_session(owner_user_id: str | None, account_id: str | None) -> bool:

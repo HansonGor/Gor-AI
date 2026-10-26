@@ -5,11 +5,12 @@
  */
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
-import { app, BrowserWindow, net, protocol, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, shell, type IpcMainInvokeEvent } from 'electron';
 import {
   APP_HOST, APP_ORIGIN, APP_SCHEME, contentTypeFor, createApiForwarder, isApiPath, isInAppUrl, resolveApiBase, resolveDevServerUrl,
   resolveStaticFile,
 } from './protocol';
+import { ShuzhaiService, type ShuzhaiState } from './shuzhai';
 import { createTokenStore } from './tokenStore';
 import { TITLE_BAR_OVERLAY, usesOverlayTitleBar, WINDOW_CHROME_CSS } from './windowChrome';
 
@@ -21,6 +22,7 @@ protocol.registerSchemesAsPrivileged([{
 
 const log = (message: string) => console.log(message);
 let mainWindow: BrowserWindow | null = null;
+let shuzhai: ShuzhaiService | null = null;
 
 // 开发态用独立的用户数据目录：与已安装的正式版互不抢单实例锁，登录状态也分开；
 // GOR_DESKTOP_PROFILE=xxx 再开一个互不干扰的开发实例（目录「Gor Dev xxx」），用来在一台电脑上测多端同步
@@ -88,6 +90,8 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // 只在主页面注入书斋桥接（子框架如 Preview 沙箱不注入）
+      preload: path.join(__dirname, 'preload.js'),
     },
   });
   if (overlayTitleBar) {
@@ -108,6 +112,54 @@ function createWindow(): BrowserWindow {
   });
   void window.loadURL(`${devOrigin ?? APP_ORIGIN}/#/chat`);
   return window;
+}
+
+function createShuzhai(apiBase: string): ShuzhaiService {
+  return new ShuzhaiService({
+    storePath: path.join(app.getPath('userData'), 'shuzhai.json'),
+    apiBase,
+    async chooseFolder() {
+      const options: Electron.OpenDialogOptions = { title: '择一书斋', buttonLabel: '设为书斋', properties: ['openDirectory', 'createDirectory'] };
+      const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+      return result.canceled ? undefined : result.filePaths[0];
+    },
+    trashItem: (fsPath) => shell.trashItem(fsPath),
+    async showWarningModal(message, detail, actions) {
+      const options: Electron.MessageBoxOptions = {
+        type: 'warning', title: 'Gor 书斋', message, detail, buttons: [...actions, '取消'],
+        cancelId: actions.length, defaultId: actions.length, noLink: true,
+      };
+      const { response } = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
+      return actions[response];
+    },
+    revealPath: (fsPath) => { void shell.openPath(fsPath); },
+    onState: (state: ShuzhaiState) => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('gor:shuzhai:state', state);
+    },
+    log,
+  });
+}
+
+/** 只接受主窗口里应用自身页面（主框架）的调用。 */
+function fromAppPage(event: IpcMainInvokeEvent): boolean {
+  const frame = event.senderFrame;
+  return !!mainWindow && event.sender === mainWindow.webContents && !!frame && frame === mainWindow.webContents.mainFrame
+    && isAppUrl(frame.url);
+}
+
+function registerShuzhaiIpc(service: ShuzhaiService): void {
+  const guard = <T>(run: () => T | Promise<T>) => async (event: IpcMainInvokeEvent) => {
+    if (!fromAppPage(event)) throw new Error('Not allowed');
+    return run();
+  };
+  ipcMain.handle('gor:shuzhai:get-state', guard(() => service.state));
+  ipcMain.handle('gor:shuzhai:pick-folder', guard(() => service.pickFolder()));
+  ipcMain.handle('gor:shuzhai:open-recent', async (event, folderPath: unknown) => {
+    if (!fromAppPage(event)) throw new Error('Not allowed');
+    return service.openRecent(folderPath);
+  });
+  ipcMain.handle('gor:shuzhai:close', guard(() => service.close()));
+  ipcMain.handle('gor:shuzhai:reveal', guard(() => service.reveal()));
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -139,6 +191,10 @@ if (!app.requestSingleInstanceLock()) {
       return isApiPath(url.pathname) ? forward(request) : serveStatic(root, url.pathname);
     });
 
+    shuzhai = createShuzhai(apiBase);
+    registerShuzhaiIpc(shuzhai);
+    void shuzhai.restore();
+
     mainWindow = createWindow();
     mainWindow.on('closed', () => { mainWindow = null; });
     app.on('activate', () => {
@@ -149,4 +205,5 @@ if (!app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
   });
+  app.on('before-quit', () => { shuzhai?.dispose(); });
 }

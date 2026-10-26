@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
-import * as vscode from 'vscode';
+import { host, type HostFolder, type HostUri } from '../host';
 import { normalizeWorkspaceRelativePath, selectWorkspaceRoot, toWorkspaceUri, WorkspaceRequestError } from '../paths';
 import { decide, DEFAULT_ALLOWLIST, normalizeApprovalMode, PlanRejection, type ConfirmReason } from './policy';
 import { highestWarning, type RiskLevel, type RiskWarning } from './risk';
@@ -100,15 +100,24 @@ export const nativeUi: ToolchainUi = {
       ].join('\n');
       const high = highestWarning(request.warnings) === 'high';
       const actions = [high ? '仍要施行' : '施行', ...(request.editable ? [`改写${request.editable.label}`] : [])];
+      // 有了结果就清掉超时计时器与取消监听，不留下最长 10 分钟的悬挂计时器。
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let onAbort: (() => void) | undefined;
       const choice = await Promise.race([
-        Promise.resolve(vscode.window.showWarningMessage('此令待你过目', { modal: true, detail }, ...actions)),
-        new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), Math.max(0, request.deadline - Date.now()))),
-        new Promise<'cancelled'>((resolve) => signal.addEventListener('abort', () => resolve('cancelled'), { once: true })),
-      ]);
+        Promise.resolve(host().showWarningModal('此令待你过目', detail, actions)),
+        new Promise<'timeout'>((resolve) => { timer = setTimeout(() => resolve('timeout'), Math.max(0, request.deadline - Date.now())); }),
+        new Promise<'cancelled'>((resolve) => {
+          onAbort = () => resolve('cancelled');
+          signal.addEventListener('abort', onAbort, { once: true });
+        }),
+      ]).finally(() => {
+        clearTimeout(timer);
+        if (onAbort) signal.removeEventListener('abort', onAbort);
+      });
       if (choice === '施行' || choice === '仍要施行') return message !== request.editable?.value ? { answer: 'approve', message } : 'approve';
       if (choice === 'timeout' || choice === 'cancelled') return choice;
       if (request.editable && choice === `改写${request.editable.label}`) {
-        const edited = await vscode.window.showInputBox({
+        const edited = await host().showInputBox({
           title: `Gor ${request.editable.label}`, value: message, ignoreFocusOut: true,
           prompt: '修改后按回车返回确认；按 Esc 取消。',
           validateInput: (text) => (text.trim() ? undefined : `${request.editable!.label}不能为空`),
@@ -132,7 +141,7 @@ export function configureToolchainUi(next: Partial<ToolchainUi>): void {
 /** 白名单读 VS Code 设置 gor.toolchain.allowlist；未设置时用内置默认值。 */
 export function currentAllowlist(): string[] {
   try {
-    const configured = vscode.workspace.getConfiguration?.('gor')?.get<unknown>('toolchain.allowlist');
+    const configured = host().configuration('gor', 'toolchain.allowlist');
     if (Array.isArray(configured)) return configured.filter((item): item is string => typeof item === 'string');
   } catch { /* 测试替身或设置不可用时用默认值 */ }
   return DEFAULT_ALLOWLIST;
@@ -174,7 +183,7 @@ function findProfile(id: unknown): ToolchainProfile {
   return profile;
 }
 
-async function resolveCwd(root: vscode.WorkspaceFolder, value: unknown): Promise<{ cwd: string; cwdUri: vscode.Uri }> {
+async function resolveCwd(root: HostFolder, value: unknown): Promise<{ cwd: string; cwdUri: HostUri }> {
   const cwd = value === undefined || value === null || value === '' || value === '/'
     ? '/' : normalizeWorkspaceRelativePath(value);
   const cwdUri = cwd === '/' ? root.uri : toWorkspaceUri(cwd, root);
@@ -212,7 +221,7 @@ export async function listToolchains(params: Params): Promise<Record<string, unk
     });
   }
   return {
-    workspaceTrusted: vscode.workspace.isTrusted !== false,
+    workspaceTrusted: host().isTrusted(),
     allowlist: currentAllowlist(),
     toolchains,
     backgroundProcesses: [...backgroundRuns.values()].filter((run) => run.root === root.uri.fsPath).map(describeBackground),
@@ -358,7 +367,7 @@ export async function runToolchainAction(params: Params): Promise<Record<string,
   const reject = (status: RunStatus, summary: string, extra: Partial<RunResult> = {}) =>
     finish(runId, sessionId, undefined, { ...base, ...extra, status, summary });
 
-  const trusted = vscode.workspace.isTrusted !== false;
+  const trusted = host().isTrusted();
   if (!trusted) {
     return reject('workspace_untrusted', '当前工作区未受信任，请先在 VS Code 中信任此工作区。');
   }
@@ -596,7 +605,7 @@ export async function confirmOperation(operation: {
   const runId = operation.runId ?? `op-${randomUUID()}`;
   const base = { toolchain: operation.toolchain, action: operation.action };
   const shown = { command: operation.command, cwd: operation.cwd, level: operation.level, ...(operation.warnings?.length ? { warnings: operation.warnings } : {}) };
-  const trusted = vscode.workspace.isTrusted !== false;
+  const trusted = host().isTrusted();
   const decision = decide(operation, normalizeApprovalMode(operation.approvalMode), { trusted, allowlist: currentAllowlist() });
   if (decision.kind === 'reject') {
     return { result: finish(runId, operation.sessionId, undefined, { ...base, ...shown, status: decision.status, summary: decision.reason }) };

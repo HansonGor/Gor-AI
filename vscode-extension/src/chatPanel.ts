@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { homedir } from 'node:os';
 import * as vscode from 'vscode';
 import { decodeSharePng } from './shareImageSave';
-import { cancelToolchainRun, type ApprovalReply, type ApprovalRequest, type RunUpdate } from './workspace/toolchain/host';
+import { cancelToolchainRun, type ApprovalReply, type ApprovalRequest, type RunUpdate } from '@gor/workspace-core';
 
 type WebviewRequest = {
   type?: string;

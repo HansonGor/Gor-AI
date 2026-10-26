@@ -5,6 +5,7 @@
     "lib": ["ES2022"],
     "rootDir": "src",
     "outDir": "out",
+    "tsBuildInfoFile": "out/tsconfig.tsbuildinfo",
     "strict": true,
     "moduleResolution": "node",
     "esModuleInterop": true,
@@ -12,5 +13,6 @@
     "sourceMap": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "references": [{ "path": "../workspace-core" }]
 }

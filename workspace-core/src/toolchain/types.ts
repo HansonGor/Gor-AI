@@ -1,4 +1,4 @@
-import type * as vscode from 'vscode';
+import type { HostFolder, HostUri } from '../host';
 import type { RiskLevel, RiskWarning } from './risk';
 
 /**
@@ -17,10 +17,10 @@ export type ToolchainEnv = {
 };
 
 export type ActionContext = {
-  root: vscode.WorkspaceFolder;
+  root: HostFolder;
   /** 工作区相对目录（以 / 开头），已经过路径校验。 */
   cwd: string;
-  cwdUri: vscode.Uri;
+  cwdUri: HostUri;
   env: ToolchainEnv;
 };
 
@@ -41,7 +41,7 @@ export type ExecPlan = {
   argv?: string[];
   execute?: (signal: AbortSignal, input?: { message?: string }) => Promise<NativeOutcome>;
   cwd: string;
-  cwdUri: vscode.Uri;
+  cwdUri: HostUri;
   timeoutMs: number;
   level: RiskLevel;
   /** 白名单键，如 node:test、node:run_script:build、git:status。 */
@@ -92,9 +92,9 @@ export type ActionSpec = {
 export interface ToolchainProfile {
   id: string;
   /** cwdDir：命令的工作目录（本机路径），用于查找子项目里的环境（如 Python 的 .venv）。 */
-  detect(root: vscode.WorkspaceFolder, cwdDir?: string): Promise<ToolchainEnv>;
+  detect(root: HostFolder, cwdDir?: string): Promise<ToolchainEnv>;
   /** 返回本工具链可用的动作与动态发现的信息（如 package.json scripts）。 */
-  describe(root: vscode.WorkspaceFolder, env: ToolchainEnv): Promise<Record<string, unknown>>;
+  describe(root: HostFolder, env: ToolchainEnv): Promise<Record<string, unknown>>;
   actions: ActionSpec[];
 }
 

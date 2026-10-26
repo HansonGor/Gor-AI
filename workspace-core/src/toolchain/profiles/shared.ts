@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import * as vscode from 'vscode';
+import type { HostFolder } from '../../host';
 import { normalizeWorkspaceRelativePath, toWorkspaceUri, WorkspaceRequestError } from '../../paths';
 import { currentPath } from '../runner';
 import type { ActionContext } from '../types';
@@ -29,7 +29,7 @@ export function hash(text: string): string {
   return createHash('sha256').update(text).digest('hex');
 }
 
-export function requireLocalFolder(root: vscode.WorkspaceFolder): void {
+export function requireLocalFolder(root: HostFolder): void {
   if (root.uri.scheme !== 'file') {
     throw new WorkspaceRequestError('TOOLCHAIN_UNAVAILABLE', '工具链目前只支持本地文件工作区。');
   }

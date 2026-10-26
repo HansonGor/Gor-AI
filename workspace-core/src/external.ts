@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import * as vscode from 'vscode';
+import { host } from './host';
 import { WorkspaceRequestError } from './paths';
 
 /**
@@ -43,7 +43,7 @@ export function externalDenyReason(absolute: string): string | undefined {
 
 function isInsideWorkspace(absolute: string): boolean {
   const target = path.resolve(absolute).toLowerCase();
-  return (vscode.workspace.workspaceFolders ?? []).some((folder) => {
+  return (host().workspaceFolders() ?? []).some((folder) => {
     if (folder.uri.scheme !== 'file') return false;
     const root = path.resolve(folder.uri.fsPath).toLowerCase();
     return target === root || target.startsWith(root + path.sep);

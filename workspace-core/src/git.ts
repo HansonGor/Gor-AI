@@ -1,14 +1,14 @@
 import * as path from 'node:path';
-import * as vscode from 'vscode';
+import { host, type HostFolder, type HostUri } from './host';
 import { isUriWithinWorkspaceRoot, normalizeWorkspaceRelativePath, selectWorkspaceRoot, toWorkspaceUri, WorkspaceRequestError } from './paths';
 
 // 只声明本模块用到的 VS Code 内置 Git 扩展 API（vscode.git，API 版本 1）。
-type GitChange = { uri: vscode.Uri; originalUri?: vscode.Uri; renameUri?: vscode.Uri; status: number };
+type GitChange = { uri: HostUri; originalUri?: HostUri; renameUri?: HostUri; status: number };
 type GitBranch = { name?: string; commit?: string; upstream?: { remote: string; name: string }; ahead?: number; behind?: number };
 type GitRemote = { name: string; fetchUrl?: string; pushUrl?: string };
 type GitCommit = { hash: string; message: string };
 type GitRepository = {
-  rootUri: vscode.Uri;
+  rootUri: HostUri;
   state: {
     HEAD?: GitBranch;
     remotes: GitRemote[];
@@ -31,10 +31,10 @@ type GitRepository = {
   checkout(treeish: string): Promise<void>;
   clean(paths: string[]): Promise<void>;
 };
-type GitAPI = { getRepository(uri: vscode.Uri): GitRepository | null };
+type GitAPI = { getRepository(uri: HostUri): GitRepository | null };
 
 type Params = Record<string, unknown>;
-type Entry = { path: string; status: string; uri: vscode.Uri; outside: boolean; sensitive: boolean };
+type Entry = { path: string; status: string; uri: HostUri; outside: boolean; sensitive: boolean };
 
 const MAX_LISTED = 200;
 const MAX_DIFF_CHARS = 16_000;
@@ -48,7 +48,7 @@ const STATUS_LABELS: Record<number, string> = {
 };
 
 async function gitApi(): Promise<GitAPI> {
-  const extension = vscode.extensions.getExtension<{ getAPI(version: 1): GitAPI }>('vscode.git');
+  const extension = host().getExtension<{ getAPI(version: 1): GitAPI }>('vscode.git');
   if (!extension) throw new WorkspaceRequestError('GIT_UNAVAILABLE', 'VS Code 内置 Git 扩展未启用。');
   const exports = extension.isActive ? extension.exports : await extension.activate();
   try {
@@ -58,7 +58,7 @@ async function gitApi(): Promise<GitAPI> {
   }
 }
 
-async function openRepository(params: Params): Promise<{ root: vscode.WorkspaceFolder; repo: GitRepository }> {
+async function openRepository(params: Params): Promise<{ root: HostFolder; repo: GitRepository }> {
   const root = selectWorkspaceRoot(params.root);
   const repo = (await gitApi()).getRepository(root.uri);
   if (!repo) throw new WorkspaceRequestError('GIT_REPOSITORY_NOT_FOUND', '当前工作区不在 Git 仓库中。');
@@ -71,7 +71,7 @@ export function redactCredentials(text: string): string {
   return text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, '$1');
 }
 
-function describe(change: GitChange, root: vscode.WorkspaceFolder): Entry {
+function describe(change: GitChange, root: HostFolder): Entry {
   const uri = change.renameUri ?? change.uri;
   const outside = !isUriWithinWorkspaceRoot(uri, root);
   const rootPath = root.uri.path.replace(/\/$/, '');
@@ -84,7 +84,7 @@ function untracked(repo: GitRepository): GitChange[] {
   return repo.state.untrackedChanges ?? [];
 }
 
-function changeSets(repo: GitRepository, root: vscode.WorkspaceFolder) {
+function changeSets(repo: GitRepository, root: HostFolder) {
   const staged = repo.state.indexChanges.map((c) => describe(c, root));
   const unstaged = repo.state.workingTreeChanges.map((c) => describe(c, root));
   const untrackedEntries = untracked(repo).map((c) => describe(c, root));
@@ -115,8 +115,8 @@ function branchInfo(repo: GitRepository) {
   };
 }
 
-function dirtyDocumentsIn(root: vscode.WorkspaceFolder): string[] {
-  return vscode.workspace.textDocuments
+function dirtyDocumentsIn(root: HostFolder): string[] {
+  return host().textDocuments()
     .filter((document) => document.isDirty && isUriWithinWorkspaceRoot(document.uri, root))
     .map((document) => describe({ uri: document.uri, status: 5 }, root).path);
 }
@@ -156,7 +156,7 @@ export async function gitStatus(params: Params): Promise<Record<string, unknown>
   return result;
 }
 
-function requireNoBlockers(repo: GitRepository, root: vscode.WorkspaceFolder) {
+function requireNoBlockers(repo: GitRepository, root: HostFolder) {
   if (repo.state.mergeChanges.length) {
     throw new WorkspaceRequestError('GIT_CONFLICTS', '仓库存在未解决的合并冲突，请先在 VS Code 中解决后再提交。');
   }
@@ -168,7 +168,7 @@ function requireNoBlockers(repo: GitRepository, root: vscode.WorkspaceFolder) {
 }
 
 /** 计算本次提交将包含的文件（已暂存 ∪ 请求的文件）。 */
-function commitPlan(repo: GitRepository, root: vscode.WorkspaceFolder, requested: string[] | null) {
+function commitPlan(repo: GitRepository, root: HostFolder, requested: string[] | null) {
   const sets = changeSets(repo, root);
   const pending = [...sets.unstaged, ...sets.untracked];
   let toStage: Entry[];

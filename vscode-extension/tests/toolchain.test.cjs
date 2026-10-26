@@ -37,12 +37,13 @@ Module._load = function (request, parent, isMain) {
   if (request === 'vscode') return vscodeMock;
   return originalLoad.call(this, request, parent, isMain);
 };
-const host = require('../out/workspace/toolchain/host.js');
-const policy = require('../out/workspace/toolchain/policy.js');
-const runner = require('../out/workspace/toolchain/runner.js');
-const nodeProfile = require('../out/workspace/toolchain/profiles/node.js');
-const diagnostics = require('../out/workspace/toolchain/diagnostics.js');
-const { WorkspaceRequestHandler } = require('../out/workspace/requestHandler.js');
+require('../out/workspace/vscodeHost.js').installVsCodeWorkspaceHost();
+const host = require('@gor/workspace-core/out/toolchain/host.js');
+const policy = require('@gor/workspace-core/out/toolchain/policy.js');
+const runner = require('@gor/workspace-core/out/toolchain/runner.js');
+const nodeProfile = require('@gor/workspace-core/out/toolchain/profiles/node.js');
+const diagnostics = require('@gor/workspace-core/out/toolchain/diagnostics.js');
+const { WorkspaceRequestHandler } = require('@gor/workspace-core/out/requestHandler.js');
 Module._load = originalLoad;
 
 const fakeNpm = path.join(os.tmpdir(), `gor-fake-npm-${process.pid}.js`);
@@ -543,7 +544,7 @@ test('install scans the project lifecycle scripts that npm would run', async () 
 });
 
 test('ordinary scripts are not flagged', () => {
-  const risk = require('../out/workspace/toolchain/risk.js');
+  const risk = require('@gor/workspace-core/out/toolchain/risk.js');
   for (const body of ['vite build', 'node --test tests/*.test.cjs', 'tsc -p . && node scripts/copy-assets.js', 'curl -o data.json https://example.com/data.json']) {
     assert.deepEqual(risk.scanText(body, 'scripts.x'), [], body);
   }
@@ -633,7 +634,7 @@ test('deleting a whole project requires package.json or .git, never the workspac
 // ---- 项目外文件：只读，每次确认；系统目录、密钥、凭据一律拒绝 ----
 
 test('external paths: protected locations, workspace paths and relative paths are refused before any card', async () => {
-  const external = require('../out/workspace/external.js');
+  const external = require('@gor/workspace-core/out/external.js');
   const dir = workspace({ 'a.txt': 'x' });
   const refused = [
     ['C:\\Windows\\System32\\drivers\\etc\\hosts', 'EXTERNAL_PATH_DENIED'],

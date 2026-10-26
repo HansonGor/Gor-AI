@@ -634,6 +634,11 @@ class VSCodeProjectProvider:
         self._validate(project_ref)
         return self._bridge.workspace_generation(project_ref.project_id)
 
+    def _workspace_client(self, project_ref: ProjectRef) -> str:
+        # 测试替身或旧桥接没有 workspace_client 时按 VS Code 插件处理
+        lookup = getattr(self._bridge, "workspace_client", None)
+        return lookup(project_ref.project_id) if callable(lookup) else "vscode"
+
     async def get_capabilities(self, project_ref: ProjectRef) -> dict[str, bool]:
         self._validate(project_ref)
         return {
@@ -651,7 +656,8 @@ class VSCodeProjectProvider:
             "build": False,
             "diagnostics": False,
             "terminal": False,
-            "git": True,
+            # 桌面端书斋没有 VS Code 内置 Git 扩展，Git 工具不对模型开放
+            "git": self._workspace_client(project_ref) != "desktop",
             "toolchain": True,
             # 删除整个项目（含 package.json 或 .git 的目录）与项目外只读，均由扩展确认
             "deleteProject": True,

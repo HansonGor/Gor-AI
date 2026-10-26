@@ -20,7 +20,8 @@ Module._load = function (request, parent, isMain) {
   if (request === 'vscode') return { Uri, FileType: { File: 1, Directory: 2, SymbolicLink: 64 }, workspace: {} };
   return originalLoad.call(this, request, parent, isMain);
 };
-const shared = require('../out/workspace/toolchain/profiles/shared.js');
+require('../out/workspace/vscodeHost.js').installVsCodeWorkspaceHost();
+const shared = require('@gor/workspace-core/out/toolchain/profiles/shared.js');
 Module._load = originalLoad;
 
 function tree(files) {

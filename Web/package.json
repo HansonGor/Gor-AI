@@ -22,6 +22,7 @@
     "test:toolchain": "node --test scripts/toolchain-run-ui.test.mjs",
     "test:account": "node --test scripts/account-ui.test.mjs",
     "test:sync": "node --test scripts/chat-sync.test.mjs",
+    "test:shuzhai": "node --test scripts/shuzhai-ui.test.mjs",
     "preview": "vite preview",
     "format": "prettier --write \"src/**/*.{ts,tsx,less,css,json}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,less,css,json}\""

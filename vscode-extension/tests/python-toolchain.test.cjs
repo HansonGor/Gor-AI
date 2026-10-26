@@ -29,11 +29,12 @@ Module._load = function (request, parent, isMain) {
   if (request === 'vscode') return vscodeMock;
   return originalLoad.call(this, request, parent, isMain);
 };
-const host = require('../out/workspace/toolchain/host.js');
-const python = require('../out/workspace/toolchain/profiles/python.js');
-const risk = require('../out/workspace/toolchain/risk.js');
-const diagnostics = require('../out/workspace/toolchain/diagnostics.js');
-const runner = require('../out/workspace/toolchain/runner.js');
+require('../out/workspace/vscodeHost.js').installVsCodeWorkspaceHost();
+const host = require('@gor/workspace-core/out/toolchain/host.js');
+const python = require('@gor/workspace-core/out/toolchain/profiles/python.js');
+const risk = require('@gor/workspace-core/out/toolchain/risk.js');
+const diagnostics = require('@gor/workspace-core/out/toolchain/diagnostics.js');
+const runner = require('@gor/workspace-core/out/toolchain/runner.js');
 Module._load = originalLoad;
 
 const realLocator = { ...python.pythonLocator };

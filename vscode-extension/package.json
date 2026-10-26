@@ -79,14 +79,15 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
+    "compile": "tsc -b ./",
+    "watch": "tsc -b -w ./",
     "test": "npm run compile && node --test",
     "build:webview": "npm --prefix ../Web run build:extension",
     "watch:webview": "node ./scripts/watch-webview.mjs",
     "vscode:prepublish": "npm run build:webview && npm run compile"
   },
   "dependencies": {
+    "@gor/workspace-core": "file:../workspace-core",
     "ws": "^8.18.3"
   },
   "devDependencies": {

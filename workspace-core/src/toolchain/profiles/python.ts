@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import * as vscode from 'vscode';
+import { host, type HostFolder } from '../../host';
 import { WorkspaceRequestError } from '../../paths';
 import { parsePythonCheckOutput, parsePytestSummary, parseUnittestSummary } from '../diagnostics';
 import { mergeWarnings, scanFiles, type RiskLevel } from '../risk';
@@ -48,8 +48,8 @@ function venvPython(dir: string): string {
 }
 
 /** VS Code Python 扩展为这个工作区选中的解释器；扩展未安装或 5 秒内未就绪时返回 undefined。 */
-async function fromExtension(root: vscode.WorkspaceFolder): Promise<string | undefined> {
-  const extension = vscode.extensions?.getExtension?.<Record<string, any>>('ms-python.python');
+async function fromExtension(root: HostFolder): Promise<string | undefined> {
+  const extension = host().getExtension<Record<string, any>>('ms-python.python');
   if (!extension) return undefined;
   try {
     const exports = extension.isActive ? extension.exports : await Promise.race([
@@ -125,7 +125,7 @@ async function probe(command: string[]): Promise<PythonProbe | undefined> {
 export const pythonLocator = { fromExtension, fromProjectVenv, fromPath, probe };
 
 /** 按优先级找到解释器并探测；label 只描述来源和版本，不含本机路径。 */
-export async function resolvePython(root: vscode.WorkspaceFolder, cwdDir?: string): Promise<PythonEnv> {
+export async function resolvePython(root: HostFolder, cwdDir?: string): Promise<PythonEnv> {
   requireLocalFolder(root);
   const rootDir = path.resolve(root.uri.fsPath);
   const candidates: Array<{ command: string[]; source: PythonEnv['source'] }> = [];

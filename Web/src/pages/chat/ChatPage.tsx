@@ -43,6 +43,9 @@ import { ChatShareToolbar, ChatSharePreview } from '../../components/chat/ChatSh
 import { saveBlob } from '../../preview/core/saveFile';
 import { ToolchainRunsContext } from '../../components/chat/toolchainRun';
 import { useVscodeToolchainRuns } from '../../vscode/toolchainRuns';
+import ShuzhaiPanel from '../../components/desktop/ShuzhaiPanel';
+import ShuzhaiWelcome from '../../components/desktop/ShuzhaiWelcome';
+import { useShuzhaiControls } from '../../desktop/useShuzhaiControls';
 
 function isUntouchedStarterProject(project: {
   name?: string;
@@ -62,7 +65,12 @@ function isUntouchedStarterProject(project: {
 }
 
 export default function ChatPage() {
-  const isVscodePluginMode = getChatClientMode() === 'vscode';
+  const clientMode = getChatClientMode();
+  // 插件专属：Webview 布局、施行卡片、不提供分享
+  const isVscodePluginMode = clientMode === 'vscode';
+  // 插件与书斋都操作真实工作区：不加载、不自动打开 Web Preview
+  const isWorkspaceMode = clientMode !== 'web';
+  const isShuzhaiMode = clientMode === 'desktop';
   const {
     sessions,
     sessionId,
@@ -117,6 +125,9 @@ export default function ChatPage() {
 
   const { theme } = useTheme();
   const { notify } = useFeedback();
+  // 桌面端：侧栏的云笺/书斋切换器、书斋卡片与「择一书斋」空状态；浏览器与插件中 enabled 为 false
+  const desktop = useShuzhaiControls(notify);
+  const shuzhaiFolderMissing = isShuzhaiMode && !desktop.state.folder;
   const [canGoBack, setCanGoBack] = useState(() => (
     nativeBridge.shouldShowBackButton()
     || (typeof window.history.state?.idx === 'number' && window.history.state.idx > 0)
@@ -484,9 +495,9 @@ export default function ChatPage() {
     uploadedAttachmentCount: previewableUploadedAttachmentCount,
     hasImportedDist: visibleImportedDist !== null,
   });
-  const visiblePreviewWorkerOpen = !isVscodePluginMode && isPreviewSessionLoaded && previewWorkerOpen && hasPreviewWorkerContent;
+  const visiblePreviewWorkerOpen = !isWorkspaceMode && isPreviewSessionLoaded && previewWorkerOpen && hasPreviewWorkerContent;
   useEffect(() => {
-    if (isVscodePluginMode || !sessionId || !isSessionReady || isSessionCacheLoading || !hasPreviewWorkerContent) return;
+    if (isWorkspaceMode || !sessionId || !isSessionReady || isSessionCacheLoading || !hasPreviewWorkerContent) return;
     if (defaultOpenedPreviewSessionRef.current === sessionId) return;
     defaultOpenedPreviewSessionRef.current = sessionId;
     // Open once when real content has finished restoring. A manual collapse
@@ -507,7 +518,7 @@ export default function ChatPage() {
     setPreviewOpen(false);
     setPreviewWorkerMode('preview');
     setPreviewWorkerOpen(true);
-  }, [sessionId, isVscodePluginMode, isSessionReady, isSessionCacheLoading, hasPreviewWorkerContent, hasVisibleCurrentProject, hasVisibleProjectSnapshot, projectSnapshots, hiddenArtifactKeys, previewableGeneratedFileCount, visibleGeneratedFiles, visibleImportedDist, previewableUploadedAttachmentCount, visibleUploadedAttachments, handlePreviewAttachment]);
+  }, [sessionId, isWorkspaceMode, isSessionReady, isSessionCacheLoading, hasPreviewWorkerContent, hasVisibleCurrentProject, hasVisibleProjectSnapshot, projectSnapshots, hiddenArtifactKeys, previewableGeneratedFileCount, visibleGeneratedFiles, visibleImportedDist, previewableUploadedAttachmentCount, visibleUploadedAttachments, handlePreviewAttachment]);
   useEffect(() => {
     if (visiblePreviewWorkerOpen) {
       setPreviewWorkerMounted(true);
@@ -768,18 +779,18 @@ export default function ChatPage() {
   ]);
 
   useEffect(() => {
-    if (isVscodePluginMode || !isPreviewSessionLoaded || previewRevision <= 0) return;
+    if (isWorkspaceMode || !isPreviewSessionLoaded || previewRevision <= 0) return;
     restorePreviewArtifact(`project:${previewProjectState.project.id}`);
     setPreviewOpen(false);
     setPreviewWorkerMode('preview');
     setPreviewWorkerTarget('project');
     setPreviewWorkerOpen(true);
-  }, [isVscodePluginMode, isPreviewSessionLoaded, previewRevision, previewProjectState.project.id, restorePreviewArtifact]);
+  }, [isWorkspaceMode, isPreviewSessionLoaded, previewRevision, previewProjectState.project.id, restorePreviewArtifact]);
 
   // 多端同步：其他设备更新了当前会话的预览项目（或其回复已结束），从服务器取回最新版本。
   // 本端有未保存的修改、或版本已一致时不覆盖。
   useEffect(() => {
-    if (!remotePreviewTick || isVscodePluginMode || !sessionId) return;
+    if (!remotePreviewTick || isWorkspaceMode || !sessionId) return;
     let cancelled = false;
     const sid = sessionId;
     void getSessionPreviewProject(sid).then((snapshot) => {
@@ -815,7 +826,7 @@ export default function ChatPage() {
   }, [messages, isLoading]);
 
   useEffect(() => {
-    if (isVscodePluginMode || !isLoading) return;
+    if (isWorkspaceMode || !isLoading) return;
     const latest = messages[messages.length - 1];
     const file = latest?.role === 'assistant'
       ? [...(latest.files ?? []), ...(latest.file ? [latest.file] : [])].find((item) => item.fileType === '3d')
@@ -827,14 +838,14 @@ export default function ChatPage() {
     setPreviewWorkerMode('preview');
     setPreviewOpen(false);
     setPreviewWorkerOpen(true);
-  }, [messages, isLoading, isVscodePluginMode]);
+  }, [messages, isLoading, isWorkspaceMode]);
 
   useEffect(() => {
     // Adding a GLB must not replay an older HTML change and select that HTML again.
     const changeKey = `${sessionId}:${projectRevision}`;
     if (lastProjectChangeRef.current === changeKey) return;
     lastProjectChangeRef.current = changeKey;
-    if (!isVscodePluginMode && projectRevision > 0) {
+    if (!isWorkspaceMode && projectRevision > 0) {
       const latestChange = projectChanges[projectChanges.length - 1];
       if (latestChange && /\.html?$/i.test(latestChange.path)) {
         const previewUrl = `/${latestChange.path.split('/').map(encodeURIComponent).join('/')}`;
@@ -855,7 +866,7 @@ export default function ChatPage() {
         setPreviewWorkerOpen(true);
       }
     }
-  }, [generatedFiles, isVscodePluginMode, projectChanges, projectRevision, sessionId, previewProjectState.project.files]);
+  }, [generatedFiles, isWorkspaceMode, projectChanges, projectRevision, sessionId, previewProjectState.project.files]);
 
   useEffect(() => {
     if (generatedFiles.length === 0) {
@@ -1033,7 +1044,7 @@ export default function ChatPage() {
 
   return (
     <ChatPageLayout
-      className={`theme-${theme} ${isVscodePluginMode ? 'is-vscode-plugin' : ''} ${sidebarOpen ? '' : 'is-sidebar-collapsed'} ${mobileSidebarVisible ? 'is-mobile-sidebar-open' : ''} ${messages.length === 0 ? 'is-empty-chat' : ''} ${hasPreviewWorkerContent && !isVscodePluginMode ? 'has-preview-worker-content' : ''} ${visiblePreviewWorkerOpen ? 'has-preview-worker-open' : ''}`}
+      className={`theme-${theme} ${isVscodePluginMode ? 'is-vscode-plugin' : ''} ${sidebarOpen ? '' : 'is-sidebar-collapsed'} ${mobileSidebarVisible ? 'is-mobile-sidebar-open' : ''} ${messages.length === 0 ? 'is-empty-chat' : ''} ${hasPreviewWorkerContent && !isWorkspaceMode ? 'has-preview-worker-content' : ''} ${visiblePreviewWorkerOpen ? 'has-preview-worker-open' : ''}`}
       brand={<GorBrandLogo />}
       sidebar={(
         <ChatSidebarLayer
@@ -1051,6 +1062,20 @@ export default function ChatPage() {
           onToggleDesktopSidebar={togglePCSidebar}
           onCloseMobileSidebar={closeMobileSidebar}
           account={<AccountControl busy={isLoading} />}
+          topSlot={desktop.enabled ? (
+            <ShuzhaiPanel
+              mode={desktop.mode}
+              state={desktop.state}
+              busy={desktop.busy}
+              onSwitchMode={desktop.switchMode}
+              onPickFolder={desktop.pickFolder}
+              onOpenRecent={desktop.openRecent}
+              onReveal={desktop.reveal}
+              onCloseFolder={desktop.closeFolder}
+            />
+          ) : undefined}
+          createDisabled={shuzhaiFolderMissing}
+          emptyText={isShuzhaiMode ? '书斋尚无对话' : undefined}
         />
       )}
       header={(
@@ -1088,6 +1113,16 @@ export default function ChatPage() {
           <ChatBox
             shareSelection={isVscodePluginMode ? undefined : share.selection}
             shareToolbar={isVscodePluginMode ? undefined : <ChatShareToolbar share={share} />}
+            welcome={shuzhaiFolderMissing ? (
+              <ShuzhaiWelcome
+                recent={desktop.state.recent}
+                busy={desktop.busy}
+                error={desktop.error}
+                onPickFolder={desktop.pickFolder}
+                onOpenRecent={desktop.openRecent}
+              />
+            ) : undefined}
+            composerBlockedHint={shuzhaiFolderMissing ? '先择一书斋，再开始落笔' : undefined}
             fileEditMode={fileEditMode}
             fileEditModeLoading={fileEditModeLoading}
             onFileEditModeChange={setFileEditMode}
@@ -1099,7 +1134,7 @@ export default function ChatPage() {
             onChatModelChange={setChatModel}
             key={sessionId ?? 'chat'}
             messages={messages}
-            currentPreviewProject={isVscodePluginMode ? undefined : currentPreviewProject}
+            currentPreviewProject={isWorkspaceMode ? undefined : currentPreviewProject}
             input={input}
             setInput={setInput}
             pendingImages={pendingImages}
@@ -1109,16 +1144,16 @@ export default function ChatPage() {
             handleStop={handleStop}
             handleImageSelect={handleImageSelect}
             removePendingImage={removePendingImage}
-            onArchiveSelect={handleArchiveSelect}
-            onFolderSelect={handleFolderSelect}
+            onArchiveSelect={isShuzhaiMode ? undefined : handleArchiveSelect}
+            onFolderSelect={isShuzhaiMode ? undefined : handleFolderSelect}
             onUploadImages={handleSummarizeImages}
             importedUploadName={isPreviewSessionLoaded && hasPendingUploadSummary ? pendingImportedUploadName : null}
             hasPendingUploadSummary={hasPendingUploadSummary}
             onRemoveImportedUpload={removeImportedUpload}
             onClearPendingUpload={clearPendingUploadSummary}
-            onPreviewFile={isVscodePluginMode ? undefined : openPreviewWorker}
-            onPreviewAttachment={isVscodePluginMode ? undefined : handlePreviewAttachment}
-            onPreviewProject={isVscodePluginMode ? undefined : (file, intent = 'preview', sourcePath, snapshot) => {
+            onPreviewFile={isWorkspaceMode ? undefined : openPreviewWorker}
+            onPreviewAttachment={isWorkspaceMode ? undefined : handlePreviewAttachment}
+            onPreviewProject={isWorkspaceMode ? undefined : (file, intent = 'preview', sourcePath, snapshot) => {
               if (snapshot) {
                 setPreviewOpen(false);
                 setActiveProjectSnapshotMessageId(snapshot.messageId);
@@ -1161,7 +1196,7 @@ export default function ChatPage() {
       {visiblePreviewOpen && (
         <WebPreview revision={projectRevision} onClose={() => setPreviewOpen(false)} />
       )}
-      {!isVscodePluginMode && (
+      {!isWorkspaceMode && (
         <div className={`chat-preview-worker-slot ${visiblePreviewWorkerOpen ? 'is-open' : ''}`} aria-hidden={!visiblePreviewWorkerOpen}>
           {(visiblePreviewWorkerOpen || (previewWorkerMounted && isPreviewSessionLoaded && hasPreviewWorkerContent)) && (
             <PreviewWorker

@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import * as vscode from 'vscode';
+import { host } from './host';
 import { normalizeWorkspaceRelativePath, selectWorkspaceRoot, toWorkspaceUri, WorkspaceRequestError } from './paths';
 
 /**
@@ -66,7 +66,7 @@ export async function prepareProjectDelete(params: Record<string, unknown>): Pro
   if (!markers.length) {
     throw new WorkspaceRequestError('NOT_A_PROJECT', '该目录不含 package.json 或 .git，不按项目删除；删除普通目录请逐个删除文件。');
   }
-  const dirty = vscode.workspace.textDocuments.filter((document) =>
+  const dirty = host().textDocuments().filter((document) =>
     document.isDirty && document.uri.scheme === 'file' && document.uri.fsPath.startsWith(absolute + path.sep));
   if (dirty.length) {
     throw new WorkspaceRequestError('DIRECTORY_HAS_UNSAVED_CHANGES', '项目中有未保存的文件，已取消删除。');
@@ -76,7 +76,7 @@ export async function prepareProjectDelete(params: Record<string, unknown>): Pro
     path: relative, fileCount: count, countTruncated: truncated, markers,
     async execute() {
       try {
-        await vscode.workspace.fs.delete(uri, { recursive: true, useTrash: true });
+        await host().fs.delete(uri, { recursive: true, useTrash: true });
       } catch (error) {
         throw new WorkspaceRequestError('DELETE_FAILED', `删除失败：${error instanceof Error ? error.message : String(error)}`);
       }

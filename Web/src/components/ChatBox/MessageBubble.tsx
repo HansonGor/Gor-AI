@@ -33,7 +33,7 @@ import ToolchainRunCard from '../chat/ToolchainRunCard';
 import { ToolchainRunsContext } from '../chat/toolchainRun';
 import { createProjectChangeClient } from '../../api/projectChanges';
 import { createWebProjectChangeClient } from '../../api/webProjectChanges';
-import { getChatClientMode } from '../../utils/clientMode';
+import { isWorkspaceClientMode } from '../../utils/clientMode';
 import { useFeedback } from '../ui/feedback';
 
 const QUOTA_WARNING_THRESHOLD = MODEL_CONFIG.QUOTA_WARNING_THRESHOLD;
@@ -182,7 +182,7 @@ export default function MessageBubble({
   const projectChangeClient = useMemo(() => {
     const target = message.projectChangeSet;
     if (!target || !target.sessionId
-      || (target.provider === 'preview' ? 'web' : 'vscode') !== getChatClientMode()) return undefined;
+      || (target.provider === 'preview') === isWorkspaceClientMode()) return undefined;
     return target.provider === 'preview'
       ? createWebProjectChangeClient(target.sessionId)
       : createProjectChangeClient(target.sessionId, { mode: 'vscode' });

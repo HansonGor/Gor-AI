@@ -2,7 +2,8 @@
 import { parseSSEStream } from '../utils/sse';
 import type { ThinkingEvent, ThinkingStatus } from '../utils/thinking';
 import config from '../config';
-import { getChatClientMode, projectClientContext } from '../utils/clientMode';
+import { getChatClientMode, isWorkspaceClientMode, projectClientContext } from '../utils/clientMode';
+import { waitForShuzhaiWorkspace } from '../desktop/desktopRuntime';
 import type { Session, TokenUsage, ModelQuotaInfo, ProjectChange, UploadedAttachment, SearchSource, SearchTrace } from '../types';
 import type { PreviewProject } from '../preview/core/types.ts';
 
@@ -215,8 +216,11 @@ export async function sendChatMessage(
 
   try {
     const clientMode = getChatClientMode();
-    const vscodeMode = clientMode === 'vscode';
-    const vscodeWorkspaceId = document.documentElement.dataset.gorWorkspaceId;
+    const workspaceMode = isWorkspaceClientMode(clientMode);
+    // 书斋刚打开时可能还在登记：与插件一样稍等握手，不带工作区就发出的请求会被服务端如实说明未连接
+    const workspaceId = clientMode === 'desktop'
+      ? document.documentElement.dataset.gorWorkspaceId ?? await waitForShuzhaiWorkspace()
+      : document.documentElement.dataset.gorWorkspaceId;
     const response = await fetch(config.api.chatEndpoint, {
       method: 'POST',
       headers: {
@@ -226,9 +230,9 @@ export async function sendChatMessage(
       body: JSON.stringify({
         sessionId, message, messages, attachments, analysisContext, analysisContextMode,
         assistantMessageId, editMode, thinkingMode, ...(modelId ? { modelId } : {}),
-        ...(!vscodeMode ? { previewProjectId, previewServerRevision, previewContentRevision,
+        ...(!workspaceMode ? { previewProjectId, previewServerRevision, previewContentRevision,
           previewProjectBootstrap, previewProjectOrigin, previewProjectUploadName, newPreviewProject } : {}),
-        ...projectClientContext(clientMode, vscodeWorkspaceId),
+        ...projectClientContext(clientMode, workspaceId),
       }),
       signal,
     });

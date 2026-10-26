@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import asyncpg
 
 from db.supabase_chat import get_pool
-from services.auth import ACCOUNT_PREFIX, VSCODE_SUFFIX
+from services.auth import ACCOUNT_PREFIX, DESKTOP_SUFFIX, VSCODE_SUFFIX
 
 DDL = """CREATE TABLE IF NOT EXISTS gor_users (
     id TEXT PRIMARY KEY,
@@ -29,9 +29,10 @@ ALTER TABLE gor_users ADD COLUMN IF NOT EXISTS avatar BYTEA;
 ALTER TABLE gor_users ADD COLUMN IF NOT EXISTS avatar_type TEXT;
 ALTER TABLE gor_users ADD COLUMN IF NOT EXISTS avatar_updated_at TIMESTAMPTZ;"""
 
-# 账号上线前所有会话都在这两个未登录命名空间下。
+# 账号上线前所有会话都在这几个未登录命名空间下。
 UNCLAIMED_WEB = "default"
 UNCLAIMED_VSCODE = "default:vscode"
+UNCLAIMED_DESKTOP = "default:desktop"
 
 
 class EmailTakenError(Exception):
@@ -69,7 +70,8 @@ async def create_user(email: str, nickname: str, password_hash: str) -> tuple[di
             claimed = 0
             if is_first:
                 account = f"{ACCOUNT_PREFIX}{user_id}"
-                for source, target in ((UNCLAIMED_WEB, account), (UNCLAIMED_VSCODE, account + VSCODE_SUFFIX)):
+                for source, target in ((UNCLAIMED_WEB, account), (UNCLAIMED_VSCODE, account + VSCODE_SUFFIX),
+                                       (UNCLAIMED_DESKTOP, account + DESKTOP_SUFFIX)):
                     status = await conn.execute("UPDATE chat_sessions SET user_id = $1 WHERE user_id = $2", target, source)
                     claimed += int(status.rsplit(" ", 1)[-1])
     return public_user(row), claimed

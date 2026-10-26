@@ -36,7 +36,7 @@ from agent.thinking_policy import decide_thinking, tool_result_failed, ESCALATIO
 from agent.tool_negotiation import ToolNegotiator, RULES as NEGOTIATED_RULES
 from agent.project_task_boundary import project_kind_conflict
 from agent.web_policy import local_or_private_subject, web_search_declined
-from agent.project_reply import summarize_project_changes, summarize_additional_tasks, ADDITIONAL_TASK_LABELS, project_subject, PROJECT_REPLY_PROMPT
+from agent.project_reply import summarize_project_changes, summarize_additional_tasks, ADDITIONAL_TASK_LABELS, project_subject, PROJECT_REPLY_PROMPT, DESKTOP_WORKSPACE_PROMPT
 from tools.index import TOOLS, WORKSPACE_TOOLS, legacy_create_project_file, legacy_read_project_file
 from services.preview.workspace import PreviewProjectWorkspace
 from tools.preview_project import PREVIEW_TOOL_NAMES, execute_preview_tool
@@ -502,6 +502,7 @@ async def run_agent(
     deep_thinking: bool = True,
     auto_thinking: bool = False,
     model_id: Optional[str] = None,
+    workspace_client: str = "vscode",
 ) -> None:
     """
     运行 Agent 循环
@@ -511,6 +512,7 @@ async def run_agent(
         send_event: 发送 SSE 事件的回调 (event) -> None
         signal: 中止信号（asyncio.Event，连接断开时触发）
         callbacks: LangChain 回调数组（用于 token 统计等）
+        workspace_client: 工作区客户端，vscode 为 VS Code 插件，desktop 为桌面端「书斋」（本机文件夹）
     """
     callbacks = callbacks or []
     run_started = time.perf_counter()
@@ -606,6 +608,8 @@ async def run_agent(
         and any(profile.startswith("vscode_project") for profile in tool_route.profile.split("+"))
     ):
         await stream_content(
+            "书斋尚未连接，本轮没有读取或修改任何文件。请先在侧栏选择一个文件夹作为书斋，显示「已连接」后重试。"
+            if workspace_client == "desktop" else
             "VS Code 工作区桥接尚未就绪，本轮没有读取或修改任何文件。请确认已打开工作区，并在状态栏显示工作区已连接后重试。",
             send_event,
         )
@@ -624,6 +628,8 @@ async def run_agent(
         )))
     if preview_workspace or vscode_client_mode:
         messages.append(SystemMessage(content=PROJECT_REPLY_PROMPT))
+    if vscode_client_mode and workspace_client == "desktop":
+        messages.append(SystemMessage(content=DESKTOP_WORKSPACE_PROMPT))
     if vscode_client_mode and session_id:
         messages.append(SystemMessage(content=(
             f"当前请求的真实会话 ID（sessionId）是：{session_id}。"

@@ -1,4 +1,4 @@
-import * as vscode from 'vscode';
+import { FileType, host, type HostFileStat, type HostFolder, type HostTextDocument, type HostUri } from './host';
 import { createHash } from 'node:crypto';
 import {
   describeWorkspaceRoots,
@@ -37,8 +37,8 @@ const BINARY_EXTENSIONS = new Set([
 
 type WorkspaceParams = Record<string, unknown>;
 
-function rootLabel(root: vscode.WorkspaceFolder): { id: string; name: string; isMultiRoot: boolean } {
-  const folders = vscode.workspace.workspaceFolders ?? [];
+function rootLabel(root: HostFolder): { id: string; name: string; isMultiRoot: boolean } {
+  const folders = host().workspaceFolders() ?? [];
   const index = folders.indexOf(root);
   return { id: `root-${index + 1}`, name: root.name, isMultiRoot: folders.length > 1 };
 }
@@ -80,23 +80,23 @@ function mapFsError(error: unknown): WorkspaceRequestError {
   return new WorkspaceRequestError('WORKSPACE_REQUEST_FAILED', 'VS Code 无法读取该工作区文件。');
 }
 
-async function statPathWithoutSymlinks(root: vscode.WorkspaceFolder, relativePath: string): Promise<vscode.FileStat>;
-async function statPathWithoutSymlinks(root: vscode.WorkspaceFolder, relativePath: string, allowMissing: true): Promise<vscode.FileStat | undefined>;
+async function statPathWithoutSymlinks(root: HostFolder, relativePath: string): Promise<HostFileStat>;
+async function statPathWithoutSymlinks(root: HostFolder, relativePath: string, allowMissing: true): Promise<HostFileStat | undefined>;
 async function statPathWithoutSymlinks(
-  root: vscode.WorkspaceFolder,
+  root: HostFolder,
   relativePath: string,
   allowMissing = false,
-): Promise<vscode.FileStat | undefined> {
+): Promise<HostFileStat | undefined> {
   let current = root.uri;
   const segments = relativePath.slice(1).split('/');
   try {
     for (let index = 0; index < segments.length; index += 1) {
-      current = vscode.Uri.joinPath(current, segments[index]);
-      const stat = await vscode.workspace.fs.stat(current);
-      if ((stat.type & vscode.FileType.SymbolicLink) !== 0) {
+      current = host().joinPath(current, segments[index]);
+      const stat = await host().fs.stat(current);
+      if ((stat.type & FileType.SymbolicLink) !== 0) {
         throw new WorkspaceRequestError('INVALID_PATH', '不允许通过符号链接访问工作区文件。');
       }
-      if (index < segments.length - 1 && (stat.type & vscode.FileType.Directory) === 0) {
+      if (index < segments.length - 1 && (stat.type & FileType.Directory) === 0) {
         throw new WorkspaceRequestError('FILE_NOT_FOUND', '工作区路径中的目录不存在。');
       }
       if (index === segments.length - 1) return stat;
@@ -108,8 +108,8 @@ async function statPathWithoutSymlinks(
   throw new WorkspaceRequestError('FILE_NOT_FOUND', '工作区文件不存在。');
 }
 
-function isRegularFile(stat: vscode.FileStat): boolean {
-  return (stat.type & vscode.FileType.File) !== 0;
+function isRegularFile(stat: HostFileStat): boolean {
+  return (stat.type & FileType.File) !== 0;
 }
 
 function mutationPath(value: unknown, allowWorkspaceRoot = false): string {
@@ -150,7 +150,7 @@ function expectedDeleteVersion(value: unknown): number | undefined {
   return value as number;
 }
 
-function documentIsWithinDirectory(document: vscode.TextDocument, directory: vscode.Uri, root: vscode.WorkspaceFolder): boolean {
+function documentIsWithinDirectory(document: HostTextDocument, directory: HostUri, root: HostFolder): boolean {
   if (!isUriWithinWorkspaceRoot(document.uri, root)
     || document.uri.scheme !== directory.scheme
     || document.uri.authority !== directory.authority) return false;
@@ -179,13 +179,13 @@ export async function createProjectFile(params: WorkspaceParams): Promise<Record
   }
   const root = selectWorkspaceRoot(params.root);
   const parentPath = path.slice(0, path.lastIndexOf('/')) || '/';
-  let parent: vscode.FileStat;
+  let parent: HostFileStat;
   try {
-    parent = parentPath === '/' ? await vscode.workspace.fs.stat(root.uri) : await statPathWithoutSymlinks(root, parentPath);
+    parent = parentPath === '/' ? await host().fs.stat(root.uri) : await statPathWithoutSymlinks(root, parentPath);
   } catch (error) {
     throw operationError(error, 'DIRECTORY_NOT_FOUND');
   }
-  if ((parent.type & vscode.FileType.Directory) === 0) {
+  if ((parent.type & FileType.Directory) === 0) {
     throw new WorkspaceRequestError('DIRECTORY_NOT_FOUND', '新文件的父路径不是目录。');
   }
 
@@ -194,14 +194,14 @@ export async function createProjectFile(params: WorkspaceParams): Promise<Record
   if (existing || findOpenDocument(uri)) {
     throw new WorkspaceRequestError('FILE_ALREADY_EXISTS', '文件已存在，不会覆盖已有内容。');
   }
-  const edit = new vscode.WorkspaceEdit();
+  const edit = host().createEdit();
   // createFile with overwrite=false is atomic with respect to the file's initial
   // content; workspace.fs.writeFile has no create-only option and could clobber
   // a file created between a stat and write.
   edit.createFile(uri, { overwrite: false, contents: encoded });
   let applied: boolean;
   try {
-    applied = await vscode.workspace.applyEdit(edit);
+    applied = await host().applyEdit(edit);
   } catch (error) {
     throw operationError(error, 'DIRECTORY_NOT_FOUND', 'FILE_ALREADY_EXISTS');
   }
@@ -221,7 +221,7 @@ export async function createProjectDirectory(params: WorkspaceParams): Promise<R
     throw new WorkspaceRequestError('INVALID_PATH', '该目录属于排除目录或敏感路径。');
   }
   const root = selectWorkspaceRoot(params.root);
-  let existing: vscode.FileStat | undefined;
+  let existing: HostFileStat | undefined;
   try {
     existing = await statPathWithoutSymlinks(root, path, true);
   } catch (error) {
@@ -234,7 +234,7 @@ export async function createProjectDirectory(params: WorkspaceParams): Promise<R
   try {
     // VS Code's workspace.fs.createDirectory has mkdirp semantics. Existing
     // ancestors are checked by statPathWithoutSymlinks before this call.
-    await vscode.workspace.fs.createDirectory(uri);
+    await host().fs.createDirectory(uri);
   } catch (error) {
     throw operationError(error, 'DIRECTORY_NOT_FOUND', 'DIRECTORY_ALREADY_EXISTS');
   }
@@ -249,7 +249,7 @@ export async function deleteProjectFile(params: WorkspaceParams, confirm?: () =>
   }
   const root = selectWorkspaceRoot(params.root);
   const uri = toWorkspaceUri(path, root, true);
-  let stat: vscode.FileStat;
+  let stat: HostFileStat;
   try {
     stat = await statPathWithoutSymlinks(root, path);
   } catch (error) {
@@ -277,7 +277,7 @@ export async function deleteProjectFile(params: WorkspaceParams, confirm?: () =>
   }
 
   try {
-    await vscode.workspace.fs.delete(uri, { recursive: false, useTrash: true });
+    await host().fs.delete(uri, { recursive: false, useTrash: true });
   } catch (error) {
     throw operationError(error, 'FILE_NOT_FOUND');
   }
@@ -297,22 +297,22 @@ export async function deleteProjectDirectory(params: WorkspaceParams, confirm?: 
   }
   const root = selectWorkspaceRoot(params.root);
   const uri = toWorkspaceUri(path, root, true);
-  let stat: vscode.FileStat;
+  let stat: HostFileStat;
   try {
     stat = await statPathWithoutSymlinks(root, path);
   } catch (error) {
     throw operationError(error, 'DIRECTORY_NOT_FOUND');
   }
-  if ((stat.type & vscode.FileType.Directory) === 0) {
+  if ((stat.type & FileType.Directory) === 0) {
     throw new WorkspaceRequestError('DIRECTORY_NOT_FOUND', '目标路径不是目录。');
   }
 
-  if (vscode.workspace.textDocuments.some((document) => document.isDirty && documentIsWithinDirectory(document, uri, root))) {
+  if (host().textDocuments().some((document) => document.isDirty && documentIsWithinDirectory(document, uri, root))) {
     throw new WorkspaceRequestError('DIRECTORY_HAS_UNSAVED_CHANGES', '目录中包含未保存的文件，已取消删除。');
   }
-  let entries: [string, vscode.FileType][];
+  let entries: [string, number][];
   try {
-    entries = await vscode.workspace.fs.readDirectory(uri);
+    entries = await host().fs.readDirectory(uri);
   } catch (error) {
     throw operationError(error, 'DIRECTORY_NOT_FOUND');
   }
@@ -321,23 +321,23 @@ export async function deleteProjectDirectory(params: WorkspaceParams, confirm?: 
   }
   if (confirm) {
     await confirm();
-    if ((await vscode.workspace.fs.readDirectory(uri)).length > 0) {
+    if ((await host().fs.readDirectory(uri)).length > 0) {
       throw new WorkspaceRequestError('DIRECTORY_NOT_EMPTY', '确认期间目录中出现了文件；为避免误删，未执行删除。');
     }
   }
 
   try {
-    await vscode.workspace.fs.delete(uri, { recursive: false, useTrash: true });
+    await host().fs.delete(uri, { recursive: false, useTrash: true });
   } catch (error) {
     throw operationError(error, 'DIRECTORY_NOT_FOUND');
   }
   return { success: true, path, deleted: true };
 }
 
-async function openDocument(uri: vscode.Uri): Promise<vscode.TextDocument> {
+async function openDocument(uri: HostUri): Promise<HostTextDocument> {
   const open = findOpenDocument(uri);
   try {
-    return open ?? await vscode.workspace.openTextDocument(uri);
+    return open ?? await host().openTextDocument(uri);
   } catch (error) {
     throw mapFsError(error);
   }
@@ -345,9 +345,9 @@ async function openDocument(uri: vscode.Uri): Promise<vscode.TextDocument> {
 
 export type EditableWorkspaceDocument = {
   path: string;
-  uri: vscode.Uri;
-  root: vscode.WorkspaceFolder;
-  document: vscode.TextDocument;
+  uri: HostUri;
+  root: HostFolder;
+  document: HostTextDocument;
   fileVersion: number;
   content: string;
 };
@@ -386,9 +386,9 @@ export async function openEditableWorkspaceDocument(
   return { path, uri, root, document, fileVersion, content };
 }
 
-function findOpenDocument(uri: vscode.Uri): vscode.TextDocument | undefined {
+function findOpenDocument(uri: HostUri): HostTextDocument | undefined {
   const key = uri.toString();
-  return vscode.workspace.textDocuments.find((document) => document.uri.toString() === key);
+  return host().textDocuments().find((document) => document.uri.toString() === key);
 }
 
 function getWorkspaceVersion(params: WorkspaceParams): number | undefined {
@@ -396,7 +396,7 @@ function getWorkspaceVersion(params: WorkspaceParams): number | undefined {
   return Number.isSafeInteger(version) && (version as number) >= 0 ? version as number : undefined;
 }
 
-function getRootInfo(root: vscode.WorkspaceFolder, params: WorkspaceParams): Record<string, unknown> {
+function getRootInfo(root: HostFolder, params: WorkspaceParams): Record<string, unknown> {
   const label = rootLabel(root);
   return label.isMultiRoot
     ? { root: label.id, rootName: label.name }
@@ -408,15 +408,15 @@ export async function listProjectFiles(params: WorkspaceParams): Promise<Record<
   const label = rootLabel(root);
   const files: string[] = [];
   const directories: string[] = [];
-  const pending: Array<{ uri: vscode.Uri; path: string }> = [{ uri: root.uri, path: '' }];
+  const pending: Array<{ uri: HostUri; path: string }> = [{ uri: root.uri, path: '' }];
   let visited = 0;
   let truncated = false;
   try {
     while (pending.length > 0 && visited <= MAX_LIST_FILES) {
       const current = pending.pop()!;
-      const entries = await vscode.workspace.fs.readDirectory(current.uri);
+      const entries = await host().fs.readDirectory(current.uri);
       for (const [name, type] of entries) {
-        if (!name || name === '.' || name === '..' || (type & vscode.FileType.SymbolicLink) !== 0) continue;
+        if (!name || name === '.' || name === '..' || (type & FileType.SymbolicLink) !== 0) continue;
         const relativePath = current.path ? `${current.path}/${name}` : name;
         if (isExcludedOrSensitive(relativePath)) continue;
         visited += 1;
@@ -425,10 +425,10 @@ export async function listProjectFiles(params: WorkspaceParams): Promise<Record<
           break;
         }
         const workspacePath = `/${relativePath}`;
-        if ((type & vscode.FileType.Directory) !== 0) {
+        if ((type & FileType.Directory) !== 0) {
           directories.push(workspacePath);
-          pending.push({ uri: vscode.Uri.joinPath(current.uri, name), path: relativePath });
-        } else if ((type & vscode.FileType.File) !== 0) {
+          pending.push({ uri: host().joinPath(current.uri, name), path: relativePath });
+        } else if ((type & FileType.File) !== 0) {
           files.push(workspacePath);
         }
       }
@@ -543,9 +543,9 @@ export async function searchProjectCode(params: WorkspaceParams): Promise<Record
     pathPrefix = normalizeWorkspaceRelativePath(params.path, true);
   }
 
-  const candidates = new Map<string, vscode.Uri>();
+  const candidates = new Map<string, HostUri>();
   let candidateOverflow = false;
-  const addCandidate = (uri: vscode.Uri) => {
+  const addCandidate = (uri: HostUri) => {
     if (!isUriWithinWorkspaceRoot(uri, root)) return;
     let relative: string;
     try {
@@ -565,17 +565,13 @@ export async function searchProjectCode(params: WorkspaceParams): Promise<Record
   };
 
   // Open and active editors are considered first so unsaved text is searched first.
-  const active = vscode.window.activeTextEditor?.document;
+  const active = host().activeDocument();
   if (active) addCandidate(active.uri);
-  for (const document of vscode.workspace.textDocuments) addCandidate(document.uri);
+  for (const document of host().textDocuments()) addCandidate(document.uri);
 
-  let workspaceUris: vscode.Uri[] = [];
+  let workspaceUris: HostUri[] = [];
   try {
-    workspaceUris = await vscode.workspace.findFiles(
-      new vscode.RelativePattern(root, '**/*'),
-      EXCLUDE_GLOB,
-      maxFiles + 1,
-    );
+    workspaceUris = await host().findFiles(root, '**/*', EXCLUDE_GLOB, maxFiles + 1);
   } catch {
     throw new WorkspaceRequestError('WORKSPACE_REQUEST_FAILED', '无法搜索当前工作区文件。');
   }
@@ -592,7 +588,7 @@ export async function searchProjectCode(params: WorkspaceParams): Promise<Record
       break;
     }
     const relativePath = workspaceRelativePath(uri, root);
-    let stat: vscode.FileStat;
+    let stat: HostFileStat;
     try {
       stat = await statPathWithoutSymlinks(root, relativePath);
     } catch {
@@ -604,7 +600,7 @@ export async function searchProjectCode(params: WorkspaceParams): Promise<Record
       continue;
     }
 
-    let document: vscode.TextDocument;
+    let document: HostTextDocument;
     try {
       document = await openDocument(uri);
     } catch {
@@ -701,7 +697,7 @@ export async function readProjectFile(params: WorkspaceParams): Promise<Record<s
       throw new WorkspaceRequestError('FILE_TOO_LARGE', '磁盘文件超过安全核对限制，请同步编辑器状态后重试。');
     }
     let diskBytes: Uint8Array;
-    try { diskBytes = await vscode.workspace.fs.readFile(uri); }
+    try { diskBytes = await host().fs.readFile(uri); }
     catch (error) { throw mapFsError(error); }
     // Preserve native reads for non-UTF8 source; uncertain encoding disables reuse.
     let diskText: string | undefined;
@@ -769,10 +765,10 @@ export async function readProjectFile(params: WorkspaceParams): Promise<Record<s
   const firstLineIndex = startLine - 1;
   const lastLineIndex = Math.max(firstLineIndex, actualEnd - 1);
   const rangeEnd = actualEnd < document.lineCount
-    ? new vscode.Position(actualEnd, 0)
+    ? host().position(actualEnd, 0)
     : document.lineAt(lastLineIndex).range.end;
-  const content = document.getText(new vscode.Range(
-    new vscode.Position(firstLineIndex, 0),
+  const content = document.getText(host().range(
+    host().position(firstLineIndex, 0),
     rangeEnd,
   ));
   if (content.length > MAX_READ_CHARS) {

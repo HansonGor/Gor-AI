@@ -15,10 +15,15 @@ logger = logging.getLogger("gor.vscode.bridge")
 DEFAULT_TIMEOUT_SECONDS = 10.0
 
 
+WORKSPACE_CLIENTS = ("vscode", "desktop")
+
+
 @dataclass
 class _WorkspaceConnection:
     websocket: Any
     generation: int
+    # 登记方：vscode 为 VS Code 插件，desktop 为桌面端「书斋」（本机文件夹，没有 VS Code Git 扩展）
+    client: str = "vscode"
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -40,9 +45,10 @@ class VSCodeBridgeClient:
         self._workspace_tree_locks: dict[tuple[str, int, str], asyncio.Lock] = {}
         self._generation = 0
 
-    def register_workspace(self, workspace_id: str, websocket: Any) -> int:
+    def register_workspace(self, workspace_id: str, websocket: Any, client: str = "vscode") -> int:
         self._generation += 1
-        connection = _WorkspaceConnection(websocket=websocket, generation=self._generation)
+        connection = _WorkspaceConnection(websocket=websocket, generation=self._generation,
+                                          client=client if client in WORKSPACE_CLIENTS else "vscode")
         self._connections[workspace_id] = connection
         self._known_workspace_ids.add(workspace_id)
         self.invalidate_workspace_tree(workspace_id)
@@ -50,6 +56,11 @@ class VSCodeBridgeClient:
 
     def is_connected(self, workspace_id: str) -> bool:
         return workspace_id in self._connections
+
+    def workspace_client(self, workspace_id: str) -> str:
+        """已登记工作区的客户端类型；未连接时按 vscode 处理（调用方另行校验连接）。"""
+        connection = self._connections.get(workspace_id)
+        return connection.client if connection is not None else "vscode"
 
     def workspace_generation(self, workspace_id: str) -> int:
         connection = self._connections.get(workspace_id)

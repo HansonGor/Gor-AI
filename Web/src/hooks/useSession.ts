@@ -20,12 +20,11 @@ import { restorePresentationSnapshot } from '../preview/core/presentationSnapsho
 import { restoreChangeSetReference } from '../utils/changeSetReference';
 
 export function getSessionUserId(): string {
-  // The web app keeps its existing account namespace. The VS Code Webview uses
-  // a separate user_id so both clients can share the API/database without
-  // mixing their session lists.
-  return getChatClientMode() === 'vscode'
-    ? `${CHAT_CONFIG.DEFAULT_USER_ID}:vscode`
-    : CHAT_CONFIG.DEFAULT_USER_ID;
+  // The web app (and the desktop 云笺 mode) keeps its existing account namespace.
+  // The VS Code Webview and the desktop 书斋 mode use their own user_id suffix so
+  // clients can share the API/database without mixing their session lists.
+  const mode = getChatClientMode();
+  return mode === 'web' ? CHAT_CONFIG.DEFAULT_USER_ID : `${CHAT_CONFIG.DEFAULT_USER_ID}:${mode}`;
 }
 
 export function useSession() {

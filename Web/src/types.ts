@@ -313,6 +313,12 @@ export interface SidebarProps {
   isCollapsed?: boolean;
   /** 侧栏底部账号区内容（头像、昵称、账号菜单）；未提供时只显示头像与昵称。 */
   account?: ReactNode;
+  /** 「新章」上方的附加区域（桌面端的云笺/书斋切换器与书斋卡片）；未提供时不占位。 */
+  topSlot?: ReactNode;
+  /** 暂不能新建会话（如书斋尚未选择文件夹）。 */
+  createDisabled?: boolean;
+  /** 会话列表为空时的说明；未提供时显示「暂无对话」。 */
+  emptyText?: string;
 }
 
 export interface ShareSelection {
@@ -322,6 +328,10 @@ export interface ShareSelection {
 export interface ChatBoxProps {
   shareSelection?: ShareSelection;
   shareToolbar?: import('react').ReactNode;
+  /** 替换空会话时的欢迎页（如书斋的「择一书斋」）。 */
+  welcome?: import('react').ReactNode;
+  /** 有值时输入框只读并显示这句说明，不能发送（如书斋尚未选择文件夹）。 */
+  composerBlockedHint?: string;
   fileEditMode?: 'instant' | 'review';
   fileEditModeLoading?: boolean;
   onFileEditModeChange?: (mode: 'instant' | 'review') => void;
@@ -385,6 +395,8 @@ export interface InputAreaProps {
   hasPendingUploadSummary?: boolean;
   onRemoveImportedUpload?: () => void;
   onClearPendingUpload?: () => void;
+  /** 有值时输入框只读并显示这句说明，不能发送。 */
+  blockedHint?: string;
 }
 
 export interface MessageListProps {

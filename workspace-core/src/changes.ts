@@ -1,4 +1,4 @@
-import * as vscode from 'vscode';
+import { host } from './host';
 import { createHash } from 'crypto';
 import { openEditableWorkspaceDocument, createProjectFile, deleteProjectFile } from './files';
 import { writeProjectFile } from './edits';
@@ -23,7 +23,7 @@ export async function inspectFiles(params: Record<string, unknown>): Promise<Rec
       const file = await openEditableWorkspaceDocument(path, params.root);
       bytes += Buffer.byteLength(file.content, 'utf8');
       if (bytes > 2_000_000) throw new WorkspaceRequestError('FILE_TOO_LARGE', '变更快照超过 2 MB 安全预算，未执行操作。');
-      const disk = new TextDecoder().decode(await vscode.workspace.fs.readFile(file.uri));
+      const disk = new TextDecoder().decode(await host().fs.readFile(file.uri));
       files[path] = { content: file.content, hash: hash(file.content), version: file.fileVersion,
         identity, dirty: file.document.isDirty || disk !== file.content };
     } catch (error) {

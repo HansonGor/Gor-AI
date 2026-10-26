@@ -82,9 +82,10 @@ Module._load = function (request, parent, isMain) {
   if (request === 'vscode') return vscodeMock;
   return originalLoad.call(this, request, parent, isMain);
 };
-const git = require('../out/workspace/git.js');
-const host = require('../out/workspace/toolchain/host.js');
-const { WorkspaceRequestHandler } = require('../out/workspace/requestHandler.js');
+require('../out/workspace/vscodeHost.js').installVsCodeWorkspaceHost();
+const git = require('@gor/workspace-core/out/git.js');
+const host = require('@gor/workspace-core/out/toolchain/host.js');
+const { WorkspaceRequestHandler } = require('@gor/workspace-core/out/requestHandler.js');
 Module._load = originalLoad;
 
 const approvals = [];

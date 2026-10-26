@@ -7,7 +7,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from services.vscode_bridge import vscode_bridge
+from services.vscode_bridge import WORKSPACE_CLIENTS, vscode_bridge
 
 
 logger = logging.getLogger("gor.vscode")
@@ -66,17 +66,19 @@ async def vscode_workspace_socket(websocket: WebSocket) -> None:
             if workspace_id is None:
                 workspace_id = f"vscode-{uuid.uuid4().hex}"
 
-            generation = vscode_bridge.register_workspace(workspace_id, websocket)
+            client = message.get("client") if message.get("client") in WORKSPACE_CLIENTS else "vscode"
+            generation = vscode_bridge.register_workspace(workspace_id, websocket, client)
 
             active_workspaces[workspace_id] = {
                 "workspace_id": workspace_id,
                 "connection": websocket,
                 "workspace_name": workspace_name,
                 "workspace_folders": folders,
+                "client": client,
                 "connected_at": datetime.now(timezone.utc).isoformat(),
                 "generation": generation,
             }
-            logger.info("VSCode workspace connected: %s (%s)", workspace_name or "(unnamed)", workspace_id)
+            logger.info("Workspace connected: client=%s %s (%s)", client, workspace_name or "(unnamed)", workspace_id)
             await websocket.send_json({"type": "workspace_registered", "workspaceId": workspace_id})
     except WebSocketDisconnect:
         pass

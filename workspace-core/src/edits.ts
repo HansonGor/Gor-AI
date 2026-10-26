@@ -1,4 +1,4 @@
-import * as vscode from 'vscode';
+import { host, type HostTextDocument, type HostWorkspaceEdit } from './host';
 import { createHash } from 'crypto';
 import { EditableWorkspaceDocument, looksLikeBinaryContent, openEditableWorkspaceDocument } from './files';
 import { WorkspaceRequestError } from './paths';
@@ -31,14 +31,14 @@ type PreparedFile = {
   patches: ResolvedPatch[];
 };
 
-const documentVersions = new WeakMap<vscode.TextDocument, number>();
+const documentVersions = new WeakMap<HostTextDocument, number>();
 
 /** Called by the VS Code document-change listener; source text is never sent or logged. */
-export function rememberTextDocumentVersion(document: vscode.TextDocument): void {
+export function rememberTextDocumentVersion(document: HostTextDocument): void {
   documentVersions.set(document, document.version);
 }
 
-function currentFileVersion(document: vscode.TextDocument): number {
+function currentFileVersion(document: HostTextDocument): number {
   const remembered = documentVersions.get(document);
   return remembered === undefined ? document.version : Math.max(document.version, remembered);
 }
@@ -51,7 +51,7 @@ function expectedVersion(value: unknown): number | undefined {
   return value as number;
 }
 
-function requireVersion(document: vscode.TextDocument, expected: number | undefined, path: string): number {
+function requireVersion(document: HostTextDocument, expected: number | undefined, path: string): number {
   const actual = currentFileVersion(document);
   if (expected !== undefined && actual !== expected) {
     throw new WorkspaceRequestError('VERSION_CONFLICT', `文件版本已变化，请重新读取后再修改：${path}`);
@@ -59,7 +59,7 @@ function requireVersion(document: vscode.TextDocument, expected: number | undefi
   return actual;
 }
 
-function requireClean(document: vscode.TextDocument, path: string): void {
+function requireClean(document: HostTextDocument, path: string): void {
   if (document.isDirty) {
     throw new WorkspaceRequestError('FILE_HAS_UNSAVED_CHANGES', `文件已有未保存的编辑，请先保存或撤销后再让 Agent 修改：${path}`);
   }
@@ -81,7 +81,7 @@ async function saveTargets(targets: SaveTarget[]): Promise<Record<string, unknow
     // Capture the Agent change before saving so even a failed save retains its Diff.
     let after = content;
     let savedOk = false;
-    const current = vscode.workspace.textDocuments.find((doc) => doc.uri.toString() === file.uri.toString());
+    const current = host().textDocuments().find((doc) => doc.uri.toString() === file.uri.toString());
     if (current !== file.document || current.isClosed || current.getText() !== content
       || currentFileVersion(current) !== versions[index]) {
       failedFiles.push({ path: file.path, code: 'VERSION_CONFLICT' });
@@ -271,9 +271,9 @@ function ensureNoOverlaps(prepared: PreparedFile): void {
   }
 }
 
-async function applyEdit(edit: vscode.WorkspaceEdit): Promise<void> {
+async function applyEdit(edit: HostWorkspaceEdit): Promise<void> {
   try {
-    if (!await vscode.workspace.applyEdit(edit)) {
+    if (!await host().applyEdit(edit)) {
       throw new WorkspaceRequestError('WORKSPACE_EDIT_FAILED', 'VS Code 未能应用本次工作区修改。');
     }
   } catch (error) {
@@ -374,12 +374,12 @@ export async function applyProjectPatches(params: Record<string, unknown>): Prom
     requireClean(prepared.file.document, prepared.file.path);
   }
 
-  const edit = new vscode.WorkspaceEdit();
+  const edit = host().createEdit();
   let patchCount = 0;
   for (const prepared of preparedByUri.values()) {
     for (const patch of prepared.patches) {
       if (patch.oldText === patch.newText) continue;
-      const range = new vscode.Range(
+      const range = host().range(
         prepared.file.document.positionAt(patch.start),
         prepared.file.document.positionAt(patch.end),
       );
@@ -408,7 +408,7 @@ export async function applyProjectPatches(params: Record<string, unknown>): Prom
   const fileVersions: Record<string, number> = {};
   for (const prepared of preparedByUri.values()) {
     const changedPatches = prepared.patches.filter((patch) => patch.oldText !== patch.newText);
-    const afterDocument = vscode.workspace.textDocuments.find((doc) => doc.uri.toString() === prepared.file.uri.toString());
+    const afterDocument = host().textDocuments().find((doc) => doc.uri.toString() === prepared.file.uri.toString());
     const version = afterDocument ? currentFileVersion(afterDocument) : prepared.version;
     fileVersions[prepared.file.path] = version;
     if (changedPatches.length) {
@@ -445,8 +445,8 @@ export async function writeProjectFile(params: Record<string, unknown>): Promise
   if (file.content === params.content) {
     return { success: true, path: file.path, changed: false, diff: '', fileVersion: version };
   }
-  const range = new vscode.Range(file.document.positionAt(0), file.document.positionAt(file.content.length));
-  const edit = new vscode.WorkspaceEdit();
+  const range = host().range(file.document.positionAt(0), file.document.positionAt(file.content.length));
+  const edit = host().createEdit();
   edit.replace(file.uri, range, params.content);
   requireVersion(file.document, version, file.path);
   requireClean(file.document, file.path);

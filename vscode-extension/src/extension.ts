@@ -1,14 +1,21 @@
 import * as vscode from 'vscode';
 import { GorConnection, GorConnectionStatus } from './connection';
 import { ChatView } from './chatPanel';
-import { WorkspaceRequestHandler } from './workspace/requestHandler';
-import { rememberTextDocumentVersion } from './workspace/edits';
-import { normalizeWorkspaceRelativePath, workspaceRelativePath } from './workspace/paths';
-import { configureToolchainUi, disposeToolchainProcesses, nativeUi } from './workspace/toolchain/host';
+import {
+  configureToolchainUi,
+  disposeToolchainProcesses,
+  nativeUi,
+  normalizeWorkspaceRelativePath,
+  rememberTextDocumentVersion,
+  WorkspaceRequestHandler,
+  workspaceRelativePath,
+} from '@gor/workspace-core';
+import { installVsCodeWorkspaceHost } from './workspace/vscodeHost';
 
 let connection: GorConnection | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
+  installVsCodeWorkspaceHost();
   const output = vscode.window.createOutputChannel('Gor');
   const expectedTreeEvents = new Map<string, ReturnType<typeof setTimeout>>();
   const workspaceRequestHandler = new WorkspaceRequestHandler(output, (method, params) => {

@@ -7,7 +7,8 @@ Module._load = function (request, parent, isMain) {
   if (request === 'vscode') return {};
   return originalLoad.call(this, request, parent, isMain);
 };
-const { normalizeWorkspaceRelativePath, isUriWithinWorkspaceRoot } = require('../out/workspace/paths.js');
+require('../out/workspace/vscodeHost.js').installVsCodeWorkspaceHost();
+const { normalizeWorkspaceRelativePath, isUriWithinWorkspaceRoot } = require('@gor/workspace-core/out/paths.js');
 Module._load = originalLoad;
 
 test('normalizes workspace-relative paths and rejects traversal and absolute paths', () => {

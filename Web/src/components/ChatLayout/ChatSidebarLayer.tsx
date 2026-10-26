@@ -19,6 +19,10 @@ export interface ChatSidebarLayerProps {
   onCloseMobileSidebar: () => void;
   /** 账号区，桌面侧栏与手机抽屉共用。 */
   account?: ReactNode;
+  /** 「新章」上方的附加区域与新建限制，桌面侧栏与手机抽屉共用。 */
+  topSlot?: ReactNode;
+  createDisabled?: boolean;
+  emptyText?: string;
 }
 
 /** Desktop and mobile session navigation, isolated from chat orchestration. */
@@ -37,6 +41,9 @@ export default function ChatSidebarLayer({
   onToggleDesktopSidebar,
   onCloseMobileSidebar,
   account,
+  topSlot,
+  createDisabled,
+  emptyText,
 }: ChatSidebarLayerProps) {
   return (
     <>
@@ -50,6 +57,9 @@ export default function ChatSidebarLayer({
           theme={theme}
           isCollapsed={false}
           account={account}
+          topSlot={topSlot}
+          createDisabled={createDisabled}
+          emptyText={emptyText}
         />
       </aside>
       <button
@@ -80,6 +90,9 @@ export default function ChatSidebarLayer({
               theme={theme}
               isCollapsed={false}
               account={account}
+              topSlot={topSlot}
+              createDisabled={createDisabled}
+              emptyText={emptyText}
             />
           </div>
         </>

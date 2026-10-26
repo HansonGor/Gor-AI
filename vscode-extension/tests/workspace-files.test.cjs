@@ -200,9 +200,10 @@ Module._load = function (request, parent, isMain) {
   if (request === 'vscode') return vscodeStub;
   return originalLoad.call(this, request, parent, isMain);
 };
-const { WorkspaceRequestHandler } = require('../out/workspace/requestHandler.js');
+require('../out/workspace/vscodeHost.js').installVsCodeWorkspaceHost();
+const { WorkspaceRequestHandler } = require('@gor/workspace-core/out/requestHandler.js');
 // 删除需要先在施行卡片中确认；这里的用例只验证文件操作本身，统一按已确认处理。
-require('../out/workspace/toolchain/host.js').configureToolchainUi({ requestApproval: async () => 'approve', update() {}, output() {} });
+require('@gor/workspace-core/out/toolchain/host.js').configureToolchainUi({ requestApproval: async () => 'approve', update() {}, output() {} });
 Module._load = originalLoad;
 
 test('undo RPC restores one file and rejects repeated, dirty, version and hash conflicts', async () => {

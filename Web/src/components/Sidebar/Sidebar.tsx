@@ -46,6 +46,9 @@ export default function Sidebar({
   onDeleteSession,
   theme = 'dark',
   account,
+  topSlot,
+  createDisabled = false,
+  emptyText,
 }: SidebarProps) {
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -73,7 +76,8 @@ export default function Sidebar({
 
       <section className="conversation-panel" aria-label="会话列表">
         <div className="conversation-panel-top">
-          <Button type="button" className="new-chat-btn" onClick={onCreateSession}>
+          {topSlot}
+          <Button type="button" className="new-chat-btn" onClick={onCreateSession} disabled={createDisabled}>
             <Plus aria-hidden="true" /><span>新章</span>
           </Button>
           <label className="session-search">
@@ -85,7 +89,7 @@ export default function Sidebar({
 
         <div className="sidebar-sessions">
           {groupedSessions.length === 0 ? (
-            <div className="empty-sessions">{query ? '没有匹配的对话' : '暂无对话'}</div>
+            <div className="empty-sessions">{query ? '没有匹配的对话' : emptyText ?? '暂无对话'}</div>
           ) : groupedSessions.map((group) => (
             <section className="session-group" key={group.label}>
               <h2>{group.label}</h2>

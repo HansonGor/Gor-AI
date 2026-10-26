@@ -39,6 +39,7 @@ export default function InputArea({
   chatModelId,
   chatModelLoading,
   onChatModelChange,
+  blockedHint,
 }: InputAreaProps) {
   const showThinking = useShowThinking();
   const chatModels = useChatModels();
@@ -173,7 +174,7 @@ export default function InputArea({
     }
   };
 
-  const canSend = (input.trim() || pendingImages.length > 0 || hasPendingUploadSummary) && !isLoading;
+  const canSend = (input.trim() || pendingImages.length > 0 || hasPendingUploadSummary) && !isLoading && !blockedHint;
 
   return (
     <div className="input-area relative px-[0.24rem] pb-[calc(0.16rem+env(safe-area-inset-bottom))] pt-[0.12rem] lg:px-0 lg:pt-3">
@@ -326,13 +327,13 @@ export default function InputArea({
           ref={textareaRef}
           className="chat-input min-h-0 min-w-0 flex-1 resize-none overflow-hidden border-0 bg-transparent pb-[0.12rem] pl-[0.08rem] pr-0 pt-[0.12rem] text-[0.28rem] leading-[1.6] text-[#f5f5f7] shadow-none outline-none ring-0 placeholder:text-white/40 focus-visible:ring-0 disabled:opacity-50"
           style={{ maxHeight: `${INPUT_MAX_HEIGHT}px` }}
-          placeholder="一问一念，皆自此起…"
+          placeholder={blockedHint ?? '一问一念，皆自此起…'}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           rows={1}
-          disabled={isLoading}
+          disabled={isLoading || Boolean(blockedHint)}
         />
         <div className="chat-composer-actions">
           {isLoading ? (

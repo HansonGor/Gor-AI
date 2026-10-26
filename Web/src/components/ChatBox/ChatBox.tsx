@@ -11,6 +11,8 @@ export default function ChatBox({
   messages,
   shareSelection,
   shareToolbar,
+  welcome,
+  composerBlockedHint,
   currentPreviewProject,
   input,
   setInput,
@@ -77,7 +79,7 @@ export default function ChatBox({
       {/* 消息区域 */}
       <div ref={messagesContainerRef} className="messages-container flex-1 overflow-y-auto overflow-x-hidden px-[0.24rem] py-[0.24rem] lg:px-8 lg:py-6">
         {messages.length === 0 ? (
-          <WelcomeScreen onPromptClick={handleSend} />
+          welcome ?? <WelcomeScreen onPromptClick={handleSend} />
         ) : (
           <MessageList shareSelection={shareSelection} messages={messages} currentPreviewProject={currentPreviewProject} onPreviewFile={onPreviewFile} onPreviewProject={onPreviewProject} onPreviewAttachment={onPreviewAttachment} />
         )}
@@ -125,6 +127,7 @@ export default function ChatBox({
           hasPendingUploadSummary={hasPendingUploadSummary}
           onRemoveImportedUpload={onRemoveImportedUpload}
           onClearPendingUpload={onClearPendingUpload}
+          blockedHint={composerBlockedHint}
         />
       </div>
     </div>

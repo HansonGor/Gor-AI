@@ -59,7 +59,8 @@ class ChatRequest(BaseModel):
     previewProjectOrigin: str = "generated"
     previewProjectUploadName: str | None = None
     workspaceEdit: bool = False
-    clientMode: Literal['web', 'vscode'] | None = None
+    # desktop 指桌面端「书斋」：与插件一样操作已登记的本机工作区；桌面端「云笺」按 web 发送
+    clientMode: Literal['web', 'vscode', 'desktop'] | None = None
     # Opaque extension-issued workspace id; workspace operations still require a live bridge.
     workspaceId: str | None = Field(default=None, max_length=120)
     assistantMessageId: str | None = Field(default=None, max_length=80)
@@ -162,7 +163,7 @@ async def chat(request: Request, body: ChatRequest):
                 # VS Code chat has its own ProjectRef and must never bootstrap or
                 # restore the browser's in-memory default Preview template.
                 plugin_workspace_request = (
-                    body.clientMode == "vscode"
+                    body.clientMode in ("vscode", "desktop")
                     or (body.clientMode is None and bool(body.workspaceId and body.workspaceId.strip()))
                 )
                 saved_project = None if plugin_workspace_request else await get_session_preview_project(session_id)
@@ -541,6 +542,7 @@ async def chat(request: Request, body: ChatRequest):
                     vscode_project_context,
                     plugin_workspace_request,
                     session_id,
+                    **({"workspace_client": "desktop"} if body.clientMode == "desktop" else {}),
                     **({"presentation_source_explicit": True} if body.presentationMessageId else {}),
                     **({"deep_thinking": False} if thinking_mode == "light" else
                        {"auto_thinking": True} if thinking_mode == "auto" else {}),

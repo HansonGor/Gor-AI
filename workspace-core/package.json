@@ -1,0 +1,21 @@
+{
+  "name": "@gor/workspace-core",
+  "version": "0.1.0",
+  "description": "Gor 公共工作区核心：项目文件读写、补丁、撤销与工具链，经 WorkspaceHost 接入 VS Code 插件和桌面端",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "out/index.js",
+  "types": "out/index.d.ts",
+  "scripts": {
+    "build": "tsc -b ./",
+    "test": "npm run build && node --test"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  }
+}

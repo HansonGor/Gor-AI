@@ -1,4 +1,4 @@
-import * as vscode from 'vscode';
+import { host, type HostFolder, type HostUri } from './host';
 
 export class WorkspaceRequestError extends Error {
   constructor(readonly code: string, message: string, readonly details?: Record<string, unknown>) {
@@ -36,7 +36,7 @@ export function normalizeWorkspaceRelativePath(value: unknown, allowEmpty = fals
   return `/${segments.join('/')}`;
 }
 
-export function isUriWithinWorkspaceRoot(uri: vscode.Uri, root: vscode.WorkspaceFolder): boolean {
+export function isUriWithinWorkspaceRoot(uri: HostUri, root: HostFolder): boolean {
   if (uri.scheme !== root.uri.scheme || uri.authority !== root.uri.authority) return false;
   const rootPath = root.uri.path.replace(/\/$/, '');
   const candidate = uri.path;
@@ -44,14 +44,14 @@ export function isUriWithinWorkspaceRoot(uri: vscode.Uri, root: vscode.Workspace
 }
 
 export function describeWorkspaceRoots(): Array<{ id: string; name: string }> {
-  return (vscode.workspace.workspaceFolders ?? []).map((folder, index) => ({
+  return (host().workspaceFolders() ?? []).map((folder, index) => ({
     id: `root-${index + 1}`,
     name: folder.name,
   }));
 }
 
-export function selectWorkspaceRoot(requestedRoot?: unknown): vscode.WorkspaceFolder {
-  const folders = vscode.workspace.workspaceFolders ?? [];
+export function selectWorkspaceRoot(requestedRoot?: unknown): HostFolder {
+  const folders = host().workspaceFolders() ?? [];
   if (folders.length === 0) {
     throw new WorkspaceRequestError('WORKSPACE_NOT_FOUND', 'VS Code 当前没有打开的工作区文件夹。');
   }
@@ -75,7 +75,7 @@ export function selectWorkspaceRoot(requestedRoot?: unknown): vscode.WorkspaceFo
   throw new WorkspaceRequestError('WORKSPACE_ROOT_REQUIRED', `找不到指定 root。可选：${options}`);
 }
 
-export function workspaceRelativePath(uri: vscode.Uri, root: vscode.WorkspaceFolder): string {
+export function workspaceRelativePath(uri: HostUri, root: HostFolder): string {
   if (!isUriWithinWorkspaceRoot(uri, root)) {
     throw new WorkspaceRequestError('INVALID_PATH', '请求路径不在指定工作区根目录内。');
   }
@@ -84,9 +84,9 @@ export function workspaceRelativePath(uri: vscode.Uri, root: vscode.WorkspaceFol
   return normalizeWorkspaceRelativePath(relative);
 }
 
-export function toWorkspaceUri(relativePath: string, root: vscode.WorkspaceFolder, allowGitMetadata = false): vscode.Uri {
+export function toWorkspaceUri(relativePath: string, root: HostFolder, allowGitMetadata = false): HostUri {
   const normalized = normalizeWorkspaceRelativePath(relativePath, false, allowGitMetadata);
-  const uri = vscode.Uri.joinPath(root.uri, ...normalized.slice(1).split('/'));
+  const uri = host().joinPath(root.uri, ...normalized.slice(1).split('/'));
   if (!isUriWithinWorkspaceRoot(uri, root)) {
     throw new WorkspaceRequestError('INVALID_PATH', '请求路径解析后超出工作区范围。');
   }

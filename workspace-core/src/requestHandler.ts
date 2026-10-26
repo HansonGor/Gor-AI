@@ -1,4 +1,3 @@
-import * as vscode from 'vscode';
 import {
   createProjectDirectory,
   createProjectFile,
@@ -33,12 +32,15 @@ export type WorkspaceResponsePacket = {
   error?: { code: string; message: string; details?: Record<string, unknown> };
 };
 
+/** 请求日志输出（VS Code 输出面板或桌面端日志）；只写方法名和安全路径，不写源码。 */
+export type WorkspaceLog = { appendLine(text: string): void };
+
 // Serialize Agent RPC operations across handler instances; manual edits remain native.
 let workspaceRequests: Promise<void> = Promise.resolve();
 
 export class WorkspaceRequestHandler {
   constructor(
-    private readonly output: vscode.OutputChannel,
+    private readonly output: WorkspaceLog,
     private readonly expectTreeMutation?: (method: string, params: Record<string, unknown>) => (() => void) | undefined,
   ) {}
 
