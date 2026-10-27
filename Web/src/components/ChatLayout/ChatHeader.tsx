@@ -8,6 +8,7 @@ import {
   PanelRightOpen,
   SquareArrowOutUpRight,
 } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { Button } from '../ui/button';
 import GorBrandLogo from '../GorBrandLogo';
 
@@ -28,6 +29,8 @@ export interface ChatHeaderProps {
   onBack: () => void;
   onMenuClick: () => void;
   onTogglePreviewWorker: () => void;
+  /** 菜单按钮旁的附加内容（桌面端窄窗口下的云笺/书斋模式胶囊）；未提供时不占位。 */
+  extra?: ReactNode;
 }
 
 /** Presentation-only chat header; responsive positioning remains in chat styles. */
@@ -48,6 +51,7 @@ export default function ChatHeader({
   onBack,
   onMenuClick,
   onTogglePreviewWorker,
+  extra,
 }: ChatHeaderProps) {
   return (
     <header className={`chat-header${hasShareableMessages && !isVscodePluginMode ? ' has-share-button' : ''}`}>
@@ -92,6 +96,7 @@ export default function ChatHeader({
               <ChevronLeft size={22} />
             )}
           </Button>
+          {extra}
         </div>
         <div className="chat-mobile-brand">
           <GorBrandLogo />

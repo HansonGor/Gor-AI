@@ -5,7 +5,7 @@
  */
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
-import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, shell, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, safeStorage, shell, type IpcMainInvokeEvent } from 'electron';
 import {
   APP_HOST, APP_ORIGIN, APP_SCHEME, contentTypeFor, createApiForwarder, isApiPath, isInAppUrl, resolveApiBase, resolveDevServerUrl,
   resolveStaticFile,
@@ -123,6 +123,14 @@ function createShuzhai(apiBase: string): ShuzhaiService {
       const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
       return result.canceled ? undefined : result.filePaths[0];
     },
+    async chooseNewProjectPath() {
+      const options: Electron.SaveDialogOptions = {
+        title: '新建空白项目', buttonLabel: '创建', nameFieldLabel: '项目名称',
+        defaultPath: path.join(app.getPath('documents'), '新项目'), properties: ['createDirectory', 'showOverwriteConfirmation'],
+      };
+      const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+      return result.canceled ? undefined : result.filePath;
+    },
     trashItem: (fsPath) => shell.trashItem(fsPath),
     async showWarningModal(message, detail, actions) {
       const options: Electron.MessageBoxOptions = {
@@ -133,6 +141,13 @@ function createShuzhai(apiBase: string): ShuzhaiService {
       return actions[response];
     },
     revealPath: (fsPath) => { void shell.openPath(fsPath); },
+    // 施行卡片：页面就绪时发给主窗口；没有窗口或仍在加载时返回 false，审阅退回系统确认框
+    sendToolchain: (message) => {
+      if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) return false;
+      mainWindow.webContents.send('gor:shuzhai:toolchain', message);
+      return true;
+    },
+    openExternal: (url) => { void shell.openExternal(url); },
     onState: (state: ShuzhaiState) => {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('gor:shuzhai:state', state);
     },
@@ -159,6 +174,16 @@ function registerShuzhaiIpc(service: ShuzhaiService): void {
     return service.openRecent(folderPath);
   });
   ipcMain.handle('gor:shuzhai:close', guard(() => service.close()));
+  ipcMain.handle('gor:shuzhai:create-project', guard(() => service.createProject()));
+  ipcMain.handle('gor:shuzhai:open-dropped', async (event, folderPath: unknown) => {
+    if (!fromAppPage(event)) throw new Error('Not allowed');
+    return service.openDropped(folderPath);
+  });
+  ipcMain.handle('gor:shuzhai:toolchain', async (event, message: unknown) => {
+    if (!fromAppPage(event)) throw new Error('Not allowed');
+    service.toolchain.handlePageMessage(message);
+    return true;
+  });
   ipcMain.handle('gor:shuzhai:reveal', guard(() => service.reveal()));
 }
 
@@ -191,12 +216,16 @@ if (!app.requestSingleInstanceLock()) {
       return isApiPath(url.pathname) ? forward(request) : serveStatic(root, url.pathname);
     });
 
+    // macOS 没有应用菜单时 ⌘C / ⌘V / ⌘Q 等快捷键不可用；Windows / Linux 沿用无菜单栏
+    if (process.platform === 'darwin') {
+      Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' }]));
+    }
     shuzhai = createShuzhai(apiBase);
     registerShuzhaiIpc(shuzhai);
     void shuzhai.restore();
 
     mainWindow = createWindow();
-    mainWindow.on('closed', () => { mainWindow = null; });
+    mainWindow.on('closed', () => { mainWindow = null; shuzhai?.toolchain.releaseAll(); });
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow();
     });

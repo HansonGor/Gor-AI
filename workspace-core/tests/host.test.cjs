@@ -265,3 +265,85 @@ test('连接以 desktop 身份登记书斋，并回应服务端的工作区请�
     fs.rmSync(rootDir, { recursive: true, force: true });
   }
 });
+
+test('本机宿主的 Git：用 git 命令完成状态、提交、日志、分支与放弃改动', async () => {
+  const { execFileSync } = require('node:child_process');
+  const rootDir = makeWorkspace({ 'readme.md': 'v1\n', 'src/app.js': 'one\n' });
+  const git = (...args) => execFileSync('git', args, { cwd: rootDir, encoding: 'utf8' });
+  try {
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.email', 'gor@example.com');
+    git('config', 'user.name', 'Gor Test');
+    git('config', 'commit.gpgsign', 'false');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'init');
+    fs.writeFileSync(path.join(rootDir, 'readme.md'), 'v2\n');
+    fs.writeFileSync(path.join(rootDir, 'new.txt'), 'n\n');
+    const { call } = install(rootDir);
+    const run = (action, args = {}) => call('toolchain.run', { toolchain: 'git', action, args, approvalMode: 'auto' });
+
+    const status = await run('status');
+    assert.equal(status.success, true, JSON.stringify(status.error));
+    const data = status.result.data ?? status.result;
+    assert.equal(data.branch, 'main');
+    assert.deepEqual(data.unstaged.files, [{ path: '/readme.md', status: 'modified' }]);
+    assert.deepEqual(data.untracked.files, [{ path: '/new.txt', status: 'untracked' }]);
+
+    const diff = await run('diff');
+    assert.match((diff.result.data ?? diff.result).diff, /-v1\n\+v2/);
+
+    const committed = await run('commit', { message: '书斋提交', paths: ['/readme.md'], push: false });
+    assert.equal(committed.result.status, 'completed', JSON.stringify(committed.result));
+    assert.equal(git('log', '-1', '--format=%s').trim(), '书斋提交');
+    assert.match(git('status', '--porcelain'), /\?\? new\.txt/, '只提交指定文件');
+
+    const log = await run('log', { count: 5 });
+    assert.deepEqual((log.result.data ?? log.result).commits.map((item) => item.subject), ['书斋提交', 'init']);
+
+    const branch = await run('create_branch', { name: 'feature/desk' });
+    assert.equal(branch.result.status, 'completed', JSON.stringify(branch.result));
+    assert.equal(git('rev-parse', '--abbrev-ref', 'HEAD').trim(), 'feature/desk');
+
+    fs.writeFileSync(path.join(rootDir, 'src', 'app.js'), 'changed\n');
+    const discarded = await run('discard', { paths: ['/src/app.js', '/new.txt'] });
+    assert.equal(discarded.result.status, 'completed', JSON.stringify(discarded.result));
+    assert.equal(fs.readFileSync(path.join(rootDir, 'src', 'app.js'), 'utf8').replace(/\r\n/g, '\n'), 'one\n');
+    assert.equal(fs.existsSync(path.join(rootDir, 'new.txt')), false, '未跟踪文件被删除');
+
+    const forced = await run('push', { force: true });
+    assert.notEqual(forced.result?.status, 'completed', '永不强制推送');
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('parsePorcelainV2：重命名、冲突与上游信息', () => {
+  const { parsePorcelainV2 } = require('../out/gitCli.js');
+  const toUri = (relative) => ({ path: `/r/${relative}`, fsPath: `/r/${relative}`, scheme: 'file', authority: '', toString: () => `file:///r/${relative}` });
+  const output = [
+    '# branch.oid abc', '# branch.head main', '# branch.upstream origin/main', '# branch.ab +2 -1',
+    '1 .M N... 100644 100644 100644 a b src/a.ts',
+    '2 R. N... 100644 100644 100644 a b R100 new name.ts', 'old name.ts',
+    'u UU N... 100644 100644 100644 100644 a b c conflict.ts',
+    '? fresh.ts', '',
+  ].join('\0');
+  const state = parsePorcelainV2(output, toUri);
+  assert.deepEqual(state.HEAD, { commit: 'abc', name: 'main', upstream: { remote: 'origin', name: 'main' }, ahead: 2, behind: 1 });
+  assert.equal(state.workingTreeChanges[0].uri.path, '/r/src/a.ts');
+  assert.equal(state.workingTreeChanges[0].status, 5);
+  assert.equal(state.indexChanges[0].status, 3);
+  assert.equal(state.indexChanges[0].uri.path, '/r/old name.ts');
+  assert.equal(state.indexChanges[0].renameUri.path, '/r/new name.ts');
+  assert.equal(state.mergeChanges[0].status, 18);
+  assert.equal(state.untrackedChanges[0].uri.path, '/r/fresh.ts');
+});
+
+test('工作区归属判断忽略 Windows 盘符大小写（VS Code 会混用 /C:/ 与 /c:/）', () => {
+  const { isUriWithinWorkspaceRoot, workspaceRelativePath } = require('../out/paths.js');
+  const uri = (p) => ({ scheme: 'file', authority: '', path: p, fsPath: p, toString: () => `file://${p}` });
+  const root = { uri: uri('/C:/Users/me/project'), name: 'project', index: 0 };
+  assert.equal(isUriWithinWorkspaceRoot(uri('/c:/Users/me/project/src/a.ts'), root), true);
+  assert.equal(workspaceRelativePath(uri('/c:/Users/me/project/src/a.ts'), root), '/src/a.ts');
+  assert.equal(isUriWithinWorkspaceRoot(uri('/c:/Users/me/project-other/a.ts'), root), false, '前缀相同的兄弟目录不算');
+  assert.equal(isUriWithinWorkspaceRoot(uri('/d:/Users/me/project/a.ts'), root), false, '不同盘符不算');
+});

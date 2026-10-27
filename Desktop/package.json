@@ -11,7 +11,10 @@
     "start": "npm run compile && electron .",
     "dev": "node scripts/dev.mjs",
     "test": "npm run compile && node --test",
-    "dist": "npm run build:web && npm run compile && electron-builder --win"
+    "dist": "npm run build:web && npm run compile && electron-builder --win",
+    "dist:mac": "npm run build:web && npm run compile && electron-builder --mac",
+    "dist:linux": "npm run build:web && npm run compile && electron-builder --linux",
+    "pack": "npm run build:web && npm run compile && electron-builder --win --dir"
   },
   "dependencies": {
     "@gor/workspace-core": "file:../workspace-core"
@@ -30,7 +33,9 @@
     },
     "files": [
       "out/**/*.js",
-      "package.json"
+      "package.json",
+      "!node_modules/@gor/workspace-core/{src,tests}/**",
+      "!node_modules/@gor/workspace-core/**/*.{map,tsbuildinfo}"
     ],
     "extraResources": [
       {
@@ -48,6 +53,20 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "shortcutName": "Gor"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "icon": "../Web/public/icon-512.png",
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "../Web/public/icon-512.png",
+      "category": "Development"
     }
   }
 }

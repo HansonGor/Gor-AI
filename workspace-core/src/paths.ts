@@ -36,10 +36,18 @@ export function normalizeWorkspaceRelativePath(value: unknown, allowEmpty = fals
   return `/${segments.join('/')}`;
 }
 
+/**
+ * 用于比较的路径：Windows 盘符统一为小写。VS Code 对同一文件可能给出 /C:/… 与 /c:/… 两种写法
+ * （从命令行用大写盘符打开文件夹时，工作区根是大写，而文件查找与 Git 扩展返回小写），只按字面比较会把文件都判为工作区外。
+ */
+export function comparableUriPath(value: string): string {
+  return value.replace(/^\/([A-Za-z]):/, (_match, drive: string) => `/${drive.toLowerCase()}:`);
+}
+
 export function isUriWithinWorkspaceRoot(uri: HostUri, root: HostFolder): boolean {
   if (uri.scheme !== root.uri.scheme || uri.authority !== root.uri.authority) return false;
-  const rootPath = root.uri.path.replace(/\/$/, '');
-  const candidate = uri.path;
+  const rootPath = comparableUriPath(root.uri.path.replace(/\/$/, ''));
+  const candidate = comparableUriPath(uri.path);
   return candidate === rootPath || candidate.startsWith(`${rootPath}/`);
 }
 

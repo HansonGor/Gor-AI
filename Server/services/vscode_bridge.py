@@ -16,6 +16,12 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 
 
 WORKSPACE_CLIENTS = ("vscode", "desktop")
+# 工作区 ID 前缀：插件为 vscode-，桌面端书斋为 desktop-（两者走同一个工作区 Provider）
+WORKSPACE_ID_PREFIXES = ("vscode-", "desktop-")
+
+
+def is_workspace_id(value: object) -> bool:
+    return isinstance(value, str) and value.startswith(WORKSPACE_ID_PREFIXES)
 
 
 @dataclass

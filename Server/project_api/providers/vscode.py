@@ -7,7 +7,7 @@ import uuid
 
 from project_api.provider import ProjectProvider
 from project_api.types import ProjectAPIError, ProjectRef
-from services.vscode_bridge import VSCodeBridgeClient, vscode_bridge
+from services.vscode_bridge import VSCodeBridgeClient, is_workspace_id, vscode_bridge
 
 # 提交/推送需要等待用户在 VS Code 确认框中操作，推送还包含网络耗时
 GIT_CONFIRM_TIMEOUT_SECONDS = 600.0
@@ -280,7 +280,7 @@ class VSCodeProjectProvider:
 
     @staticmethod
     def _validate(project_ref: ProjectRef) -> None:
-        if project_ref.provider != "vscode" or not project_ref.project_id.startswith("vscode-"):
+        if project_ref.provider != "vscode" or not is_workspace_id(project_ref.project_id):
             raise ProjectAPIError("WORKSPACE_NOT_FOUND", "VS Code 工作区标识无效。")
 
     async def list_files(self, project_ref: ProjectRef) -> dict[str, Any]:
@@ -634,11 +634,6 @@ class VSCodeProjectProvider:
         self._validate(project_ref)
         return self._bridge.workspace_generation(project_ref.project_id)
 
-    def _workspace_client(self, project_ref: ProjectRef) -> str:
-        # 测试替身或旧桥接没有 workspace_client 时按 VS Code 插件处理
-        lookup = getattr(self._bridge, "workspace_client", None)
-        return lookup(project_ref.project_id) if callable(lookup) else "vscode"
-
     async def get_capabilities(self, project_ref: ProjectRef) -> dict[str, bool]:
         self._validate(project_ref)
         return {
@@ -656,8 +651,8 @@ class VSCodeProjectProvider:
             "build": False,
             "diagnostics": False,
             "terminal": False,
-            # 桌面端书斋没有 VS Code 内置 Git 扩展，Git 工具不对模型开放
-            "git": self._workspace_client(project_ref) != "desktop",
+            # 插件经 VS Code 内置 Git 扩展、桌面端书斋经本机 git 命令执行，两者流程一致
+            "git": True,
             "toolchain": True,
             # 删除整个项目（含 package.json 或 .git 的目录）与项目外只读，均由扩展确认
             "deleteProject": True,

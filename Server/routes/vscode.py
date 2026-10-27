@@ -63,10 +63,11 @@ async def vscode_workspace_socket(websocket: WebSocket) -> None:
 
             workspace_name = str(message.get("workspaceName") or "")
             folders = _workspace_folders(message.get("workspaceFolders"))
-            if workspace_id is None:
-                workspace_id = f"vscode-{uuid.uuid4().hex}"
-
             client = message.get("client") if message.get("client") in WORKSPACE_CLIENTS else "vscode"
+            # 同一条连接内重复登记沿用原 ID；书斋用 desktop- 前缀，便于在日志和变更记录里与插件区分
+            if workspace_id is None:
+                workspace_id = f"{'desktop' if client == 'desktop' else 'vscode'}-{uuid.uuid4().hex}"
+
             generation = vscode_bridge.register_workspace(workspace_id, websocket, client)
 
             active_workspaces[workspace_id] = {

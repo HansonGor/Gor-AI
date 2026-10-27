@@ -5,6 +5,7 @@
  * - 书斋状态来自主进程，页面只读状态并经桥接请求「选文件夹 / 重开最近 / 收起 / 在资源管理器中显示」。
  */
 import { useSyncExternalStore } from 'react';
+import { connectToolchainChannel } from '../vscode/toolchainRuns';
 
 export type DesktopMode = 'yunjian' | 'shuzhai';
 export type ShuzhaiFolder = { path: string; name: string };
@@ -21,7 +22,10 @@ export type ShuzhaiOpenResult = { ok: boolean; reason?: string; state: ShuzhaiSt
 export type ShuzhaiBridge = {
   getState(): Promise<ShuzhaiState>;
   pickFolder(): Promise<ShuzhaiOpenResult>;
+  createProject?(): Promise<ShuzhaiOpenResult>;
   openRecent(folderPath: string): Promise<ShuzhaiOpenResult>;
+  openDropped?(file: File): Promise<ShuzhaiOpenResult>;
+  toolchain?: { send(message: unknown): Promise<unknown>; onMessage(listener: (message: unknown) => void): () => void };
   close(): Promise<ShuzhaiState>;
   reveal(): Promise<boolean>;
   onState(listener: (state: ShuzhaiState) => void): () => void;
@@ -94,7 +98,12 @@ export function installDesktopRuntime(target: Window = window): void {
   if (!candidate || typeof candidate.getState !== 'function') return;
   bridge = candidate;
   document.documentElement.dataset.gorDesktop = 'true';
-  if (readStoredMode() === 'shuzhai') document.documentElement.dataset.gorClientMode = 'desktop';
+  if (readStoredMode() === 'shuzhai') {
+    document.documentElement.dataset.gorClientMode = 'desktop';
+    // 书斋的施行审阅显示为聊天页里的施行卡片（与插件同一套）；云笺不接收，主进程会退回系统确认框
+    const channel = bridge.toolchain;
+    if (channel) connectToolchainChannel((message) => { void channel.send(message).catch(() => undefined); return true; }, (listener) => { channel.onMessage(listener); });
+  }
   bridge.onState(applyShuzhaiState);
   void bridge.getState().then(applyShuzhaiState).catch(() => undefined);
 }
@@ -140,6 +149,8 @@ export function useShuzhaiState(): ShuzhaiState {
 
 export const shuzhai = {
   pickFolder: () => bridge?.pickFolder().then((result) => { applyShuzhaiState(result.state); return result; }),
+  createProject: () => bridge?.createProject?.().then((result) => { applyShuzhaiState(result.state); return result; }),
+  openDropped: (file: File) => bridge?.openDropped?.(file).then((result) => { applyShuzhaiState(result.state); return result; }),
   openRecent: (folderPath: string) => bridge?.openRecent(folderPath).then((result) => { applyShuzhaiState(result.state); return result; }),
   close: () => bridge?.close().then((state) => { applyShuzhaiState(state); return state; }),
   reveal: () => bridge?.reveal(),

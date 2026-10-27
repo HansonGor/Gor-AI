@@ -49,7 +49,7 @@ const STATUS_LABELS: Record<number, string> = {
 
 async function gitApi(): Promise<GitAPI> {
   const extension = host().getExtension<{ getAPI(version: 1): GitAPI }>('vscode.git');
-  if (!extension) throw new WorkspaceRequestError('GIT_UNAVAILABLE', 'VS Code 内置 Git 扩展未启用。');
+  if (!extension) throw new WorkspaceRequestError('GIT_UNAVAILABLE', 'Git 不可用：VS Code 内置 Git 扩展未启用，或本机没有安装 git。');
   const exports = extension.isActive ? extension.exports : await extension.activate();
   try {
     return exports.getAPI(1);

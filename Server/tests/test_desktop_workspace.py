@@ -158,7 +158,7 @@ class DesktopChatRouteTest(unittest.IsolatedAsyncioTestCase):
         get_project.assert_not_awaited()
 
 
-def test_bridge_records_client_and_desktop_workspaces_do_not_advertise_git():
+def test_bridge_records_client_and_desktop_workspaces_have_the_same_capabilities():
     async def scenario():
         bridge = VSCodeBridgeClient()
         bridge.register_workspace("vscode-desk", FakeSocket(), "desktop")
@@ -169,9 +169,8 @@ def test_bridge_records_client_and_desktop_workspaces_do_not_advertise_git():
         plugin = await provider.get_capabilities(ProjectRef("vscode-plugin", "vscode"))
         assert bridge.workspace_client("vscode-desk") == "desktop"
         assert bridge.workspace_client("vscode-other") == "vscode", "未知登记方按 VS Code 处理"
-        assert desk["git"] is False and plugin["git"] is True
-        assert {key: value for key, value in desk.items() if key != "git"} == {key: value for key, value in plugin.items() if key != "git"}
-        assert desk["toolchain"] and desk["deleteFile"] and desk["externalRead"]
+        assert desk == plugin, "书斋经本机 git 命令提供 Git，能力与插件一致"
+        assert desk["git"] and desk["toolchain"] and desk["deleteFile"] and desk["externalRead"]
 
     asyncio.run(scenario())
 
@@ -186,7 +185,10 @@ def test_websocket_registration_keeps_the_desktop_client_type():
                 "workspaceFolders": [{"id": "root-1", "name": "project", "uri": "file:///D:/Projects/project"}],
             })
             workspace_id = socket.receive_json()["workspaceId"]
-            assert workspace_id.startswith("vscode-")
+            assert workspace_id.startswith("desktop-"), "书斋的工作区 ID 与插件区分"
+            from project_api.vscode_context import create_current_vscode_project_api
+            context = create_current_vscode_project_api(workspace_id)
+            assert context is not None and context[1].provider == "vscode", "desktop- 前缀同样走工作区 Provider"
             assert active_workspaces[workspace_id]["client"] == "desktop"
             assert vscode_bridge.workspace_client(workspace_id) == "desktop"
         assert workspace_id not in active_workspaces
@@ -212,4 +214,12 @@ def test_desktop_request_without_registered_shuzhai_says_so_in_plain_words(monke
 
 def test_desktop_prompt_explains_shuzhai_without_git():
     from agent.project_reply import DESKTOP_WORKSPACE_PROMPT
-    assert "书斋" in DESKTOP_WORKSPACE_PROMPT and "Git" in DESKTOP_WORKSPACE_PROMPT
+    assert "书斋" in DESKTOP_WORKSPACE_PROMPT and "本机安装的 git" in DESKTOP_WORKSPACE_PROMPT
+
+
+def test_desktop_change_summary_points_to_the_shuzhai_folder():
+    from agent.project_reply import summarize_project_changes
+    desk = summarize_project_changes("删除 src/new.ts 文件", ["/src/new.ts"], provider="desktop")
+    plugin = summarize_project_changes("删除 src/new.ts 文件", ["/src/new.ts"], provider="vscode")
+    assert "书斋文件夹" in desk and "VS Code" not in desk
+    assert "VS Code 工作区" in plugin

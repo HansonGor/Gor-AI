@@ -3,7 +3,7 @@
 用 Electron 承载现有 Web 前端的桌面端，两种模式：
 
 - **云笺**（Web 模式）：普通会话、与 Web 共用账号和会话，界面与 Web 一致。
-- **书斋**（本地模式，侧栏顶部「云笺 | 书斋」切换）：把本机一个项目文件夹登记为 Gor 工作区，Agent 直接读写其中的文件、运行工具链，能力与 VS Code 插件一致。
+- **书斋**（本地模式，侧栏顶部「云笺 | 书斋」切换）：把本机一个项目文件夹（打开、新建或拖入窗口）登记为 Gor 工作区，Agent 直接读写其中的文件、运行工具链与 Git（本机 git），确认在聊天里的施行卡片中完成，能力与 VS Code 插件一致。
 
 ## 开发（热更新）
 
@@ -46,6 +46,8 @@ npm start                       # 编译主进程并按 app://gor 加载构建�
 ```bash
 npm test        # 协议、转发、凭证相关单元测试
 npm run dist    # 构建 Web 与主进程，输出 Windows 安装包到 release/
+npm run pack    # 免安装目录版（release/win-unpacked），用于检查打包内容
+npm run dist:mac / dist:linux   # macOS（dmg）/ Linux（AppImage），需在对应系统上构建
 ```
 
 ## 结构

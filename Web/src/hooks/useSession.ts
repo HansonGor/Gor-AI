@@ -34,6 +34,8 @@ export function useSession() {
   const [isSessionReady, setIsSessionReady] = useState(false);
   const activeSessionIdRef = useRef<string | null>(null);
   const pendingSessionCreatesRef = useRef(new Map<string, Promise<Session>>());
+  // 开发模式下 StrictMode 会把初始化 effect 执行两次；共用同一次初始化，避免空列表时连建两个会话
+  const initPromiseRef = useRef<Promise<string | null> | null>(null);
 
   const commitSessionId = useCallback((sid: string | null) => {
     activeSessionIdRef.current = sid;
@@ -145,7 +147,13 @@ export function useSession() {
   /**
    * 页面初始化：明确链接优先，否则恢复最近使用的会话；空列表才新建。
    */
-  const initSession = useCallback(async (): Promise<string | null> => {
+  const initSession = useCallback((): Promise<string | null> => {
+    initPromiseRef.current ??= runInitSession().finally(() => { initPromiseRef.current = null; });
+    return initPromiseRef.current;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runInitSession 与下面的依赖一致
+  }, [fetchSessions, updateUrlSessionId, notify, commitSessionId]);
+
+  async function runInitSession(): Promise<string | null> {
     try {
       // 1. 拉取全部会话列表
       const sessionList = await fetchSessions(true);
@@ -184,7 +192,7 @@ export function useSession() {
       setIsSessionReady(true);
       return null;
     }
-  }, [fetchSessions, updateUrlSessionId, notify, commitSessionId]);
+  }
 
   /**
    * 切换会话

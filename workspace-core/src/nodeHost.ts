@@ -1,6 +1,7 @@
 import { promises as fs, constants as fsConstants, readFileSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createCliGitExtension, hasGitCli } from './gitCli';
 import {
   FileType,
   type HostFileStat,
@@ -53,6 +54,8 @@ export type NodeWorkspaceHostOptions = {
   showWarningModal?(message: string, detail: string, actions: string[]): Promise<string | undefined>;
   showInputBox?(options: HostInputBoxOptions): Promise<string | undefined>;
   configuration?(section: string, key: string): unknown;
+  /** 是否用本机 git 命令提供 Git（默认 true；本机没有 git 时自动不提供）。 */
+  git?: boolean;
 };
 
 function lineStarts(text: string): number[] {
@@ -194,6 +197,8 @@ export function createNodeWorkspaceHost(options: NodeWorkspaceHostOptions): Work
   // 文件路径 → 最近一次的版本号与内容指纹；文档被移出缓存后再次打开仍沿用，避免版本号回退。
   const versions = new Map<string, { version: number; key: string }>();
   const keyOf = (uri: HostUri) => path.resolve(uri.fsPath).toLowerCase();
+  let gitAvailable: boolean | undefined;
+  let gitExtension: ReturnType<typeof createCliGitExtension> | undefined;
 
   const versionFor = (file: string, key: string): number => {
     const previous = versions.get(file);
@@ -399,6 +404,14 @@ export function createNodeWorkspaceHost(options: NodeWorkspaceHostOptions): Work
     configuration: (section, key) => options.configuration?.(section, key),
     showWarningModal: (message, detail, actions) => options.showWarningModal?.(message, detail, actions) ?? Promise.resolve(undefined),
     showInputBox: (inputOptions) => options.showInputBox?.(inputOptions) ?? Promise.resolve(undefined),
-    getExtension: () => undefined,
+    // 没有 VS Code：Git 用本机 git 命令实现同一套接口；其他扩展（如 ms-python.python）不提供
+    getExtension: <T>(id: string) => {
+      if (id !== 'vscode.git' || options.git === false) return undefined;
+      gitAvailable ??= hasGitCli();
+      if (!gitAvailable) return undefined;
+      gitExtension ??= createCliGitExtension((fsPath) => new NodeUri(fsPath));
+      const exports = gitExtension as unknown as T;
+      return { isActive: true, exports, activate: () => Promise.resolve(exports) };
+    },
   };
 }

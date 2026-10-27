@@ -1,4 +1,4 @@
-/** VS Code 插件专用：接收扩展发来的施行审阅与状态，回传用户决定。Web 端从不安装。 */
+/** 插件与桌面端书斋共用：接收宿主发来的施行审阅与状态，回传用户决定。Web 端（含桌面端云笺）从不安装。 */
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
 import type { ChatMessage } from '../types';
 import type {
@@ -129,6 +129,12 @@ export function acceptToolchainMessage(data: unknown): void {
 export function installToolchainBridge(postMessage: Post): void {
   post = postMessage;
   window.addEventListener('message', (event: MessageEvent) => acceptToolchainMessage(event.data));
+}
+
+/** 桌面端书斋：消息经 preload 通道收发（同一套 gor.toolchain 消息），不经 window.postMessage。 */
+export function connectToolchainChannel(postMessage: Post, subscribeMessages: (listener: (data: unknown) => void) => void): void {
+  post = postMessage;
+  subscribeMessages(acceptToolchainMessage);
 }
 
 export function resetToolchainRunsForTest(postMessage: Post = () => false): void {

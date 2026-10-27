@@ -20,6 +20,7 @@ import {
   type GorConnectionStatus,
   type HostInputBoxOptions,
 } from '@gor/workspace-core';
+import { ToolchainRelay } from './toolchainRelay';
 
 export const MAX_RECENT = 8;
 
@@ -43,11 +44,17 @@ export type ShuzhaiDeps = {
   apiBase: string;
   /** 弹出系统「选择文件夹」对话框；取消返回 undefined。 */
   chooseFolder(): Promise<string | undefined>;
+  /** 弹出系统「新建项目」对话框，返回新文件夹的完整路径；取消返回 undefined。 */
+  chooseNewProjectPath?(): Promise<string | undefined>;
   trashItem(fsPath: string): Promise<void>;
   showWarningModal(message: string, detail: string, actions: string[]): Promise<string | undefined>;
   showInputBox?(options: HostInputBoxOptions): Promise<string | undefined>;
   revealPath(fsPath: string): void;
   onState(state: ShuzhaiState): void;
+  /** 发给聊天页的施行消息（gor.toolchain）；没有可用窗口时返回 false，审阅退回系统确认框。 */
+  sendToolchain?(message: unknown): boolean;
+  /** 打开常驻进程打印的本机地址。 */
+  openExternal?(url: string): void;
   log(message: string): void;
   /** 测试用：替换连接实现。 */
   createConnection?: typeof createConnection;
@@ -90,6 +97,14 @@ export async function validateFolder(value: unknown): Promise<{ ok: true; folder
   return { ok: true, folder: { path: real, name: path.basename(real) } };
 }
 
+async function isDirectory(value: string): Promise<boolean> {
+  try {
+    return (await fs.stat(value)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 export function addRecent(recent: ShuzhaiRecent[], folder: ShuzhaiFolder, now = Date.now()): ShuzhaiRecent[] {
   return [{ ...folder, openedAt: now }, ...recent.filter((item) => !samePath(item.path, folder.path))].slice(0, MAX_RECENT);
 }
@@ -123,6 +138,7 @@ export class ShuzhaiService {
   private connection: Pick<GorConnection, 'connect' | 'dispose' | 'workspaceId'> | undefined;
   private readonly handler: WorkspaceRequestHandler;
   private readonly logger: { appendLine(text: string): void };
+  readonly toolchain: ToolchainRelay;
 
   constructor(private readonly deps: ShuzhaiDeps) {
     this.logger = { appendLine: (text) => deps.log(text) };
@@ -133,8 +149,14 @@ export class ShuzhaiService {
       showWarningModal: deps.showWarningModal,
       showInputBox: deps.showInputBox,
     }));
-    // 删除确认、命令审阅等先用系统对话框；聊天页内的审阅卡片在接入前端后替换。
-    configureToolchainUi({ requestApproval: nativeUi.requestApproval, update: () => undefined, output: (text) => deps.log(text) });
+    // 删除确认、命令审阅优先显示为聊天页里的施行卡片；页面没能展示（窗口未就绪、在云笺模式等）时退回系统确认框。
+    this.toolchain = new ToolchainRelay((message) => deps.sendToolchain?.(message) ?? false, (url) => deps.openExternal?.(url));
+    configureToolchainUi({
+      requestApproval: async (request, signal) =>
+        (await this.toolchain.requestApproval(request, signal)) ?? nativeUi.requestApproval(request, signal),
+      update: (update) => this.toolchain.update(update),
+      output: (text) => deps.log(text),
+    });
   }
 
   get state(): ShuzhaiState {
@@ -163,6 +185,37 @@ export class ShuzhaiService {
     const chosen = await this.deps.chooseFolder();
     if (!chosen) return { ok: false, reason: 'cancelled', state: this.state };
     const checked = await validateFolder(chosen);
+    if (!checked.ok) return { ok: false, reason: checked.reason, state: this.state };
+    await this.open(checked.folder);
+    return { ok: true, state: this.state };
+  }
+
+  /** 新建空白项目：经系统对话框选定位置与名称，建好空文件夹后设为书斋。已存在的非空文件夹不覆盖。 */
+  async createProject(): Promise<ShuzhaiOpenResult> {
+    const chosen = await this.deps.chooseNewProjectPath?.();
+    if (!chosen) return { ok: false, reason: 'cancelled', state: this.state };
+    const target = path.resolve(chosen);
+    if (!(await isDirectory(path.dirname(target)))) {
+      return { ok: false, reason: '新项目所在的文件夹不存在。', state: this.state };
+    }
+    try {
+      await fs.mkdir(target);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      const empty = code === 'EEXIST' && (await isDirectory(target)) && (await fs.readdir(target)).length === 0;
+      if (!empty) {
+        return { ok: false, reason: code === 'EEXIST' ? '同名文件夹已存在且不为空，请换一个名称。' : '无法创建项目文件夹。', state: this.state };
+      }
+    }
+    const checked = await validateFolder(target);
+    if (!checked.ok) return { ok: false, reason: checked.reason, state: this.state };
+    await this.open(checked.folder);
+    return { ok: true, state: this.state };
+  }
+
+  /** 拖入窗口的文件夹：路径由 preload 从用户拖入的文件对象取得（页面无法伪造），校验后设为书斋。 */
+  async openDropped(value: unknown): Promise<ShuzhaiOpenResult> {
+    const checked = await validateFolder(value);
     if (!checked.ok) return { ok: false, reason: checked.reason, state: this.state };
     await this.open(checked.folder);
     return { ok: true, state: this.state };
@@ -199,6 +252,7 @@ export class ShuzhaiService {
   }
 
   dispose(): void {
+    this.toolchain.releaseAll();
     this.disconnect();
   }
 

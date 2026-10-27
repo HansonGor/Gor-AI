@@ -1037,7 +1037,7 @@ async def run_agent(
                 break
             if vscode_project_context and changed_workspace_files:
                 paths = list(dict.fromkeys(changed_workspace_files))
-                await stream_content(summarize_project_changes(latest_user_text, paths, provider='vscode')
+                await stream_content(summarize_project_changes(latest_user_text, paths, provider=workspace_client)
                                      + summarize_additional_tasks(additional_task_outcomes), send_event)
                 break
             if preview_workspace and changed_preview_paths:
@@ -1049,7 +1049,7 @@ async def run_agent(
                 break
             if vscode_project_context and changed_workspace_directories:
                 paths = list(dict.fromkeys(changed_workspace_directories))
-                await stream_content(summarize_project_changes(latest_user_text, paths, directories=True, provider='vscode')
+                await stream_content(summarize_project_changes(latest_user_text, paths, directories=True, provider=workspace_client)
                                      + summarize_additional_tasks(additional_task_outcomes), send_event)
                 break
             if (

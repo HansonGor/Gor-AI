@@ -15,6 +15,8 @@ const compiled = await build({
     export { default as ShuzhaiWelcome } from '../src/components/desktop/ShuzhaiWelcome';
     export * as runtime from '../src/desktop/desktopRuntime';
     export * as clientMode from '../src/utils/clientMode';
+    export { default as ShuzhaiModeChip } from '../src/components/desktop/ShuzhaiModeChip';
+    export { getToolchainRuns, resetToolchainRunsForTest } from '../src/vscode/toolchainRuns';
   `, resolveDir: dirname(filename), loader: 'ts' },
   bundle: true, platform: 'node', format: 'cjs', write: false, packages: 'external',
   plugins: [{ name: 'styles', setup(builder) {
@@ -27,7 +29,7 @@ fixture.filename = filename;
 fixture.paths = Module._nodeModulePaths(dirname(filename));
 fixture.require = createRequire(filename);
 fixture._compile(compiled.outputFiles[0].text, filename);
-const { ShuzhaiPanel, ShuzhaiWelcome, runtime, clientMode } = fixture.exports;
+const { ShuzhaiPanel, ShuzhaiWelcome, ShuzhaiModeChip, runtime, clientMode, getToolchainRuns, resetToolchainRunsForTest } = fixture.exports;
 
 const dom = new JSDOM('<!doctype html><body><div id="root"></div><button id="outside">outside</button></body>', { url: 'http://gor.test/#/chat?sessionId=s1' });
 globalThis.window = dom.window;
@@ -205,4 +207,85 @@ test('切换模式记住选择、回到新章并重载', () => {
   runtime.switchDesktopMode('yunjian', target);
   assert.equal(localStorage.getItem(runtime.DESKTOP_MODE_KEY), 'yunjian');
   assert.equal(clientMode.getChatClientMode(), 'web');
+});
+
+
+test('新建空白项目入口与拖入提示；弹层里也能新建', async () => {
+  const calls = [];
+  let root = await mount(React.createElement(ShuzhaiWelcome, {
+    recent: [], onPickFolder: () => calls.push('pick'), onOpenRecent: () => {}, onCreateProject: () => calls.push('create'),
+  }));
+  const create = [...document.querySelectorAll('button')].find((item) => item.textContent === '新建空白项目');
+  assert.ok(create);
+  assert.match(document.querySelector('.shuzhai-welcome-hint').textContent, /拖进窗口/);
+  await act(async () => create.click());
+  assert.deepEqual(calls, ['create']);
+  root.unmount();
+
+  const { calls: panelCalls, props } = handlers();
+  root = await mount(React.createElement(ShuzhaiPanel, { mode: 'shuzhai', state: connected, ...props, onCreateProject: () => panelCalls.push(['create']) }));
+  await act(async () => document.querySelector('.shuzhai-card').click());
+  const action = [...document.querySelectorAll('.shuzhai-action')].find((item) => item.textContent === '新建空白项目');
+  await act(async () => action.click());
+  assert.deepEqual(panelCalls, [['create']]);
+  root.unmount();
+});
+
+test('书斋收起后已有消息的会话显示提示条：重开最近的书斋或打开文件夹', async () => {
+  const calls = [];
+  const root = await mount(React.createElement(ShuzhaiWelcome, {
+    compact: true, recent, onPickFolder: () => calls.push('pick'), onOpenRecent: (item) => calls.push(item),
+  }));
+  const notice = document.querySelector('.shuzhai-notice');
+  assert.match(notice.textContent, /书斋已收起/);
+  const buttons = [...notice.querySelectorAll('button')];
+  assert.deepEqual(buttons.map((item) => item.textContent), ['重开「Gor」', '打开文件夹…']);
+  await act(async () => buttons[0].click());
+  await act(async () => buttons[1].click());
+  assert.deepEqual(calls, [folder.path, 'pick']);
+  assert.equal(document.querySelector('.shuzhai-welcome'), null, '提示条不显示大空状态');
+  root.unmount();
+});
+
+test('窄窗口模式图标：只显示图标，书斋名与状态在读屏标签里', async () => {
+  let opened = 0;
+  let root = await mount(React.createElement(ShuzhaiModeChip, { mode: 'shuzhai', state: connected, onOpen: () => { opened += 1; } }));
+  const chip = document.querySelector('.shuzhai-mode-chip');
+  assert.equal(chip.getAttribute('aria-label'), '当前模式：书斋 · Gor，打开侧栏切换');
+  assert.match(chip.className, /is-connected/);
+  await act(async () => chip.click());
+  assert.equal(opened, 1);
+  root.unmount();
+  root = await mount(React.createElement(ShuzhaiModeChip, { mode: 'shuzhai', state: { folder: null, recent: [], connection: 'idle', workspaceId: null }, onOpen: () => {} }));
+  assert.match(document.querySelector('.shuzhai-mode-chip').className, /is-empty/);
+  assert.match(document.querySelector('.shuzhai-mode-chip').getAttribute('aria-label'), /未择书斋/);
+  root.unmount();
+});
+
+test('书斋模式接上施行卡片通道：审阅消息进入卡片存储，回答经桥接回传；云笺不接', async () => {
+  resetToolchainRunsForTest();
+  runtime.resetDesktopRuntimeForTests();
+  document.documentElement.dataset.gorClientMode = 'web';
+  localStorage.setItem(runtime.DESKTOP_MODE_KEY, 'shuzhai');
+  let listener;
+  const sent = [];
+  const fake = fakeBridge(connected);
+  fake.bridge.toolchain = { send: async (message) => { sent.push(message); }, onMessage: (next) => { listener = next; return () => {}; } };
+  runtime.installDesktopRuntime({ gorDesktop: { shuzhai: fake.bridge } });
+  assert.equal(typeof listener, 'function');
+  listener({ type: 'gor.toolchain', kind: 'approval', request: { runId: 'r1', approvalId: 'a1', sessionId: 's1', command: '删除文件 /a', kind: 'file', reason: 'destructive', deadline: Date.now() + 1000 } });
+  const runs = getToolchainRuns();
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].pending, true);
+  assert.equal(runs[0].reason, 'destructive');
+
+  resetToolchainRunsForTest();
+  runtime.resetDesktopRuntimeForTests();
+  document.documentElement.dataset.gorClientMode = 'web';
+  localStorage.setItem(runtime.DESKTOP_MODE_KEY, 'yunjian');
+  let yunjianListener;
+  const yunjian = fakeBridge(connected);
+  yunjian.bridge.toolchain = { send: async () => {}, onMessage: (next) => { yunjianListener = next; return () => {}; } };
+  runtime.installDesktopRuntime({ gorDesktop: { shuzhai: yunjian.bridge } });
+  assert.equal(yunjianListener, undefined, '云笺不接收施行消息，主进程会退回系统确认框');
 });

@@ -332,6 +332,8 @@ export interface ChatBoxProps {
   welcome?: import('react').ReactNode;
   /** 有值时输入框只读并显示这句说明，不能发送（如书斋尚未选择文件夹）。 */
   composerBlockedHint?: string;
+  /** 输入框上方的提示条（如已有消息的书斋会话在书斋收起后提示重新选择）。 */
+  composerNotice?: import('react').ReactNode;
   fileEditMode?: 'instant' | 'review';
   fileEditModeLoading?: boolean;
   onFileEditModeChange?: (mode: 'instant' | 'review') => void;

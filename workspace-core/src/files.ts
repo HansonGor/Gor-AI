@@ -1,6 +1,7 @@
 import { FileType, host, type HostFileStat, type HostFolder, type HostTextDocument, type HostUri } from './host';
 import { createHash } from 'node:crypto';
 import {
+  comparableUriPath,
   describeWorkspaceRoots,
   isUriWithinWorkspaceRoot,
   normalizeWorkspaceRelativePath,
@@ -154,8 +155,8 @@ function documentIsWithinDirectory(document: HostTextDocument, directory: HostUr
   if (!isUriWithinWorkspaceRoot(document.uri, root)
     || document.uri.scheme !== directory.scheme
     || document.uri.authority !== directory.authority) return false;
-  const directoryPath = directory.path.replace(/\/$/, '');
-  return document.uri.path.startsWith(`${directoryPath}/`);
+  const directoryPath = comparableUriPath(directory.path.replace(/\/$/, ''));
+  return comparableUriPath(document.uri.path).startsWith(`${directoryPath}/`);
 }
 
 export async function createProjectFile(params: WorkspaceParams): Promise<Record<string, unknown>> {

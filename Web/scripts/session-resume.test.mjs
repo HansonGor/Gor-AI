@@ -30,12 +30,12 @@ fixture._compile(compiled.outputFiles[0].text, filename);
 const { useSession } = fixture.exports;
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-async function initialize({ mode = 'web', stored, query = '', fail = false, empty = false } = {}) {
+async function initialize({ mode = 'web', stored, query = '', fail = false, empty = false, twice = false } = {}) {
   const dom = new JSDOM('<div id="root"></div>', { url: `http://localhost/#/chat${query}` });
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;
   globalThis.localStorage = dom.window.localStorage;
-  const namespace = mode === 'vscode' ? 'default:vscode' : 'default';
+  const namespace = mode === 'web' ? 'default' : `default:${mode}`;
   if (stored) localStorage.setItem(`gor-last-session:${namespace}`, stored);
   localStorage.setItem(`gor-last-session:${mode === 'vscode' ? 'default' : 'default:vscode'}`, 'other-host');
   let creates = 0, userId, hook;
@@ -50,19 +50,20 @@ async function initialize({ mode = 'web', stored, query = '', fail = false, empt
   function Probe() { hook = useSession(); return null; }
   const root = createRoot(document.getElementById('root'));
   await act(async () => root.render(React.createElement(Probe)));
-  await act(async () => { await hook.initSession(); });
+  // twice：模拟开发模式 StrictMode 把初始化 effect 连跑两次
+  await act(async () => { await (twice ? Promise.all([hook.initSession(), hook.initSession()]) : hook.initSession()); });
   const result = { id: hook.sessionId, creates, userId, notices, hash: window.location.hash };
   await act(async () => root.unmount());
   dom.window.close();
   return result;
 }
 
-for (const mode of ['web', 'vscode']) {
+for (const mode of ['web', 'vscode', 'desktop']) {
   test(`${mode}: resumes previous-day latest session without creating one`, async () => {
     const result = await initialize({ mode });
     assert.equal(result.id, 'latest');
     assert.equal(result.creates, 0);
-    assert.equal(result.userId, mode === 'web' ? 'default' : 'default:vscode');
+    assert.equal(result.userId, mode === 'web' ? 'default' : `default:${mode}`);
   });
   test(`${mode}: recent selection survives reload; explicit valid link wins`, async () => {
     assert.equal((await initialize({ mode, stored: 'older' })).id, 'older');
@@ -76,4 +77,10 @@ test('list failure does not silently create a chat; empty successful list does',
   assert.equal(result.creates, 0);
   assert.equal(result.notices.length, 1);
   assert.equal((await initialize({ empty: true })).creates, 1);
+});
+
+test('空列表时并发初始化（StrictMode 连跑两次）只新建一个会话', async () => {
+  const result = await initialize({ mode: 'desktop', empty: true, twice: true });
+  assert.equal(result.creates, 1);
+  assert.equal(result.id, 'new');
 });

@@ -66,12 +66,27 @@
         },
         "gor.toolchain.allowlist": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [
-            "node:env", "node:test", "node:typecheck", "node:lint",
-            "node:run_script:build", "node:run_script:test", "node:run_script:lint", "node:run_script:typecheck",
-            "git:status", "git:diff", "git:log", "git:fetch",
-            "python:env", "python:test", "python:lint", "python:typecheck", "python:format_check"
+            "node:env",
+            "node:test",
+            "node:typecheck",
+            "node:lint",
+            "node:run_script:build",
+            "node:run_script:test",
+            "node:run_script:lint",
+            "node:run_script:typecheck",
+            "git:status",
+            "git:diff",
+            "git:log",
+            "git:fetch",
+            "python:env",
+            "python:test",
+            "python:lint",
+            "python:typecheck",
+            "python:format_check"
           ],
           "markdownDescription": "审阅落笔模式下也直接运行的操作（白名单）。格式为 `工具链:动作` 或 `node:run_script:脚本名`，可用 `*` 结尾匹配一类，例如 `node:run_script:*`。删除类、项目外和疑似风险的操作不受白名单影响，始终需要确认。"
         }
@@ -84,7 +99,8 @@
     "test": "npm run compile && node --test",
     "build:webview": "npm --prefix ../Web run build:extension",
     "watch:webview": "node ./scripts/watch-webview.mjs",
-    "vscode:prepublish": "npm run build:webview && npm run compile"
+    "vscode:prepublish": "npm run build:webview && npm run compile",
+    "package:vsix": "node ./scripts/package-vsix.mjs"
   },
   "dependencies": {
     "@gor/workspace-core": "file:../workspace-core",
@@ -94,6 +110,8 @@
     "@types/node": "^22.15.30",
     "@types/vscode": "^1.85.0",
     "@types/ws": "^8.18.1",
+    "@vscode/vsce": "^3.6.2",
+    "esbuild": "^0.21.5",
     "typescript": "^5.8.3"
   }
 }

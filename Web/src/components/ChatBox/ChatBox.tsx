@@ -13,6 +13,7 @@ export default function ChatBox({
   shareToolbar,
   welcome,
   composerBlockedHint,
+  composerNotice,
   currentPreviewProject,
   input,
   setInput,
@@ -88,6 +89,7 @@ export default function ChatBox({
       {/* 输入区域 */}
       <div className="input-dock">
         {shareToolbar}
+        {composerNotice}
         {messages.length > 0 && (
           <button
             type="button"

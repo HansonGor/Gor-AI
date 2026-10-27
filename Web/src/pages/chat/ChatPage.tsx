@@ -45,6 +45,7 @@ import { ToolchainRunsContext } from '../../components/chat/toolchainRun';
 import { useVscodeToolchainRuns } from '../../vscode/toolchainRuns';
 import ShuzhaiPanel from '../../components/desktop/ShuzhaiPanel';
 import ShuzhaiWelcome from '../../components/desktop/ShuzhaiWelcome';
+import ShuzhaiModeChip from '../../components/desktop/ShuzhaiModeChip';
 import { useShuzhaiControls } from '../../desktop/useShuzhaiControls';
 
 function isUntouchedStarterProject(project: {
@@ -111,7 +112,7 @@ export default function ChatPage() {
     initApp,
   } = useChat();
   const share = useChatShare(sessionId, messages);
-  // 施行审阅只在插件端注入；Web 端不提供 Provider，消息里不会出现施行卡片。
+  // 施行审阅只在插件与桌面端书斋注入；Web 端（含云笺）不提供 Provider，消息里不会出现施行卡片。
   const toolchainRuns = useVscodeToolchainRuns(sessionId, messages, handleStop);
 
   const {
@@ -1072,6 +1073,7 @@ export default function ChatPage() {
               onOpenRecent={desktop.openRecent}
               onReveal={desktop.reveal}
               onCloseFolder={desktop.closeFolder}
+              onCreateProject={desktop.createProject}
             />
           ) : undefined}
           createDisabled={shuzhaiFolderMissing}
@@ -1103,12 +1105,16 @@ export default function ChatPage() {
           onTogglePreviewWorker={() => {
             visiblePreviewWorkerOpen ? setPreviewWorkerOpen(false) : openPreviewWorker();
           }}
+          extra={desktop.enabled ? (
+            <ShuzhaiModeChip mode={desktop.mode} state={desktop.state} onOpen={openMobileSidebar} />
+          ) : undefined}
         />
       )}
     >
       <div className="chat-conversation min-w-0 flex-1">
         {!isVscodePluginMode && <ChatSharePreview share={share} save={saveBlob} />}
-        <ToolchainRunsContext.Provider value={isVscodePluginMode ? toolchainRuns : null}>
+        {desktop.dragActive && <div className="shuzhai-drop-overlay" aria-hidden="true">拖入文件夹即设为书斋</div>}
+        <ToolchainRunsContext.Provider value={isVscodePluginMode || isShuzhaiMode ? toolchainRuns : null}>
         {isSessionReady && !isSessionCacheLoading ? (
           <ChatBox
             shareSelection={isVscodePluginMode ? undefined : share.selection}
@@ -1120,9 +1126,20 @@ export default function ChatPage() {
                 error={desktop.error}
                 onPickFolder={desktop.pickFolder}
                 onOpenRecent={desktop.openRecent}
+                onCreateProject={desktop.createProject}
               />
             ) : undefined}
             composerBlockedHint={shuzhaiFolderMissing ? '先择一书斋，再开始落笔' : undefined}
+            composerNotice={shuzhaiFolderMissing && messages.length > 0 ? (
+              <ShuzhaiWelcome
+                compact
+                recent={desktop.state.recent}
+                busy={desktop.busy}
+                error={desktop.error}
+                onPickFolder={desktop.pickFolder}
+                onOpenRecent={desktop.openRecent}
+              />
+            ) : undefined}
             fileEditMode={fileEditMode}
             fileEditModeLoading={fileEditModeLoading}
             onFileEditModeChange={setFileEditMode}

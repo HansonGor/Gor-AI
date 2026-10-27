@@ -9,8 +9,8 @@ PROJECT_REPLY_PROMPT = """项目操作完成后，用通俗易懂的一两句话
 # 桌面端「书斋」：沿用插件的工作区工具，只需让模型知道这里没有 VS Code 界面。
 DESKTOP_WORKSPACE_PROMPT = """当前客户端是 Gor 桌面端的「书斋」模式：工作区是用户在桌面端选定的本机文件夹，没有打开 VS Code。
 工具说明里提到的「VS Code 工作区」在这里就是这个书斋文件夹；向用户说明时称「书斋」，不要让用户去 VS Code 里操作。
-书斋暂不支持 Git（提交、推送、查看改动等），用户要求时如实说明并建议在 VS Code 插件或终端中完成；
-命令输出与确认在桌面端弹出的对话框中完成，不要提示「输出」面板或状态栏。"""
+书斋的 Git 由本机安装的 git 执行，推送沿用本机 Git 已保存的凭据；本机没有 git 或不在仓库里时如实说明。
+命令确认在聊天里的施行卡片中完成，不要提示「输出」面板或状态栏。"""
 
 ADDITIONAL_TASK_LABELS = {
     'web_search': '联网检索', 'web_reader': '网页正文读取', 'search_github_code': 'GitHub 源码检索',
@@ -95,5 +95,8 @@ def summarize_project_changes(request: str, paths: list[str], *, scene: bool = F
     ] if re.search(pattern, request, re.I)), '')
     detail = f'，内容是{topic}' if topic else (f'，主题为“{subject}”' if subject else '')
     trace = f'本次涉及 {count} 个目录' if directories else f'此番落笔 · {chinese_count(count)}卷留痕'
-    guide = '你可以在 VS Code 工作区查看结果，在 Diff 中查看具体变更。' if provider == 'vscode' else '完成后会自动打开预览；点击“预览项目”查看效果，点击“阅览源码”或展开 Diff 查看细节。'
+    guide = {
+        'vscode': '你可以在 VS Code 工作区查看结果，在 Diff 中查看具体变更。',
+        'desktop': '你可以在书斋文件夹中查看结果，在 Diff 中查看具体变更。',
+    }.get(provider, '完成后会自动打开预览；点击“预览项目”查看效果，点击“阅览源码”或展开 Diff 查看细节。')
     return f"已{action}{detail}。{trace}。{guide}"

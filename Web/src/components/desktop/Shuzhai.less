@@ -244,6 +244,29 @@
 
 .shuzhai-welcome-error { margin: 0; color: #f5c76b; font-size: 13px; }
 
+.shuzhai-welcome-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
+
+.shuzhai-welcome-secondary {
+  display: inline-flex;
+  min-height: 46px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 22px;
+  border: 1px solid rgba(217, 225, 255, .2);
+  border-radius: 16px;
+  background: transparent;
+  color: #e4e1f5;
+  font-family: inherit;
+  font-size: 15px;
+  cursor: pointer;
+  svg { width: 18px; height: 18px; }
+  &:hover { background: rgba(142, 117, 218, .12); }
+  &:focus-visible { outline: 2px solid #c5b3ff; outline-offset: 3px; }
+  &:disabled { cursor: wait; opacity: .7; }
+}
+
+.shuzhai-welcome-hint { margin: 0; color: #a9a6c4; font-size: 12px; }
+
 .shuzhai-welcome-recent {
   display: flex;
   width: 100%;
@@ -254,6 +277,99 @@
   text-align: left;
   h3 { margin: 0 4px 2px; color: #b8b4d0; font-size: 12px; font-weight: 400; }
   .shuzhai-recent { border-color: rgba(217, 225, 255, .1); background: rgba(255, 255, 255, .03); }
+}
+
+// 窄窗口：菜单按钮旁的模式图标（只显示图标，不挤压居中的标题；宽屏有常驻侧栏，隐藏）
+.shuzhai-mode-chip {
+  display: none;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  align-items: center;
+  justify-content: center;
+  margin-left: 2px;
+  padding: 0;
+  border: 1px solid rgba(163, 126, 255, .62);
+  border-radius: 999px;
+  background: rgba(64, 43, 112, .36);
+  color: #ede6ff;
+  cursor: pointer;
+  svg { width: 16px; height: 16px; color: #c5b3ff; }
+  &.is-connected svg { color: #5fd49a; }
+  &.is-disconnected svg, &.is-connecting svg, &.is-empty svg { color: #f5c76b; }
+  &:focus-visible { outline: 2px solid #c5b3ff; outline-offset: 2px; }
+  @media (max-width: 1023px) { display: inline-flex; }
+}
+
+.shuzhai-mode-chip-name {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (max-width: 1023px) {
+  .chat-header:has(.shuzhai-mode-chip) { --chat-header-title-left-obstruction: 92px; }
+  .chat-header:has(.shuzhai-mode-chip) .chat-session-title { --chat-header-title-left-obstruction: 92px; }
+}
+
+// 拖入文件夹时的提示层
+.shuzhai-drop-overlay {
+  position: fixed;
+  z-index: 60;
+  inset: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed rgba(188, 161, 255, .8);
+  border-radius: 24px;
+  background: rgba(16, 20, 44, .72);
+  color: #ede6ff;
+  font-size: 18px;
+  letter-spacing: .08em;
+  pointer-events: none;
+}
+
+// 已有消息的书斋会话在书斋收起后：输入框上方的一行提示条
+.shuzhai-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0 0 10px;
+  padding: 10px 14px;
+  border: 1px solid rgba(245, 199, 107, .5);
+  border-radius: 16px;
+  background: rgba(46, 36, 18, .82);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: #f5ead2;
+  font-size: 13px;
+}
+
+.shuzhai-notice-icon { width: 18px; height: 18px; flex: 0 0 18px; color: #f5c76b; }
+.shuzhai-notice-text { min-width: 0; flex: 1 1 200px; line-height: 1.6; }
+.shuzhai-notice-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.shuzhai-notice-button {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  border: 1px solid rgba(233, 216, 176, .4);
+  border-radius: 12px;
+  background: transparent;
+  color: #f5ead2;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  svg { width: 15px; height: 15px; }
+  &.is-primary { border: 0; background: #f5c76b; color: #2a1e05; font-weight: 500; }
+  &:focus-visible { outline: 2px solid #f5c76b; outline-offset: 2px; }
+  &:disabled { cursor: wait; opacity: .7; }
 }
 
 @media (max-width: 480px) {
