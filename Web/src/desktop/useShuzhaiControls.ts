@@ -76,6 +76,10 @@ export function useShuzhaiControls(notify: (message: string) => void) {
     pickFolder: useCallback(() => { void open(() => shuzhai.pickFolder()); }, [open]),
     openRecent: useCallback((folderPath: string) => { void open(() => shuzhai.openRecent(folderPath)); }, [open]),
     reveal: useCallback(() => { void shuzhai.reveal(); }, []),
+    setRemoteAllowed: useCallback((allowed: boolean) => {
+      void Promise.resolve(shuzhai.setRemoteAllowed(allowed)).catch(() => notify('遥控开关没能保存，请重试。'));
+    }, [notify]),
+    disconnectRemote: useCallback((clientId: string) => { void Promise.resolve(shuzhai.disconnectRemote(clientId)).catch(() => undefined); }, []),
     closeFolder: useCallback(() => {
       setBusy(true);
       void Promise.resolve(shuzhai.close()).finally(() => setBusy(false));

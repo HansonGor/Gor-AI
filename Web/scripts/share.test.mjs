@@ -319,7 +319,7 @@ test('successful PNG download exits share mode; cancellation or failure keeps se
 
 test('share is left of Preview, plugin omits Preview, and empty sessions omit share', () => {
   const props = { isVscodePluginMode: false, isEmpty: false, isPC: true, sidebarOpen: false,
-    canGoBack: false, showNativeBack: false, title: '会话', hasPreviewWorkerContent: true,
+    canGoBack: false, title: '会话', hasPreviewWorkerContent: true,
     previewWorkerOpen: true, previewableGeneratedFileCount: 0, hasShareableMessages: true,
     onShare() {}, onBack() {}, onMenuClick() {}, onTogglePreviewWorker() {} };
   const html = renderToStaticMarkup(React.createElement(Header, props));
@@ -444,4 +444,19 @@ test('overlay toolbar measures only its button anchor and clears it on cancel', 
     HTMLElement.prototype.getBoundingClientRect=originalRect;
     globalThis.ResizeObserver=originalObserver;
   }
+});
+
+test('标题栏左侧：有上一页才显示返回；第二个按钮始终是打开会话列表（App 内同样）', () => {
+  const props = { isVscodePluginMode: false, isEmpty: false, isPC: false, sidebarOpen: false,
+    canGoBack: true, title: '你好', hasPreviewWorkerContent: false,
+    previewWorkerOpen: false, previewableGeneratedFileCount: 0, hasShareableMessages: false,
+    onShare() {}, onBack() {}, onMenuClick() {}, onTogglePreviewWorker() {} };
+  const withBack = renderToStaticMarkup(React.createElement(Header, props));
+  assert.match(withBack, /aria-label="返回上一页"/);
+  assert.match(withBack, /aria-label="打开会话列表"/);
+  assert.match(withBack, /lucide-menu/, '有消息的会话里第二个按钮是菜单图标，不是返回箭头');
+  assert.doesNotMatch(withBack, /lucide-chevron-left/);
+  const noBack = renderToStaticMarkup(React.createElement(Header, { ...props, canGoBack: false }));
+  assert.doesNotMatch(noBack, /返回上一页/, '没有上一页时不显示返回按钮');
+  assert.match(noBack, /aria-label="打开会话列表"/);
 });

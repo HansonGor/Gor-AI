@@ -1,5 +1,5 @@
 import { useCallback, useId, useRef, useState } from 'react';
-import { Check, ChevronDown, Cloud, FolderOpen, FolderPlus, FolderSearch, LampDesk, LogOut, Plus } from 'lucide-react';
+import { Check, ChevronDown, Cloud, FolderOpen, FolderPlus, FolderSearch, Globe, LampDesk, LogOut, Monitor, Plus, Smartphone } from 'lucide-react';
 import { usePopoverDismiss } from '../chat/usePopoverDismiss';
 import type { DesktopMode, ShuzhaiState } from '../../desktop/desktopRuntime';
 import './Shuzhai.less';
@@ -23,12 +23,29 @@ export type ShuzhaiPanelProps = {
   onCloseFolder: () => void;
   /** 新建空白项目；不提供时弹层里不显示该项。 */
   onCreateProject?: () => void;
+  /** 遥斋：「允许网页遥控此书斋」开关；不提供时弹层里不显示遥控一节。 */
+  onToggleRemote?: (allowed: boolean) => void;
+  /** 断开某台正在遥控的设备。 */
+  onDisconnectRemote?: (clientId: string) => void;
 };
+
+const NO_REMOTE: ShuzhaiState['remote'] = { allowed: false, available: false, clients: [] };
+const isPhone = (label: string) => /iPhone|iPad|Android/.test(label);
+
+function activeText(lastActive: number, now = Date.now()): string {
+  const minutes = Math.floor(Math.max(0, now - lastActive) / 60_000);
+  return minutes < 1 ? '刚刚' : `${minutes} 分钟前活动`;
+}
 
 /** 纯展示：桌面端侧栏顶部的「云笺 | 书斋」切换器与书斋卡片；状态与操作都由宿主通过 props 提供。 */
 export default function ShuzhaiPanel({
   mode, state, busy = false, onSwitchMode, onPickFolder, onOpenRecent, onReveal, onCloseFolder, onCreateProject,
+  onToggleRemote, onDisconnectRemote,
 }: ShuzhaiPanelProps) {
+  const remote = state.remote ?? NO_REMOTE;
+  const remoteCount = remote.allowed ? remote.clients.length : 0;
+  const statusText = state.connection === 'connected' && remoteCount
+    ? `已连接 · ${remoteCount} 台设备在遥控` : CONNECTION_TEXT[state.connection];
   const [open, setOpen] = useState(false);
   const container = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -57,14 +74,14 @@ export default function ShuzhaiPanel({
       {mode === 'shuzhai' && (state.folder ? (
         <button ref={trigger} type="button" className={`shuzhai-card is-${state.connection}`} aria-haspopup="dialog"
           aria-expanded={open} aria-controls={open ? panelId : undefined} disabled={busy}
-          aria-label={`书斋：${state.folder.name}，${CONNECTION_TEXT[state.connection]}`}
+          aria-label={`书斋：${state.folder.name}，${statusText}`}
           title={state.folder.path}
           onClick={() => setOpen((value) => !value)}>
           <span className="shuzhai-card-icon"><LampDesk aria-hidden="true" /></span>
           <span className="shuzhai-card-copy">
             <strong>{state.folder.name}</strong>
             <span className="shuzhai-card-path">{state.folder.path}</span>
-            <span className="shuzhai-card-status"><span className="shuzhai-dot" aria-hidden="true" />{CONNECTION_TEXT[state.connection]}</span>
+            <span className="shuzhai-card-status"><span className="shuzhai-dot" aria-hidden="true" />{statusText}</span>
           </span>
           <ChevronDown className="shuzhai-card-chevron" aria-hidden="true" />
         </button>
@@ -91,6 +108,45 @@ export default function ShuzhaiPanel({
               );
             })}
           </div>
+          {onToggleRemote && (
+            <>
+              <div className="shuzhai-popover-divider" aria-hidden="true" />
+              <div className="shuzhai-remote">
+                <div className="shuzhai-remote-row">
+                  <span className="shuzhai-remote-copy">
+                    <strong id={`${panelId}-remote`}>允许网页遥控此书斋</strong>
+                    <span>{remote.available || !remote.allowed
+                      ? '仅同账号、同局域网的已登录设备' : '登录后，网页才能遥控此书斋'}</span>
+                  </span>
+                  <button type="button" role="switch" aria-checked={remote.allowed} aria-labelledby={`${panelId}-remote`}
+                    className={`shuzhai-switch${remote.allowed ? ' is-on' : ''}`}
+                    onClick={() => onToggleRemote(!remote.allowed)}>
+                    <span className="shuzhai-switch-knob" aria-hidden="true" />
+                  </button>
+                </div>
+                {remoteCount > 0 && (
+                  <>
+                    <h2>正在遥控</h2>
+                    <ul className="shuzhai-remote-clients">
+                      {remote.clients.map((client) => {
+                        const Icon = isPhone(client.label) ? Smartphone : /Windows|Mac|Linux/.test(client.label) ? Monitor : Globe;
+                        return (
+                          <li key={client.id} className="shuzhai-remote-client">
+                            <Icon aria-hidden="true" />
+                            <span className="shuzhai-remote-copy"><strong>{client.label}</strong><span>{activeText(client.lastActive)}</span></span>
+                            {onDisconnectRemote && (
+                              <button type="button" className="shuzhai-remote-disconnect" aria-label={`断开 ${client.label}`}
+                                onClick={() => onDisconnectRemote(client.id)}>断开</button>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </>
+                )}
+              </div>
+            </>
+          )}
           <div className="shuzhai-popover-divider" aria-hidden="true" />
           <div className="shuzhai-popover-actions">
             <button type="button" className="shuzhai-action is-primary" onClick={run(onPickFolder)}><FolderOpen aria-hidden="true" />打开文件夹…</button>

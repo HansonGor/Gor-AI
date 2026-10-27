@@ -8,7 +8,7 @@ import { cancelToolchainRun, type ApprovalReply, type ApprovalRequest, type RunU
 export const APPROVAL_SHOWN_TIMEOUT_MS = 1500;
 const MAX_MESSAGE_CHARS = 5_000;
 
-type Pending = { shown: boolean; settle: (answer: ApprovalReply | undefined) => void };
+type Pending = { shown: boolean; request: ApprovalRequest; settle: (answer: ApprovalReply | undefined) => void };
 
 export function isLocalDevUrl(value: string): boolean {
   try {
@@ -27,14 +27,19 @@ export class ToolchainRelay {
    * @param send 发给页面；没有可用窗口时返回 false
    * @param openExternal 打开常驻进程打印的本机地址
    * @param cancelRun 止令（默认取消对应的工具链命令）
+   * @param shownTimeoutMs 等卡片展示的时间；转给遥斋网页时经后端往返，需要多等一会儿
    */
   constructor(
     private readonly send: (message: unknown) => boolean,
     private readonly openExternal: (url: string) => void,
     private readonly cancelRun: (runId: string) => void = (runId) => { cancelToolchainRun({ runId }); },
+    private readonly shownTimeoutMs: () => number = () => APPROVAL_SHOWN_TIMEOUT_MS,
   ) {}
 
-  requestApproval(request: ApprovalRequest, signal: AbortSignal): Promise<ApprovalReply | undefined> {
+  /**
+   * @param waitForAnswer 遥斋开启时为 true：卡片一直等到回答或期限（网页可能稍后才打开），不因暂时没人展示就退回系统确认框
+   */
+  requestApproval(request: ApprovalRequest, signal: AbortSignal, waitForAnswer = false): Promise<ApprovalReply | undefined> {
     return new Promise((resolve) => {
       let settled = false;
       const timers: Array<ReturnType<typeof setTimeout>> = [];
@@ -53,12 +58,14 @@ export class ToolchainRelay {
       const onAbort = () => settle('cancelled');
       if (signal.aborted) { settle('cancelled'); return; }
       signal.addEventListener('abort', onAbort, { once: true });
-      this.pending.set(request.approvalId, { shown: false, settle });
+      this.pending.set(request.approvalId, { shown: false, request, settle });
       if (!this.send({ type: 'gor.toolchain', kind: 'approval', request })) {
         settle(undefined);
         return;
       }
-      timers.push(setTimeout(() => { if (!this.pending.get(request.approvalId)?.shown) settle(undefined); }, APPROVAL_SHOWN_TIMEOUT_MS));
+      if (!waitForAnswer) {
+        timers.push(setTimeout(() => { if (!this.pending.get(request.approvalId)?.shown) settle(undefined); }, this.shownTimeoutMs()));
+      }
       timers.push(setTimeout(() => settle('timeout'), Math.max(0, request.deadline - Date.now())));
     });
   }
@@ -94,6 +101,16 @@ export class ToolchainRelay {
       default:
         break;
     }
+  }
+
+  /** 仍在等回答的审阅（重新连上后端后再转给遥斋网页）。 */
+  pendingRequests(): ApprovalRequest[] {
+    return [...this.pending.values()].map((item) => item.request);
+  }
+
+  /** 关掉「允许网页遥控」时：未回答的审阅一律按拒绝处理（不施行、不删除）。 */
+  rejectAll(): void {
+    for (const pending of [...this.pending.values()]) pending.settle('skip');
   }
 
   /** 窗口关闭或书斋收起时：未回答的卡片按未展示处理，退回系统确认框。 */

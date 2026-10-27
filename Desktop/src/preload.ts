@@ -27,6 +27,9 @@ contextBridge.exposeInMainWorld('gorDesktop', {
     },
     close: () => ipcRenderer.invoke('gor:shuzhai:close'),
     reveal: () => ipcRenderer.invoke('gor:shuzhai:reveal'),
+    // 遥斋：允许网页遥控此书斋的开关，与断开某台正在遥控的设备
+    setRemoteAllowed: (allowed: boolean) => ipcRenderer.invoke('gor:shuzhai:set-remote-allowed', allowed === true),
+    disconnectRemote: (clientId: string) => ipcRenderer.invoke('gor:shuzhai:disconnect-remote', String(clientId)),
     onState: (listener: Listener) => subscribe('gor:shuzhai:state', listener),
     toolchain: {
       send: (message: unknown) => ipcRenderer.invoke('gor:shuzhai:toolchain', message),

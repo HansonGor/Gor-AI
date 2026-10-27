@@ -346,3 +346,206 @@ test('书斋服务的审阅：页面能展示时用施行卡片，否则用系�
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+function remoteConnections() {
+  const made = [];
+  const create = (url, output, onStatus, onRequest, describe, onServerMessage) => {
+    const connection = {
+      url, describe, onServerMessage, sent: [], announced: [], disposed: false, workspaceId: 'desktop-1',
+      connect: async () => { onStatus('connected'); connection.announced.push(describe()); },
+      send(message) { connection.sent.push(message); return true; },
+      reannounce() { connection.announced.push(describe()); return true; },
+      dispose() { connection.disposed = true; },
+    };
+    made.push(connection);
+    return connection;
+  };
+  return { made, create };
+}
+
+async function deleteViaHandler(fileName) {
+  const { WorkspaceRequestHandler } = require('@gor/workspace-core');
+  const handler = new WorkspaceRequestHandler({ appendLine() {} });
+  let response;
+  await handler.handle({ type: 'workspace_request', requestId: 'r', workspaceId: 'w', method: 'project.deleteFile', params: { path: `/${fileName}`, approvalMode: 'auto' } },
+    'w', (value) => { response = value; return true; });
+  return response;
+}
+
+test('遥斋：登记带凭证与开关，审阅转给网页并接受网页的回答，断开设备与关开关即拒绝', async () => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'x');
+  fs.writeFileSync(path.join(dir, 'b.txt'), 'x');
+  const { made, create } = remoteConnections();
+  const modals = [];
+  let token = 'tok-1';
+  const { svc, deps } = service({
+    chooseFolder: async () => dir,
+    createConnection: create,
+    getAuthToken: () => token,
+    deviceName: 'Gor-PC',
+    trashItem: async (fsPath) => fs.rmSync(fsPath),
+    showWarningModal: async (message, detail, actions) => { modals.push(detail); return undefined; },
+    sendToolchain: () => false, // 本机页面在云笺，展示不了卡片
+  });
+  try {
+    await svc.restore();
+    await svc.pickFolder();
+    const connection = made[0];
+    const first = connection.announced.at(-1);
+    assert.equal(first.authToken, 'tok-1');
+    assert.equal(first.deviceName, 'Gor-PC');
+    assert.equal(first.folderPath, fs.realpathSync(dir));
+    assert.equal(first.remoteAllowed, false, '默认不允许遥控');
+    assert.match(first.deviceId, /^[\w-]{8,}$/);
+    assert.equal(JSON.parse(fs.readFileSync(deps.storePath, 'utf8')).deviceId, first.deviceId, '设备标识持久保存');
+
+    const state = await svc.setRemoteAllowed(true);
+    assert.equal(state.remote.allowed, true);
+    assert.equal(connection.announced.at(-1).remoteAllowed, true, '开关变化后重新登记');
+    assert.equal(JSON.parse(fs.readFileSync(deps.storePath, 'utf8')).remoteAllowed, true);
+
+    connection.onServerMessage({ type: 'remote_status', available: true, clients: [{ id: 'phone', label: 'iPhone · Safari', lastActive: 1 }] });
+    assert.deepEqual(svc.state.remote, { allowed: true, available: true, clients: [{ id: 'phone', label: 'iPhone · Safari', lastActive: 1 }] });
+
+    // 网页回答：审阅经连接转出，网页先展示再允许
+    const pendingA = deleteViaHandler('a.txt');
+    for (let i = 0; i < 50 && !connection.sent.some((m) => m.type === 'remote_toolchain' && m.message.kind === 'approval'); i += 1) await new Promise((r) => setTimeout(r, 10));
+    const approval = connection.sent.find((m) => m.type === 'remote_toolchain' && m.message.kind === 'approval').message.request;
+    connection.onServerMessage({ type: 'remote_page_message', message: { type: 'gor.toolchainOpenUrl', url: 'http://localhost:1' } });
+    connection.onServerMessage({ type: 'remote_page_message', message: { type: 'gor.toolchainApprovalShown', approvalId: approval.approvalId } });
+    connection.onServerMessage({ type: 'remote_page_message', message: { type: 'gor.toolchainApprovalAnswer', approvalId: approval.approvalId, answer: 'approve' } });
+    const responseA = await pendingA;
+    assert.equal(responseA.success, true, JSON.stringify(responseA.error));
+    assert.equal(fs.existsSync(path.join(dir, 'a.txt')), false);
+    assert.deepEqual(modals, [], '网页回答了就不弹系统确认框');
+    assert.ok(connection.sent.some((m) => m.type === 'remote_toolchain' && m.message.kind === 'update'), '施行状态也转给网页');
+
+    // 关掉开关：未回答的审阅一律拒绝，不删文件
+    const pendingB = deleteViaHandler('b.txt');
+    for (let i = 0; i < 50 && connection.sent.filter((m) => m.type === 'remote_toolchain' && m.message.kind === 'approval').length < 2; i += 1) await new Promise((r) => setTimeout(r, 10));
+    const second = connection.sent.filter((m) => m.type === 'remote_toolchain' && m.message.kind === 'approval')[1].message.request;
+    connection.onServerMessage({ type: 'remote_page_message', message: { type: 'gor.toolchainApprovalShown', approvalId: second.approvalId } });
+    await svc.setRemoteAllowed(false);
+    const responseB = await pendingB;
+    assert.equal(responseB.success, false);
+    assert.equal(fs.existsSync(path.join(dir, 'b.txt')), true);
+    assert.deepEqual(svc.state.remote.clients, []);
+    connection.onServerMessage({ type: 'remote_page_message', message: { type: 'gor.toolchainApprovalAnswer', approvalId: 'x', answer: 'approve' } });
+
+    // 断开设备
+    await svc.setRemoteAllowed(true);
+    connection.onServerMessage({ type: 'remote_clients', clients: [{ id: 'phone', label: 'iPhone', lastActive: 2 }, { id: 'pc', label: 'Chrome', lastActive: 1 }] });
+    svc.disconnectRemote('phone');
+    assert.deepEqual(connection.sent.at(-1), { type: 'remote_disconnect', clientId: 'phone' });
+    assert.deepEqual(svc.state.remote.clients.map((c) => c.id), ['pc']);
+    svc.disconnectRemote('unknown');
+    assert.deepEqual(connection.sent.at(-1), { type: 'remote_disconnect', clientId: 'phone' }, '不认识的设备不发');
+
+    // 退出登录：凭证变了就重新登记，不再带凭证
+    const before = connection.announced.length;
+    svc.refreshAuth();
+    assert.equal(connection.announced.length, before, '凭证没变不重复登记');
+    token = null;
+    svc.refreshAuth();
+    assert.equal(connection.announced.length, before + 1);
+    assert.equal('authToken' in connection.announced.at(-1), false);
+  } finally {
+    svc.dispose();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('旧版 shuzhai.json 没有设备标识：启动后补上标识，仍保留并重开当前书斋', async () => {
+  const dir = tempDir();
+  const storePath = path.join(tempDir(), 'shuzhai.json');
+  const real = fs.realpathSync(dir);
+  fs.writeFileSync(storePath, JSON.stringify({ current: real, recent: [{ path: real, name: path.basename(real), openedAt: 1 }] }));
+  const { made, create } = remoteConnections();
+  const { svc } = service({ storePath, createConnection: create });
+  try {
+    const state = await svc.restore();
+    assert.equal(state.folder.path, real);
+    const stored = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+    assert.equal(stored.current, real, '不丢当前书斋');
+    assert.match(stored.deviceId, /^[\w-]{8,}$/);
+    assert.equal(stored.remoteAllowed, false);
+    assert.equal(made[0].announced.at(-1).deviceId, stored.deviceId, '登记用的就是保存的标识');
+  } finally {
+    svc.dispose();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('遥斋开启时：没有网页在线也转发审阅，并一直等回答，不退回系统确认框', async () => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'c.txt'), 'x');
+  const { made, create } = remoteConnections();
+  const modals = [];
+  const { svc } = service({
+    chooseFolder: async () => dir, createConnection: create, getAuthToken: () => 'tok',
+    trashItem: async (fsPath) => fs.rmSync(fsPath),
+    showWarningModal: async (message, detail, actions) => { modals.push(detail); return undefined; },
+    sendToolchain: () => false,
+  });
+  try {
+    await svc.restore();
+    await svc.pickFolder();
+    await svc.setRemoteAllowed(true);
+    const connection = made[0];
+    connection.onServerMessage({ type: 'remote_status', available: true, clients: [] });
+    const pending = deleteViaHandler('c.txt');
+    for (let i = 0; i < 50 && !connection.sent.some((m) => m.type === 'remote_toolchain' && m.message.kind === 'approval'); i += 1) await new Promise((r) => setTimeout(r, 10));
+    const approval = connection.sent.find((m) => m.type === 'remote_toolchain' && m.message.kind === 'approval');
+    assert.ok(approval, '没有网页在线也转发，稍后打开的设备由服务端补上卡片');
+    await new Promise((r) => setTimeout(r, 1700));
+    assert.deepEqual(modals, [], '超过本机展示等待时间也不弹系统确认框');
+    connection.onServerMessage({ type: 'remote_page_message', message: { type: 'gor.toolchainApprovalAnswer', approvalId: approval.message.request.approvalId, answer: 'approve' } });
+    assert.equal((await pending).success, true);
+    assert.equal(fs.existsSync(path.join(dir, 'c.txt')), false);
+  } finally {
+    svc.dispose();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('遥斋：断线时清空遥控设备；重新登记后把仍在等待的审阅再转给网页', async () => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'd.txt'), 'x');
+  const made = [];
+  const create = (url, output, onStatus, onRequest, describe, onServerMessage) => {
+    const connection = {
+      onStatus, onServerMessage, sent: [], workspaceId: 'desktop-1',
+      connect: async () => { onStatus('connected'); },
+      send(message) { connection.sent.push(message); return true; },
+      reannounce() { return true; },
+      dispose() {},
+    };
+    made.push(connection);
+    return connection;
+  };
+  const { svc } = service({ chooseFolder: async () => dir, createConnection: create, getAuthToken: () => 'tok', sendToolchain: () => false,
+    trashItem: async (fsPath) => fs.rmSync(fsPath) });
+  try {
+    await svc.restore();
+    await svc.pickFolder();
+    await svc.setRemoteAllowed(true);
+    const connection = made[0];
+    connection.onServerMessage({ type: 'remote_status', available: true, clients: [{ id: 'phone', label: 'iPhone', lastActive: 1 }] });
+    const pending = deleteViaHandler('d.txt');
+    for (let i = 0; i < 50 && !connection.sent.some((m) => m.type === 'remote_toolchain' && m.message.kind === 'approval'); i += 1) await new Promise((r) => setTimeout(r, 10));
+    connection.onStatus('disconnected');
+    assert.deepEqual(svc.state.remote.clients, [], '断线时不再显示遥控设备');
+    assert.equal(svc.state.remote.available, false);
+    connection.sent.length = 0;
+    connection.onStatus('connected');
+    connection.onServerMessage({ type: 'remote_status', available: true, clients: [] });
+    const resent = connection.sent.filter((m) => m.type === 'remote_toolchain' && m.message.kind === 'approval');
+    assert.equal(resent.length, 1, '重新登记后再转一遍');
+    connection.onServerMessage({ type: 'remote_page_message', message: { type: 'gor.toolchainApprovalAnswer', approvalId: resent[0].message.request.approvalId, answer: 'approve' } });
+    assert.equal((await pending).success, true);
+  } finally {
+    svc.dispose();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -15,7 +15,6 @@ import AccountControl from '../../components/account/AccountControl';
 import { useChat } from '../../hooks/useChat';
 import { useLayout } from '../../hooks/useLayout';
 import { useTheme } from '../../hooks/useTheme';
-import { nativeBridge } from '../../utils/nativeBridge';
 import { getChatClientMode } from '../../utils/clientMode';
 import '../../App.less';
 import '../../components/chat/styles.less';
@@ -47,6 +46,10 @@ import ShuzhaiPanel from '../../components/desktop/ShuzhaiPanel';
 import ShuzhaiWelcome from '../../components/desktop/ShuzhaiWelcome';
 import ShuzhaiModeChip from '../../components/desktop/ShuzhaiModeChip';
 import { useShuzhaiControls } from '../../desktop/useShuzhaiControls';
+import YaozhaiPanel from '../../components/remote/YaozhaiPanel';
+import YaozhaiWelcome from '../../components/remote/YaozhaiWelcome';
+import YaozhaiModeChip from '../../components/remote/YaozhaiModeChip';
+import { useYaozhaiControls } from '../../remote/useYaozhaiControls';
 
 function isUntouchedStarterProject(project: {
   name?: string;
@@ -128,10 +131,14 @@ export default function ChatPage() {
   const { notify } = useFeedback();
   // 桌面端：侧栏的云笺/书斋切换器、书斋卡片与「择一书斋」空状态；浏览器与插件中 enabled 为 false
   const desktop = useShuzhaiControls(notify);
-  const shuzhaiFolderMissing = isShuzhaiMode && !desktop.state.folder;
+  // 浏览器遥斋：侧栏的云笺/遥斋切换器、电脑列表与「遥控书斋」空状态；桌面应用与插件中 enabled 为 false
+  const yaozhai = useYaozhaiControls();
+  const shuzhaiFolderMissing = isShuzhaiMode && !yaozhai.active && !desktop.state.folder;
+  const yaozhaiBlocked = yaozhai.active && !yaozhai.ready;
+  const workspaceBlocked = shuzhaiFolderMissing || yaozhaiBlocked;
+  // 返回按钮只看页面自身的浏览记录（HashRouter 的 idx）：App 内与浏览器一致，没有上一页时不显示
   const [canGoBack, setCanGoBack] = useState(() => (
-    nativeBridge.shouldShowBackButton()
-    || (typeof window.history.state?.idx === 'number' && window.history.state.idx > 0)
+    typeof window.history.state?.idx === 'number' && window.history.state.idx > 0
   ));
   const [mobileSidebarMounted, setMobileSidebarMounted] = useState(mobileSidebarVisible);
 
@@ -149,10 +156,7 @@ export default function ChatPage() {
   useEffect(() => {
     const updateBackAvailability = () => {
       const historyIndex = window.history.state?.idx;
-      setCanGoBack(
-        nativeBridge.shouldShowBackButton()
-        || (typeof historyIndex === 'number' && historyIndex > 0),
-      );
+      setCanGoBack(typeof historyIndex === 'number' && historyIndex > 0);
     };
     window.addEventListener('popstate', updateBackAvailability);
     window.addEventListener('hashchange', updateBackAvailability);
@@ -1025,22 +1029,9 @@ export default function ChatPage() {
     closeMobileSidebar();
   }, [createNewSession, closeMobileSidebar]);
 
-  const showNativeBack = nativeBridge.shouldShowBackButton();
-  const handleHeaderLeft = useCallback(() => {
-    if (showNativeBack) {
-      nativeBridge.goBack();
-    } else {
-      openMobileSidebar();
-    }
-  }, [showNativeBack, openMobileSidebar]);
-
+  // App 里的 WebView 与浏览器一样退回页面自身的上一页（Native 端不处理 goBack 消息，不能交给它）
   const goBack = useCallback(() => {
-    if (!canGoBack) return;
-    if (nativeBridge.shouldShowBackButton()) {
-      nativeBridge.goBack();
-      return;
-    }
-    window.history.back();
+    if (canGoBack) window.history.back();
   }, [canGoBack]);
 
   return (
@@ -1074,9 +1065,23 @@ export default function ChatPage() {
               onReveal={desktop.reveal}
               onCloseFolder={desktop.closeFolder}
               onCreateProject={desktop.createProject}
+              onToggleRemote={desktop.setRemoteAllowed}
+              onDisconnectRemote={desktop.disconnectRemote}
+            />
+          ) : yaozhai.enabled ? (
+            <YaozhaiPanel
+              mode={yaozhai.mode}
+              workspaces={yaozhai.state.workspaces}
+              selected={yaozhai.selected}
+              loaded={yaozhai.state.loaded}
+              error={yaozhai.state.error}
+              signedIn={yaozhai.signedIn}
+              onSwitchMode={yaozhai.switchMode}
+              onSelect={yaozhai.select}
+              onRefresh={yaozhai.refresh}
             />
           ) : undefined}
-          createDisabled={shuzhaiFolderMissing}
+          createDisabled={workspaceBlocked}
           emptyText={isShuzhaiMode ? '书斋尚无对话' : undefined}
         />
       )}
@@ -1087,7 +1092,6 @@ export default function ChatPage() {
           isPC={isPC}
           sidebarOpen={sidebarOpen}
           canGoBack={canGoBack}
-          showNativeBack={showNativeBack}
           title={activeSessionTitle}
           hasPreviewWorkerContent={hasPreviewWorkerContent}
           previewWorkerOpen={visiblePreviewWorkerOpen}
@@ -1101,12 +1105,14 @@ export default function ChatPage() {
             else share.start();
           }}
           onBack={goBack}
-          onMenuClick={messages.length === 0 ? (isPC ? togglePCSidebar : openMobileSidebar) : handleHeaderLeft}
+          onMenuClick={messages.length === 0 && isPC ? togglePCSidebar : openMobileSidebar}
           onTogglePreviewWorker={() => {
             visiblePreviewWorkerOpen ? setPreviewWorkerOpen(false) : openPreviewWorker();
           }}
           extra={desktop.enabled ? (
             <ShuzhaiModeChip mode={desktop.mode} state={desktop.state} onOpen={openMobileSidebar} />
+          ) : yaozhai.enabled ? (
+            <YaozhaiModeChip mode={yaozhai.mode} selected={yaozhai.selected} onOpen={openMobileSidebar} />
           ) : undefined}
         />
       )}
@@ -1128,8 +1134,19 @@ export default function ChatPage() {
                 onOpenRecent={desktop.openRecent}
                 onCreateProject={desktop.createProject}
               />
+            ) : yaozhaiBlocked && yaozhai.authReady ? (
+              <YaozhaiWelcome
+                workspaces={yaozhai.state.workspaces}
+                selected={yaozhai.selected}
+                loaded={yaozhai.state.loaded}
+                error={yaozhai.state.error}
+                signedIn={yaozhai.signedIn}
+                onSelect={yaozhai.select}
+                onRefresh={yaozhai.refresh}
+              />
             ) : undefined}
-            composerBlockedHint={shuzhaiFolderMissing ? '先择一书斋，再开始落笔' : undefined}
+            composerBlockedHint={shuzhaiFolderMissing ? '先择一书斋，再开始落笔'
+              : yaozhaiBlocked ? (yaozhai.state.error ?? '先选一台可遥控的电脑，再开始落笔') : undefined}
             composerNotice={shuzhaiFolderMissing && messages.length > 0 ? (
               <ShuzhaiWelcome
                 compact

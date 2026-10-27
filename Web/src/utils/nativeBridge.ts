@@ -118,9 +118,6 @@ function requestGeolocation(): Promise<NativeGeolocationResult> {
 }
 
 export const nativeBridge = {
-  /** 返回首页（关闭 WebView / iframe） */
-  goBack: () => send({ type: 'goBack' }),
-
   /** 请求 Native 端定位 */
   requestGeolocation,
 
@@ -129,7 +126,4 @@ export const nativeBridge = {
 
   /** 是否运行在 iframe 中 */
   isIframe: isInIframe,
-
-  /** 是否需要显示返回按钮（Native WebView 或 iframe 中显示） */
-  shouldShowBackButton: () => isNativeWebView() || isInIframe(),
 };

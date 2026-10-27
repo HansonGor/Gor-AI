@@ -23,6 +23,7 @@
 | Web（含浏览器窄屏） | 会话所属的虚拟项目文件集 | Preview Worker 的 Preview / Code / Diff | 操作 VS Code 文件、用后端当前目录冒充项目、自动导出落盘 |
 | VS Code 插件 | 当前连接的 VS Code 工作区 | 实际工作区文件与共用 Diff | 初始化 Web 项目、调用 Preview 工具、自动开启 Preview Worker |
 | 桌面端书斋（`clientMode: desktop`） | 用户在桌面端经系统对话框选定的本机文件夹（主进程登记） | 实际文件夹与共用 Diff | 与插件相同；另不提供 Git（第二版）、页面不能直接按路径打开任意文件夹 |
+| Web 遥斋（浏览器遥控书斋，`clientMode: desktop` + 遥斋 ID） | 同账号桌面端书斋（经后端转给桌面端读写） | 实际文件夹与共用 Diff、施行卡片 | 浏览器拿到或发送真实工作区 ID、绕过「允许网页遥控」开关、在电脑上打开地址 |
 | 公共能力 | 会话、消息、自然语言变更说明、UI 原语与 Diff | 两端通过 props / callbacks 按需接入 | 将某一端文件权限、项目状态或副作用写进纯 UI |
 
 - 请求明确某端时，只改该端能力；共享代码修改须检查两端调用者。可根据上下文判断范围；如果范围不明且会改变端特有行为，先提示用户确认。
@@ -473,6 +474,8 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 ### Native 移动端
 
 - Expo / React Native 提供全屏 WebView 外壳，Web 内容仍由 Web 工程实现；`bridges/geolocation` 使用 `expo-location` 处理网页发出的定位消息。
+- 「初始化失败」提示（2026-10-27）：会话初始化（`useSession.initSession`）拉会话列表或新建会话失败就会提示。排查当次：后端日志同期会话列表请求全为 200，Vite 转发失败只出现在后端启动/自动重载的几秒空档（`ECONNREFUSED 127.0.0.1:3001`），即属临时失败（后端重启或重载、App 刚启动网络未就绪、局域网偶发超时），原代码一次失败即提示且无原因。现改为：会话列表与新建会话遇临时失败按 0.8 秒、2 秒重试两次，都失败才提示，提示带原因（如「暂时无法连接 Gor 服务」「网络连接失败」）；4xx（未登录、无权访问）不重试；`api/chat.ts` 对非 JSON 响应（转发失败的 502 页面等）给出可读原因。验收：`test:session` 新增临时失败后恢复不提示、持续失败只提示一次并带原因、4xx 不重试。
+- 聊天页标题栏左侧（2026-10-27 修复，Web / App / 插件共用 `ChatHeader`）：返回按钮只在页面自身有上一页时显示（HashRouter 的 `history.state.idx > 0`），点击 `history.back()`，App 内与浏览器一致；第二个按钮始终是「打开会话列表」。原先 App 与插件（都运行在 WebView / iframe 中）无条件显示返回按钮，且有消息时第二个按钮变成 `‹`，两者都向宿主发 `goBack` 消息，但 Native 与插件从未处理该消息，点了没有反应；`nativeBridge.goBack`、`shouldShowBackButton` 已删除。会话写入 `sessionId` 时 `replaceState` 改为保留原 `history.state`，否则路由的 `idx` 被清掉，浏览器里从首页进入聊天后返回按钮也会消失。验收：`test:share` 新增标题栏左侧用例、`test:session` 新增历史状态保留用例；安卓模拟器（Expo Go）实测：空会话与有消息的会话左上角都是「← ☰」，← 回到首页，☰ 打开会话列表。
 - 版本（2026-10-25）：Expo SDK 58（expo ~58.0.19、react-native 0.88.0、react 19.3.0、react-native-webview 14.0.1）。iOS 版 Expo Go 只支持最新 SDK，项目 SDK 落后时扫码报「Project is incompatible with this version of Expo Go」，需 `npm install expo@~<新版本>` 后执行 `npx expo install --fix` 对齐依赖。已按 expo-doctor 移除 `@types/react-native`（类型随 react-native 自带）、补装 `expo-font`（`@expo/vector-icons` 的必需依赖）。
 - 现状与遗留：`npx expo install --check` 依赖已对齐，Metro 能打出 iOS 开发包；`App.tsx` 与 `bridges/geolocation` 已无类型错误（react-native-webview 14.0.1 的类型声明 `WebView<P = undefined>` 会让 props 成为 never，故写作 `WebView<{}>`；定位调用删去 expo-location 不支持、原本就被忽略的浏览器参数 `enableHighAccuracy/timeout/maximumAge`，`accuracy` 允许 null）。`npx tsc --noEmit` 余下 112 个错误全部在 gluestack 生成的 `components/ui/`（App 未引用）；`assets/icon.png` 实为 JPG，expo-doctor 报配置校验失败。真机 iOS Expo Go（SDK 58）已能打开应用并加载 Web 页面（2026-10-25 用户确认）；真机定位桥接未单独验证。
 - 手机端的开发 Web 地址：显式配置 `Native/.env.local` 的 `EXPO_PUBLIC_WEB_URL` 优先；未配置时取 Expo 开发服务器所在电脑地址（`expoConfig.hostUri` 的主机部分）+ `:5173`，取不到再回退 `localhost`（2026-10-25 起，原写死的 `192.168.1.2` 回退已删除——路由器把电脑改分配为 `.3` 后手机即打不开）。该地址仅适用于开发机当前 Wi-Fi 网络。正式跨网络使用时应改为部署后的 HTTPS 域名，而不是开发机局域网 IP。局域网 http 不是浏览器「安全上下文」，`crypto.randomUUID` 不可用，前端生成 ID 统一用 `Web/src/utils/uuid.ts`。
@@ -525,6 +528,17 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 - 窗口：`contextIsolation`、`sandbox` 开启，不开 Node 集成、无 preload；站外链接交系统浏览器，应用内新窗口仍在桌面端；单实例。站内判断用 `protocol.ts` 的 `isAppUrl`（按协议 + 主机，忽略大小写）：主进程是 Node，`new URL('app://gor/…').origin` 恒为 `"null"`，若按 origin 判断会把页面重载当成外链拦截，导致登录/退出后不刷新（2026-10-25 修复，开发态与打包版均实测重载正常）。
 - 验收（2026-10-25）：`Desktop` 下 `npm test` 14 项（开发服务器地址只认本机、无标题栏平台判断、拖动区与让位样式、站内地址识别、静态路径越界、MIME、转发头、凭证截取与记住我、失败登录、退出与过期清除、SSE 流式、502 与 204、后端地址解析、凭证加密落盘）；Server `test_auth.py` 25 项与完整离线 pytest。开发态与打包后的 `win-unpacked/Gor.exe` 都经调试端口实测：页面经 `app://gor` 加载为 Web 模式、会话列表与 `/api/auth/me` 经转发返回、Preview 运行时沙箱页就绪、esbuild wasm 流式编译与 Preview 编译 Worker 加载正常、发送一条消息 SSE 流式完成、不存在账号登录正确报错且不落凭证。`npm run dist` 产出未签名 NSIS 安装包（约 138 MB）。已实测：真实账号登录后凭证加密保存（74 字节）、重启仍保持登录并载入账号会话、页面拿不到凭证。未实测：在 Preview 中完整生成并运行项目、安装包的安装/卸载流程、macOS/Linux 打包、代码签名与自动更新。
 
+### 遥斋：Web（PC 与手机）遥控桌面端书斋（2026-10-28，第一版：局域网）
+
+- 定位：同一账号下，浏览器（电脑或手机，含 Native WebView）经后端中转遥控电脑上 Gor 桌面端的「书斋」：发消息让 Agent 读写那台电脑的文件夹、跑命令，命令审阅与删除确认也在网页上回答，便于离开电脑后移动办公。不做手机直连电脑。
+- 安全开关：书斋弹层里的「允许网页遥控此书斋」（`ShuzhaiPanel` 的 `onToggleRemote`），默认关，存在 `shuzhai.json` 的 `remoteAllowed`，重启保持。打开后下面列出正在遥控的设备（「iPhone · Safari」「Windows · Chrome」等，及最近活动），每台可单独「断开」；被断开的设备在本次开关期间不能再遥控，关掉再打开开关即恢复。关掉开关时，未回答的审阅一律按拒绝处理，网页立即收到「已关闭网页遥控」。书斋卡片在有设备遥控时显示「已连接 · N 台设备在遥控」。
+- 账号绑定（服务端 `services/remote_shuzhai.py`）：书斋登记（`/ws/vscode`，client=desktop）附带登录凭证（正式版为主进程保管的凭证；开发模式取 Web 的 `gor_auth` Cookie）、本机设备标识（`shuzhai.json` 的 `deviceId`）、电脑名与文件夹路径；未登录的书斋只能本机使用、不出现在遥斋列表。登录、退出后主进程重新登记以更新绑定。网页拿到的是遥斋 ID（`remote-` + 账号/设备/文件夹的哈希，断线重连不变），不是真实工作区 ID；聊天请求带 `remoteWorkspaceId` 与 `remoteDeviceId`，服务端每次校验账号、开关、在线与是否被断开后换成真实工作区并按 `clientMode: desktop` 处理，失败返回 403 及中文原因。会话与同步共用桌面书斋的 `user:<账号ID>:desktop` 命名空间。离线的书斋保留在列表中显示「离线」，直到后端重启。
+- 接口（均需登录，只见本账号）：`GET /api/remote/workspaces`；`POST /api/remote/workspaces/{id}/attach`（选中与心跳，60 秒一次，返回尚未回答的审阅）；`…/detach`；`…/toolchain`（只放行卡片展示、回答、止令三种施行消息，不转发「打开本机地址」）。推送事件经现有 `/api/sync/events`：`remote_workspaces_changed`、`remote_toolchain`、`remote_revoked`。
+- 施行审阅：开关打开且已绑定账号时，桌面端把同一套 `gor.toolchain` 消息转给后端，服务端推给同账号网页，并记住尚未回答的审阅（到期、收回或状态变化即删除）；稍后才打开、或锁屏后重新载入的手机在登记遥控时补上卡片。本机书斋页面与任一遥控网页先答为准；这种情况下不再弹系统确认框，10 分钟未答自动搁置。书斋断线重连（含后端重启）后，桌面端把仍在等待的审阅再转一遍。开关关闭或未登录时与原来一样：页面没展示卡片就退回系统确认框。
+- 前端（只在普通浏览器生效，桌面应用与插件不安装）：`Web/src/remote/remoteRuntime.ts`（模式记在 localStorage `gor.web.mode`，默认云笺；遥斋时根元素 `data-gor-client-mode=desktop`、`data-gor-remote=true`，设备标识 `gor.yaozhai.device`，所选书斋 `gor.yaozhai.workspace`，没选过时自动选第一个可遥控的），`useYaozhaiControls`；纯展示组件 `components/remote/YaozhaiPanel.tsx`（侧栏「云笺 | 遥斋」切换器与电脑卡片，电脑分在线 / 未开远程 / 离线，未登录不能切到遥斋）、`YaozhaiWelcome.tsx`（不能遥控时的空状态与原因）、`YaozhaiModeChip.tsx`（窄屏标题栏图标）。选中的电脑不可用、本设备被断开或电脑关了遥控时，输入框禁用并显示原因，新章置灰。`api/sync.ts` 新增 `addSyncListener`，遥斋共用聊天页已有的推送连接。施行卡片沿用 `vscode/toolchainRuns.ts`。
+- 局域网：手机访问 `http://<电脑局域网地址>:5173`（Native App 同理）；后端只需 3001 在本机，接口经 Vite 转发。正式跨网络使用需 HTTPS 域名与部署（未做）。
+- 验收（2026-10-28）：Server `tests/test_remote_shuzhai.py` 13 项（未登录只本机、遥斋 ID 稳定且不暴露真实 ID、账号/开关/设备/在线校验、断开与重开开关、关开关通知与清空、审阅只推给本账号、网页消息白名单、WebSocket + HTTP 端到端、聊天请求换成真实书斋与 403、未回答审阅的保存与清除、attach 返回待答审阅）及完整离线 pytest（751 通过、1 跳过；`test_search_orchestrator` 偶发失败，与本次无关）；`Desktop` 下 `npm test` 29 项（新增：登记带凭证与开关、网页回答审阅、关开关拒绝、断开设备、退出登录重新登记、开启遥控后不退回系统确认框、断线清空与重连补转、旧版 `shuzhai.json` 补设备标识且不丢当前书斋）；Web `npm run test:yaozhai` 10 项及其余 12 组、TypeScript 与构建；`workspace-core` `npm test` 12 项；插件 `npm test` 117 项与 `vscode:prepublish`。真机（本机，测试账号 + 隔离桌面实例 `GOR_DESKTOP_PROFILE=yaozhai` 开发模式，测试书斋在临时目录）：桌面端打开开关后，浏览器（localhost）切到遥斋自动选中该电脑，桌面卡片显示「1 台设备在遥控」；遥控发消息，模型正确列出书斋文件；遥控删除 `legacy.md`，网页出现删除确认卡，点「施行」后文件进回收站；审阅落笔下运行不在白名单的 `npm run hello`，PC 页面出现审阅卡后关掉，手机尺寸页面（局域网地址 `192.168.1.2:5173`）重新载入后补上卡片并批准，电脑实际运行输出 42；桌面端断开手机后其输入框禁用并显示原因、聊天接口返回 403；关掉再打开开关后手机恢复。期间发现并修复：旧版 `shuzhai.json` 首次补设备标识时丢失当前书斋；后来打开的设备看不到已在等待的审阅；无网页在线时审阅退回电脑上的系统确认框导致手机无法回答；断线后仍显示遥控设备；后端热重载监视卡住（重启后端后生效）。未实测：真实手机上的遥斋（需在手机上登录同一账号）、打包版桌面端的凭证绑定、跨网络部署。
+
 ## 4. 对 AI Agent 的点评
 
 ### 做得比较好的地方
@@ -548,7 +562,7 @@ Gor 是一个以对话为中心的个人 AI Agent 应用。用户可以用自然
 1. **账户与权限**：登录与账号级会话隔离已完成；后续补找回密码（需邮件服务）、附件按账号鉴权和分享权限。
 2. **云文件存储**：将单机/挂载卷存储升级为 S3 兼容对象存储或 Supabase Storage，补充容量配额、过期清理、校验和及上传断点续传。
 3. **Agent 质量体系**：为工具调用建立结构化日志、错误分类、延迟/成本统计、回归样例和自动评测；提高引用来源、失败恢复和用户确认机制。
-4. **更完整的移动体验**：局域网开发地址已改为环境配置、多端实时同步已完成（见「多端同步」）；上线时使用 HTTPS 域名，并逐步加入原生导航、文件选择/分享、推送和离线提示。
+4. **更完整的移动体验**：局域网开发地址已改为环境配置、多端实时同步与局域网遥斋已完成（见「多端同步」「遥斋」）；上线时使用 HTTPS 域名，并逐步加入原生导航、文件选择/分享、推送和离线提示。
 5. **Preview 能力增强**：支持更多模板与依赖、运行时资源限制、项目版本快照/回滚、协作分享，以及导出和重新导入体验。
 6. **补齐页面产品化**：让天气页接入真实预报 API；将首页进度与快捷卡片连接到持久化数据，或明确保持为 UI 演示区。
 7. **运维与可靠性**：增加健康指标、结构化日志、数据库迁移流程、后台任务队列、限流、附件病毒/内容检查和备份恢复策略。

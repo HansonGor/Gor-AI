@@ -6,10 +6,13 @@ import './index.less';
 import App from './App';
 import { FeedbackProvider } from './components/ui/feedback';
 import { installDesktopRuntime } from './desktop/desktopRuntime';
+import { installYaozhaiRuntime } from './remote/remoteRuntime';
 
 document.documentElement.dataset.gorClientMode = 'web';
 // 桌面端：按上次选择的模式（云笺 / 书斋）设定 clientMode；浏览器中没有桥接，保持 web
 installDesktopRuntime();
+// 浏览器（PC 与手机）：上次选了遥斋就遥控桌面端书斋；桌面应用与插件中不生效
+installYaozhaiRuntime();
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {

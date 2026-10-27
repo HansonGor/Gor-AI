@@ -39,6 +39,7 @@
   },
   "scripts": {
     "start": "expo start",
+    "start:local": "node -e \"delete process.env.CI; require('child_process').spawn('npx',['expo','start'],{stdio:'inherit',env:process.env,shell:true})\"",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web"

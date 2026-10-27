@@ -9,6 +9,8 @@ export type WorkspaceConnectedMessage = {
   client: 'vscode' | 'desktop';
   workspaceName: string;
   workspaceFolders: Array<{ id: string; name: string; uri: string }>;
+  /** 桌面端书斋附带：登录凭证、本机设备与「允许网页遥控」开关（遥斋）。 */
+  [extra: string]: unknown;
 };
 
 type WorkspaceRegisteredMessage = {
@@ -58,6 +60,8 @@ export class GorConnection {
     private readonly describeWorkspace: () => WorkspaceConnectedMessage = () => ({
       type: 'workspace_connected', client: 'vscode', workspaceName: '', workspaceFolders: [],
     }),
+    /** 登记与工作区请求之外的服务端消息（桌面端遥斋用）。 */
+    private readonly onServerMessage?: (message: { type?: unknown } & Record<string, unknown>) => void,
   ) {}
 
   get currentStatus(): GorConnectionStatus {
@@ -88,6 +92,11 @@ export class GorConnection {
       const timer = setTimeout(done, timeoutMs);
       this.workspaceWaiters.add(done);
     });
+  }
+
+  /** 登记内容变了（登录状态、遥斋开关）：已连接时重新发送登记，服务端沿用同一个工作区 ID。 */
+  reannounce(): boolean {
+    return this.status === 'connected' ? this.send(this.createWorkspaceMessage()) : false;
   }
 
   notifyWorkspaceTreeChanged(root?: string): void {
@@ -215,7 +224,10 @@ export class GorConnection {
     }
 
     const registered = message as Partial<WorkspaceRegisteredMessage>;
-    if (registered.type !== 'workspace_registered' || typeof registered.workspaceId !== 'string') return;
+    if (registered.type !== 'workspace_registered' || typeof registered.workspaceId !== 'string') {
+      this.onServerMessage?.(message as { type?: unknown } & Record<string, unknown>);
+      return;
+    }
 
     this.registeredWorkspaceId = registered.workspaceId;
     this.output.appendLine(`[Gor] Workspace registered: ${registered.workspaceId}`);

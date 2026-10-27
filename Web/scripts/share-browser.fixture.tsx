@@ -108,7 +108,6 @@ function App() {
           isPC={true}
           sidebarOpen={false}
           canGoBack={false}
-          showNativeBack={false}
           title="分享验收 · 独立夹具"
           hasPreviewWorkerContent={true}
           previewWorkerOpen={true}

@@ -19,6 +19,28 @@ import { createMessagePreviewSnapshot } from '../preview/core/projectSnapshot';
 import { restorePresentationSnapshot } from '../preview/core/presentationSnapshot';
 import { restoreChangeSetReference } from '../utils/changeSetReference';
 
+/** 初始化遇到临时失败（后端重启、App 刚启动网络未就绪、局域网偶发超时）时的重试间隔；都失败才提示。 */
+export const INIT_RETRY_DELAYS_MS = [800, 2000];
+
+function failureReason(error: unknown): string {
+  if (error instanceof TypeError) return '网络连接失败';
+  return error instanceof Error && error.message ? error.message : '未知错误';
+}
+
+/** 未登录、无权访问（4xx）不会因重试好转，直接失败；其余错误按间隔重试。 */
+async function withRetry<T>(run: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      const status = (error as { status?: number })?.status;
+      const permanent = typeof status === 'number' && status >= 400 && status < 500;
+      if (permanent || attempt >= INIT_RETRY_DELAYS_MS.length) throw error;
+      await new Promise((resolve) => setTimeout(resolve, INIT_RETRY_DELAYS_MS[attempt]));
+    }
+  }
+}
+
 export function getSessionUserId(): string {
   // The web app (and the desktop 云笺 mode) keeps its existing account namespace.
   // The VS Code Webview and the desktop 书斋 mode use their own user_id suffix so
@@ -57,7 +79,8 @@ export function useSession() {
     const currentUrl = new URL(window.location.href);
     const hashPath = currentUrl.hash.split('?')[0] || '#/chat';
     currentUrl.hash = `${hashPath.slice(1)}?sessionId=${encodeURIComponent(sid)}`;
-    window.history.replaceState(null, '', currentUrl.href);
+    // 保留 HashRouter 写在 history.state 里的 idx，否则「返回上一页」会误判为没有上一页
+    window.history.replaceState(window.history.state, '', currentUrl.href);
   }, []);
 
   /**
@@ -155,8 +178,8 @@ export function useSession() {
 
   async function runInitSession(): Promise<string | null> {
     try {
-      // 1. 拉取全部会话列表
-      const sessionList = await fetchSessions(true);
+      // 1. 拉取全部会话列表（临时失败自动重试）
+      const sessionList = await withRetry(() => fetchSessions(true));
 
       // 2. 读取 URL query 参数 sessionId（优先 hash 路由内 query：#/chat?sessionId=xxx）
       const hashQuery = new URLSearchParams(window.location.hash.split('?')[1] || '');
@@ -177,7 +200,7 @@ export function useSession() {
         updateUrlSessionId(sid);
         commitSessionId(sid);
       } else {
-        const newSession = await createSession(getSessionUserId());
+        const newSession = await withRetry(() => createSession(getSessionUserId()));
         sid = newSession.id;
         updateUrlSessionId(sid);
         commitSessionId(sid);
@@ -188,7 +211,7 @@ export function useSession() {
       return sid;
     } catch (err) {
       console.error('[Session] 初始化失败:', err);
-      notify('初始化失败');
+      notify(`初始化失败：${failureReason(err)}，请稍后刷新重试`);
       setIsSessionReady(true);
       return null;
     }

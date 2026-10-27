@@ -11,11 +11,15 @@ export type DesktopMode = 'yunjian' | 'shuzhai';
 export type ShuzhaiFolder = { path: string; name: string };
 export type ShuzhaiRecent = ShuzhaiFolder & { openedAt: number };
 export type ShuzhaiConnection = 'idle' | 'connecting' | 'connected' | 'disconnected';
+/** 遥斋：本书斋是否允许网页遥控、服务端是否已绑定账号（已登录），以及正在遥控的网页。 */
+export type ShuzhaiRemoteClient = { id: string; label: string; lastActive: number };
+export type ShuzhaiRemote = { allowed: boolean; available: boolean; clients: ShuzhaiRemoteClient[] };
 export type ShuzhaiState = {
   folder: ShuzhaiFolder | null;
   recent: ShuzhaiRecent[];
   connection: ShuzhaiConnection;
   workspaceId: string | null;
+  remote: ShuzhaiRemote;
 };
 export type ShuzhaiOpenResult = { ok: boolean; reason?: string; state: ShuzhaiState };
 
@@ -28,6 +32,8 @@ export type ShuzhaiBridge = {
   toolchain?: { send(message: unknown): Promise<unknown>; onMessage(listener: (message: unknown) => void): () => void };
   close(): Promise<ShuzhaiState>;
   reveal(): Promise<boolean>;
+  setRemoteAllowed?(allowed: boolean): Promise<ShuzhaiState>;
+  disconnectRemote?(clientId: string): Promise<ShuzhaiState>;
   onState(listener: (state: ShuzhaiState) => void): () => void;
 };
 
@@ -38,7 +44,8 @@ declare global {
 }
 
 export const DESKTOP_MODE_KEY = 'gor.desktop.mode';
-const EMPTY_STATE: ShuzhaiState = { folder: null, recent: [], connection: 'idle', workspaceId: null };
+const EMPTY_REMOTE: ShuzhaiRemote = { allowed: false, available: false, clients: [] };
+const EMPTY_STATE: ShuzhaiState = { folder: null, recent: [], connection: 'idle', workspaceId: null, remote: EMPTY_REMOTE };
 
 let bridge: ShuzhaiBridge | undefined;
 let current: ShuzhaiState = EMPTY_STATE;
@@ -64,7 +71,16 @@ function normalizeState(value: unknown): ShuzhaiState {
   const connection = (['idle', 'connecting', 'connected', 'disconnected'] as const).includes(raw.connection as ShuzhaiConnection)
     ? raw.connection as ShuzhaiConnection : 'idle';
   const workspaceId = typeof raw.workspaceId === 'string' && raw.workspaceId ? raw.workspaceId : null;
-  return { folder, recent, connection, workspaceId };
+  const rawRemote = (raw.remote && typeof raw.remote === 'object' ? raw.remote : {}) as Partial<ShuzhaiRemote>;
+  const remote: ShuzhaiRemote = {
+    allowed: rawRemote.allowed === true,
+    available: rawRemote.available === true,
+    clients: Array.isArray(rawRemote.clients)
+      ? rawRemote.clients.filter((item) => item && typeof item.id === 'string')
+        .map((item) => ({ id: item.id, label: typeof item.label === 'string' ? item.label : '网页', lastActive: Number(item.lastActive) || 0 }))
+      : [],
+  };
+  return { folder, recent, connection, workspaceId, remote };
 }
 
 /** 主进程推来的状态：书斋模式下把已登记的工作区 ID 写到根元素，供聊天请求携带。 */
@@ -154,6 +170,8 @@ export const shuzhai = {
   openRecent: (folderPath: string) => bridge?.openRecent(folderPath).then((result) => { applyShuzhaiState(result.state); return result; }),
   close: () => bridge?.close().then((state) => { applyShuzhaiState(state); return state; }),
   reveal: () => bridge?.reveal(),
+  setRemoteAllowed: (allowed: boolean) => bridge?.setRemoteAllowed?.(allowed).then((state) => { applyShuzhaiState(state); return state; }),
+  disconnectRemote: (clientId: string) => bridge?.disconnectRemote?.(clientId).then((state) => { applyShuzhaiState(state); return state; }),
 };
 
 /** 测试用：重置模块状态。 */

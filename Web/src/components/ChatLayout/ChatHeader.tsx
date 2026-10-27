@@ -1,6 +1,5 @@
 import {
   ArrowLeft,
-  ChevronLeft,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
@@ -17,8 +16,8 @@ export interface ChatHeaderProps {
   isEmpty: boolean;
   isPC: boolean;
   sidebarOpen: boolean;
+  /** 有上一页（页面自身的浏览记录）时显示返回按钮；App 内与浏览器一致。 */
   canGoBack: boolean;
-  showNativeBack: boolean;
   title: string;
   hasPreviewWorkerContent: boolean;
   previewWorkerOpen: boolean;
@@ -40,7 +39,6 @@ export default function ChatHeader({
   isPC,
   sidebarOpen,
   canGoBack,
-  showNativeBack,
   title,
   hasPreviewWorkerContent,
   previewWorkerOpen,
@@ -73,15 +71,7 @@ export default function ChatHeader({
             variant="ghost"
             size="icon"
             onClick={onMenuClick}
-            aria-label={
-              isEmpty
-                ? isPC && sidebarOpen
-                  ? '收起会话列表'
-                  : '打开会话列表'
-                : !showNativeBack
-                  ? '打开会话列表'
-                  : '返回首页'
-            }
+            aria-label={isEmpty && isPC && sidebarOpen ? '收起会话列表' : '打开会话列表'}
             className="chat-icon-btn h-[0.72rem] w-[0.72rem] rounded-full text-white hover:bg-white/10 hover:text-white active:scale-95"
           >
             {isEmpty && isPC ? (
@@ -90,10 +80,8 @@ export default function ChatHeader({
               ) : (
                 <PanelLeftOpen size={22} />
               )
-            ) : isEmpty || !showNativeBack ? (
-              <Menu size={22} />
             ) : (
-              <ChevronLeft size={22} />
+              <Menu size={22} />
             )}
           </Button>
           {extra}

@@ -25,7 +25,8 @@
     "test:shuzhai": "node --test scripts/shuzhai-ui.test.mjs",
     "preview": "vite preview",
     "format": "prettier --write \"src/**/*.{ts,tsx,less,css,json}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx,less,css,json}\""
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,less,css,json}\"",
+    "test:yaozhai": "node --test scripts/yaozhai-ui.test.mjs"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.23",

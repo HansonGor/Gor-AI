@@ -14,7 +14,8 @@ from pydantic import BaseModel, Field
 
 from agent.agent import run_agent
 from db import auth as auth_db
-from routes.auth import ensure_session_access
+from routes.auth import current_account, ensure_session_access
+from services.remote_shuzhai import RemoteAccessError, remote_shuzhai
 from services.chat_runs import RunConflictError, registry as chat_runs, stream_run
 from tools.presentation_revision import saved_presentation
 from services.preview.workspace import PreviewProjectWorkspace
@@ -63,6 +64,9 @@ class ChatRequest(BaseModel):
     clientMode: Literal['web', 'vscode', 'desktop'] | None = None
     # Opaque extension-issued workspace id; workspace operations still require a live bridge.
     workspaceId: str | None = Field(default=None, max_length=120)
+    # 遥斋：网页遥控桌面端书斋时只带遥斋 ID 与本机设备标识，服务端校验后换成真实工作区 ID
+    remoteWorkspaceId: str | None = Field(default=None, max_length=120)
+    remoteDeviceId: str | None = Field(default=None, max_length=80)
     assistantMessageId: str | None = Field(default=None, max_length=80)
     newPreviewProject: bool = False
     editMode: Literal['auto', 'review'] | None = None
@@ -86,6 +90,15 @@ async def chat(request: Request, body: ChatRequest):
         print(f"[RouteTiming] step={step} ms={round((now - timing['last']) * 1000)} "
               f"total_ms={round((now - timing['start']) * 1000)}")
         timing["last"] = now
+    if body.remoteWorkspaceId:
+        account = await current_account(request)
+        try:
+            entry = remote_shuzhai.authorize(body.remoteWorkspaceId, str(account["id"]) if account else None, body.remoteDeviceId)
+        except RemoteAccessError as error:
+            return JSONResponse(status_code=403, content={"detail": str(error)})
+        remote_shuzhai.touch(entry, body.remoteDeviceId or "")
+        body.clientMode = "desktop"
+        body.workspaceId = entry.workspace_id
     # 会话归属校验与读取偏好并行，不额外拉长首包时间；不通过时在开始推流前返回 404
     access_check = asyncio.create_task(ensure_session_access(request, body.sessionId)) if body.sessionId else None
     # 会话所属命名空间：回复事件按它广播给同账号的其他设备；与上面的读取并行

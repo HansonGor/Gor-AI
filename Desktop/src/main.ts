@@ -4,8 +4,9 @@
  * GOR_DESKTOP_API_BASE 或用户数据目录下 config.json 的 apiBase 修改）。
  */
 import { promises as fs } from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, safeStorage, shell, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, safeStorage, session, shell, type IpcMainInvokeEvent } from 'electron';
 import {
   APP_HOST, APP_ORIGIN, APP_SCHEME, contentTypeFor, createApiForwarder, isApiPath, isInAppUrl, resolveApiBase, resolveDevServerUrl,
   resolveStaticFile,
@@ -114,10 +115,15 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
-function createShuzhai(apiBase: string): ShuzhaiService {
+/** 开发态登录走 Web 的 Cookie：遥斋用它把书斋绑定到账号（正式版用主进程保管的凭证）。 */
+let devAuthCookie: string | null = null;
+
+function createShuzhai(apiBase: string, getAuthToken: () => string | null): ShuzhaiService {
   return new ShuzhaiService({
     storePath: path.join(app.getPath('userData'), 'shuzhai.json'),
     apiBase,
+    getAuthToken: () => getAuthToken() ?? devAuthCookie,
+    deviceName: os.hostname(),
     async chooseFolder() {
       const options: Electron.OpenDialogOptions = { title: '择一书斋', buttonLabel: '设为书斋', properties: ['openDirectory', 'createDirectory'] };
       const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
@@ -185,6 +191,14 @@ function registerShuzhaiIpc(service: ShuzhaiService): void {
     return true;
   });
   ipcMain.handle('gor:shuzhai:reveal', guard(() => service.reveal()));
+  ipcMain.handle('gor:shuzhai:set-remote-allowed', async (event, allowed: unknown) => {
+    if (!fromAppPage(event)) throw new Error('Not allowed');
+    return service.setRemoteAllowed(allowed === true);
+  });
+  ipcMain.handle('gor:shuzhai:disconnect-remote', async (event, clientId: unknown) => {
+    if (!fromAppPage(event)) throw new Error('Not allowed');
+    return service.disconnectRemote(clientId);
+  });
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -204,7 +218,13 @@ if (!app.requestSingleInstanceLock()) {
       decrypt: (data) => safeStorage.decryptString(data),
     }, log);
     await tokens.load();
-    const forward = createApiForwarder({ apiBase, tokens, fetchImpl: (input, init) => net.fetch(input, init), log });
+    // 登录、退出后凭证变化：书斋重新登记，让遥斋的账号绑定跟着变
+    const trackedTokens = {
+      ...tokens,
+      async set(token: string, persist: boolean) { await tokens.set(token, persist); shuzhai?.refreshAuth(); },
+      async clear() { await tokens.clear(); shuzhai?.refreshAuth(); },
+    };
+    const forward = createApiForwarder({ apiBase, tokens: trackedTokens, fetchImpl: (input, init) => net.fetch(input, init), log });
     const root = webRoot();
     log(devOrigin
       ? `[Gor Desktop] Dev mode: ${devOrigin}（前端热更新，/api 经开发服务器代理）`
@@ -220,7 +240,16 @@ if (!app.requestSingleInstanceLock()) {
     if (process.platform === 'darwin') {
       Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' }]));
     }
-    shuzhai = createShuzhai(apiBase);
+    if (devOrigin) {
+      const cookies = session.defaultSession.cookies;
+      devAuthCookie = (await cookies.get({ url: devOrigin, name: 'gor_auth' }))[0]?.value || null;
+      cookies.on('changed', (_event, cookie, _cause, removed) => {
+        if (cookie.name !== 'gor_auth') return;
+        devAuthCookie = removed ? null : cookie.value || null;
+        shuzhai?.refreshAuth();
+      });
+    }
+    shuzhai = createShuzhai(apiBase, () => tokens.get());
     registerShuzhaiIpc(shuzhai);
     void shuzhai.restore();
 

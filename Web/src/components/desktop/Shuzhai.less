@@ -375,3 +375,77 @@
 @media (max-width: 480px) {
   .shuzhai-welcome { margin-top: 3vh; padding: 28px 18px; h2 { font-size: 26px; } }
 }
+
+// 遥斋：书斋弹层里的「允许网页遥控」开关与正在遥控的设备；浏览器遥斋的电脑列表复用同一套样式
+.shuzhai-remote { display: flex; flex-direction: column; gap: 8px; h2 { margin: 4px 2px 0; } }
+.shuzhai-remote-row { display: flex; align-items: center; gap: 10px; padding: 2px; }
+.shuzhai-remote-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  strong { overflow: hidden; font-size: 14px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+  span { overflow: hidden; color: #b8b4d0; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+}
+
+.shuzhai-switch {
+  position: relative;
+  width: 40px;
+  height: 24px;
+  flex: 0 0 40px;
+  padding: 0;
+  border: 1px solid rgba(217, 225, 255, .25);
+  border-radius: 999px;
+  background: rgba(8, 12, 30, .6);
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease;
+  &.is-on { border-color: transparent; background: linear-gradient(105deg, @accent-from, @accent-to); }
+  &:focus-visible { outline: 2px solid #c5b3ff; outline-offset: 2px; }
+}
+
+.shuzhai-switch-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #d9d5ee;
+  transition: transform 150ms ease, background 150ms ease;
+  .shuzhai-switch.is-on & { background: #fff; transform: translateX(16px); }
+}
+
+.shuzhai-remote-clients { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.shuzhai-remote-client {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px 4px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .04);
+  > svg { width: 16px; height: 16px; flex: 0 0 16px; color: #c5b3ff; }
+}
+
+.shuzhai-remote-disconnect {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid rgba(217, 225, 255, .25);
+  border-radius: 999px;
+  background: transparent;
+  color: #e4e1f5;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  &:hover { background: rgba(142, 117, 218, .14); }
+  &:focus-visible { outline: 2px solid #c5b3ff; outline-offset: 2px; }
+}
+
+.yaozhai-computer {
+  .shuzhai-dot { margin-right: 2px; }
+  &.is-offline { opacity: .6; }
+  &.is-blocked .shuzhai-dot { background: #f5c76b; }
+  &.is-offline .shuzhai-dot { background: #8b88a6; }
+  &.is-online .shuzhai-dot { background: #5fd49a; }
+}

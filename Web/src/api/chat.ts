@@ -4,6 +4,7 @@ import type { ThinkingEvent, ThinkingStatus } from '../utils/thinking';
 import config from '../config';
 import { getChatClientMode, isWorkspaceClientMode, projectClientContext } from '../utils/clientMode';
 import { waitForShuzhaiWorkspace } from '../desktop/desktopRuntime';
+import { getRemoteRequestContext, isYaozhaiActive } from '../remote/remoteRuntime';
 import type { Session, TokenUsage, ModelQuotaInfo, ProjectChange, UploadedAttachment, SearchSource, SearchTrace } from '../types';
 import type { PreviewProject } from '../preview/core/types.ts';
 
@@ -69,13 +70,25 @@ export async function cancelChatRun(runId: string): Promise<void> {
 /**
  * 创建新会话
  */
+/**
+ * 读取会话接口的 JSON。后端重启、开发服务器转发失败（502 页面）或网络中断时返回的不是 JSON，
+ * 这里换成能看懂的原因，便于提示与重试判断。
+ */
+async function readSessionJson(response: Response, fallback: string): Promise<{ success?: boolean; error?: string; detail?: unknown; [key: string]: any }> {
+  try {
+    return await response.json();
+  } catch {
+    throw Object.assign(new Error(response.status >= 500 ? '暂时无法连接 Gor 服务' : `${fallback}（${response.status}）`), { status: response.status });
+  }
+}
+
 export async function createSession(userId = 'default', sessionId?: string): Promise<Session> {
   const response = await fetch('/api/chat/session/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ userId, ...(sessionId ? { sessionId } : {}) }),
   });
-  const data = await response.json();
+  const data = await readSessionJson(response, '创建会话失败');
   if (!data.success) {
     throw new Error(data.error || '创建会话失败');
   }
@@ -128,9 +141,9 @@ export async function deletePendingSessionAttachment(sessionId: string, attachme
  */
 export async function getSessions(userId = 'default'): Promise<Session[]> {
   const response = await fetch(`/api/chat/sessions?userId=${encodeURIComponent(userId)}`);
-  const data = await response.json();
+  const data = await readSessionJson(response, '获取会话列表失败');
   if (!data.success) {
-    throw new Error(data.error || '获取会话列表失败');
+    throw Object.assign(new Error(data.error || (typeof data.detail === 'string' ? data.detail : '') || '获取会话列表失败'), { status: response.status });
   }
   return data.sessions;
 }
@@ -218,7 +231,9 @@ export async function sendChatMessage(
     const clientMode = getChatClientMode();
     const workspaceMode = isWorkspaceClientMode(clientMode);
     // 书斋刚打开时可能还在登记：与插件一样稍等握手，不带工作区就发出的请求会被服务端如实说明未连接
-    const workspaceId = clientMode === 'desktop'
+    // 遥斋（浏览器遥控书斋）不知道也不带真实工作区 ID，只带遥斋 ID 与本机设备标识，由服务端校验后换成真实工作区
+    const remote = isYaozhaiActive() ? getRemoteRequestContext() : null;
+    const workspaceId = isYaozhaiActive() ? undefined : clientMode === 'desktop'
       ? document.documentElement.dataset.gorWorkspaceId ?? await waitForShuzhaiWorkspace()
       : document.documentElement.dataset.gorWorkspaceId;
     const response = await fetch(config.api.chatEndpoint, {
@@ -233,6 +248,7 @@ export async function sendChatMessage(
         ...(!workspaceMode ? { previewProjectId, previewServerRevision, previewContentRevision,
           previewProjectBootstrap, previewProjectOrigin, previewProjectUploadName, newPreviewProject } : {}),
         ...projectClientContext(clientMode, workspaceId),
+        ...(remote ?? {}),
       }),
       signal,
     });

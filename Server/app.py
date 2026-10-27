@@ -17,6 +17,7 @@ from routes.weather import router as weather_router
 from routes.music import router as music_router
 from routes.judge import router as judge_router
 from routes.vscode import router as vscode_router
+from routes.remote import router as remote_router
 from routes.project_changes import router as project_changes_router
 from routes.auth import SessionAccessMiddleware, router as auth_router
 from routes.sync import router as sync_router
@@ -78,4 +79,5 @@ app.include_router(judge_router, prefix="/api")              # POST /api/judge/e
 app.include_router(vscode_router)                              # WebSocket /ws/vscode
 app.include_router(project_changes_router, prefix="/api/chat")
 app.include_router(auth_router, prefix="/api/auth")                    # 账号: /register, /login, /logout, /me
+app.include_router(remote_router, prefix="/api/remote")                # 遥斋: /workspaces, /workspaces/{id}/attach|detach|toolchain
 app.include_router(sync_router, prefix="/api")                         # 多端同步: /sync/events, /chat/runs/{id}/cancel
